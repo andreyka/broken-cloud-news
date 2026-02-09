@@ -1,0 +1,254 @@
+{
+    "name": "Analyzer - Main",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "minutes",
+                            "minutesInterval": 15
+                        }
+                    ]
+                }
+            },
+            "id": "schedule-trigger",
+            "name": "Every 15 Mins",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.1,
+            "position": [
+                0,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "SELECT * FROM news_items WHERE status = 'NEW' LIMIT 5;",
+                "options": {}
+            },
+            "id": "get-new-items",
+            "name": "DB: Get NEW",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.2,
+            "position": [
+                220,
+                0
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres_creds",
+                    "name": "Postgres"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "options": {}
+            },
+            "id": "split-batch",
+            "name": "Loop Items",
+            "type": "n8n-nodes-base.splitInBatches",
+            "typeVersion": 3,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "conditions": {
+                    "string": [
+                        {
+                            "value1": "={{ $json.source_type }}",
+                            "operation": "equal",
+                            "value2": "rss"
+                        }
+                    ]
+                }
+            },
+            "id": "check-source",
+            "name": "Is RSS?",
+            "type": "n8n-nodes-base.if",
+            "typeVersion": 2,
+            "position": [
+                660,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "workflowId": "scraper-browserless"
+            },
+            "id": "call-scraper",
+            "name": "Call Scraper",
+            "type": "n8n-nodes-base.executeWorkflow",
+            "typeVersion": 1,
+            "position": [
+                880,
+                -100
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "http://host.docker.internal:8000/v1/chat/completions",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "={\n  \"model\": \"local-model\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a cloud security expert. Analyze the following content. Return JSON with: summary (2 sentences), juiciness_score (1-10, 10 is critical RCE/Exploit, 1 is marketing fluff), tags (array of strings).\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Title: {{ $json.title }}\\n\\nContent: {{ $json.full_content || $json.title }}\"\n    }\n  ]\n}",
+                "options": {}
+            },
+            "id": "llm-analyze",
+            "name": "LLM Analyze",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.1,
+            "position": [
+                1100,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "jsCode": "const llm = $input.first().json.choices[0].message.content;\nlet parsed = {};\ntry {\n  parsed = JSON.parse(llm.replace(/```json/g, '').replace(/```/g, ''));\n} catch (e) {\n  parsed = { summary: llm, juiciness_score: 5, tags: [] };\n}\n\nreturn { \n  json: { \n    ...$('Loop Items').item.json, \n    summary: parsed.summary,\n    juiciness_score: parsed.juiciness_score,\n    ai_tags: parsed.tags,\n    status: 'ANALYZED'\n  } \n};"
+            },
+            "id": "parse-llm",
+            "name": "Parse LLM",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                1320,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "UPDATE news_items SET summary = $1, juiciness_score = $2, ai_tags = $3, status = 'ANALYZED', full_content = $4 WHERE id = $5;",
+                "options": {
+                    "queryReplacement": "={{ $json.summary }}, {{ $json.juiciness_score }}, {{ JSON.stringify($json.ai_tags) }}, {{ $json.full_content || null }}, {{ $json.id }}"
+                }
+            },
+            "id": "update-db",
+            "name": "Save Analysis",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.2,
+            "position": [
+                1540,
+                0
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres_creds",
+                    "name": "Postgres"
+                }
+            }
+        }
+    ],
+    "connections": {
+        "Every 15 Mins": {
+            "main": [
+                [
+                    {
+                        "node": "DB: Get NEW",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "DB: Get NEW": {
+            "main": [
+                [
+                    {
+                        "node": "Loop Items",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Loop Items": {
+            "main": [
+                [],
+                [
+                    {
+                        "node": "Is RSS?",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Is RSS?": {
+            "main": [
+                [
+                    {
+                        "node": "Call Scraper",
+                        "type": "main",
+                        "index": 0
+                    }
+                ],
+                [
+                    {
+                        "node": "LLM Analyze",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Call Scraper": {
+            "main": [
+                [
+                    {
+                        "node": "LLM Analyze",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "LLM Analyze": {
+            "main": [
+                [
+                    {
+                        "node": "Parse LLM",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Parse LLM": {
+            "main": [
+                [
+                    {
+                        "node": "Save Analysis",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Save Analysis": {
+            "main": [
+                [
+                    {
+                        "node": "Loop Items",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}

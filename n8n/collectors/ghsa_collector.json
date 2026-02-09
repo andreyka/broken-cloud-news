@@ -1,0 +1,135 @@
+{
+    "name": "Collector - GHSA",
+    "nodes": [
+        {
+            "parameters": {
+                "rule": {
+                    "interval": [
+                        {
+                            "field": "hours",
+                            "hoursInterval": 4
+                        }
+                    ]
+                }
+            },
+            "id": "schedule-trigger",
+            "name": "Every 4 Hours",
+            "type": "n8n-nodes-base.scheduleTrigger",
+            "typeVersion": 1.1,
+            "position": [
+                0,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "method": "POST",
+                "url": "https://api.github.com/graphql",
+                "authentication": "genericCredentialType",
+                "genericAuthType": "httpBearerAuth",
+                "sendHeaders": true,
+                "headerParameters": {
+                    "parameters": [
+                        {
+                            "name": "User-Agent",
+                            "value": "n8n-cloud-agent"
+                        },
+                        {
+                            "name": "Content-Type",
+                            "value": "application/json"
+                        }
+                    ]
+                },
+                "sendBody": true,
+                "specifyBody": "json",
+                "jsonBody": "{\"query\": \"query { securityAdvisories(first: 100, orderBy: {field: PUBLISHED_AT, direction: DESC}) { nodes { ghsaId summary description permalink severity publishedAt references { url } identifiers { type value } } } }\"}",
+                "options": {}
+            },
+            "id": "github-graphql",
+            "name": "GitHub GraphQL",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.1,
+            "position": [
+                220,
+                0
+            ],
+            "credentials": {
+                "httpBearerAuth": {
+                    "id": "github_api_token",
+                    "name": "GitHub Token"
+                }
+            }
+        },
+        {
+            "parameters": {
+                "jsCode": "const items = $input.all();\nif (!items.length || !items[0].json) return [];\nconst root = items[0].json.data || items[0].json;\nif (!root || !root.securityAdvisories || !root.securityAdvisories.nodes) return [];\n\nconst advisories = root.securityAdvisories.nodes;\nconst allowedSeverities = [\"CRITICAL\", \"HIGH\"];\nconst keywords = [/kubernetes/i, /k8s/i, /docker/i, /container/i, /aws/i, /azure/i, /gcp/i, /cloud/i, /terraform/i, /iam/i];\n\nconst filtered = advisories.filter(item => {\n  if (!allowedSeverities.includes(item.severity)) return false;\n  const text = (item.summary + \" \" + item.description).toLowerCase();\n  return keywords.some(regex => regex.test(text));\n});\n\nreturn filtered.map(item => {\n  const refs = item.references.map(r => r.url);\n  const externalLink = refs.find(url => !url.includes(\"github.com\") && !url.includes(\"nist.gov\")) || item.permalink;\n  return {\n    json: {\n      source_type: 'ghsa',\n      source_id: item.ghsaId,\n      url: externalLink,\n      title: item.summary,\n      published_at: item.publishedAt,\n      raw_data: item,\n      status: 'NEW'\n    }\n  };\n});"
+            },
+            "id": "process-items",
+            "name": "Filter & Normalize",
+            "type": "n8n-nodes-base.code",
+            "typeVersion": 2,
+            "position": [
+                440,
+                0
+            ]
+        },
+        {
+            "parameters": {
+                "operation": "executeQuery",
+                "query": "INSERT INTO news_items (source_type, source_id, url, title, published_at, raw_data, status)\nVALUES ($1, $2, $3, $4, $5, $6, 'NEW')\nON CONFLICT (source_type, source_id) DO NOTHING;",
+                "options": {
+                    "queryReplacement": "={{ $json.source_type }}, {{ $json.source_id }}, {{ $json.url }}, {{ $json.title }}, {{ $json.published_at }}, {{ JSON.stringify($json.raw_data) }}"
+                }
+            },
+            "id": "postgres-insert",
+            "name": "Save to DB",
+            "type": "n8n-nodes-base.postgres",
+            "typeVersion": 2.2,
+            "position": [
+                660,
+                0
+            ],
+            "credentials": {
+                "postgres": {
+                    "id": "postgres_creds",
+                    "name": "Postgres"
+                }
+            }
+        }
+    ],
+    "connections": {
+        "Every 4 Hours": {
+            "main": [
+                [
+                    {
+                        "node": "GitHub GraphQL",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "GitHub GraphQL": {
+            "main": [
+                [
+                    {
+                        "node": "Filter & Normalize",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        },
+        "Filter & Normalize": {
+            "main": [
+                [
+                    {
+                        "node": "Save to DB",
+                        "type": "main",
+                        "index": 0
+                    }
+                ]
+            ]
+        }
+    }
+}
