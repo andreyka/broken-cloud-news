@@ -24,7 +24,7 @@
         {
             "parameters": {
                 "method": "POST",
-                "url": "https://api.apify.com/v2/acts/apidojo~tweet-scraper/run-sync-get-dataset-items",
+                "url": "https://api.apify.com/v2/acts/apidojo~twitter-scraper-lite/run-sync-get-dataset-items",
                 "authentication": "genericCredentialType",
                 "genericAuthType": "httpBearerAuth",
                 "sendHeaders": true,
@@ -38,7 +38,7 @@
                 },
                 "sendBody": true,
                 "specifyBody": "json",
-                "jsonBody": "{\n  \"handle\": [\"GoogleVRP\", \"HackingLZ\", \"anton_chuvakin\", \"AISecHub\", \"_JohnHammond\", \"lauriewired\", \"chompie1337\", \"Steph3nSims\", \"d0znpp\", \"KimZetter\", \"argvee\", \"avkovaleff\", \"tom_doerr\"],\n  \"tweetsDesired\": 20,\n  \"addUserInfo\": true\n}",
+                "jsonBody": "{\n  \"twitterHandles\": [\"GoogleVRP\", \"HackingLZ\", \"anton_chuvakin\", \"AISecHub\", \"_JohnHammond\", \"lauriewired\", \"chompie1337\", \"Steph3nSims\", \"d0znpp\", \"KimZetter\", \"argvee\", \"avkovaleff\", \"tom_doerr\"],\n  \"maxItems\": 20\n}",
                 "options": {}
             },
             "id": "apify-request",
@@ -58,7 +58,7 @@
         },
         {
             "parameters": {
-                "jsCode": "return $input.all().map(item => {\n  const i = item.json;\n  return {\n    json: {\n      source_type: 'twitter',\n      source_id: i.id_str || i.id,\n      url: i.url || `https://twitter.com/${i.user.screen_name}/status/${i.id_str}`,\n      title: i.full_text || i.text,\n      published_at: i.created_at,\n      raw_data: i,\n      status: 'NEW'\n    }\n  };\n});"
+                "jsCode": "return $input.all().map(item => {\n  const i = item.json;\n  return {\n    json: {\n      source_type: 'twitter',\n      source_id: i.id || i.conversationId,\n      url: i.url || i.twitterUrl,\n      title: i.text || i.fullText,\n      published_at: i.createdAt || i.date,\n      raw_data: i,\n      status: 'NEW'\n    }\n  };\n});"
             },
             "id": "normalize-twitter",
             "name": "Normalize X",

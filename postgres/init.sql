@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS news_items (
     summary TEXT,
     juiciness_score INTEGER,
     ai_tags JSONB,
+    image_prompt TEXT,
+    image_url TEXT,
     
     -- processing state
     status VARCHAR(20) DEFAULT 'NEW', -- NEW, SCRAPED, ANALYZED, PUBLISHED, DISCARDED
