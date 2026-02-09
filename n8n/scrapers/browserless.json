@@ -27,7 +27,7 @@
                 },
                 "sendBody": true,
                 "specifyBody": "json",
-                "jsonBody": "={\n  \"url\": \"{{ $json.url }}\",\n  \"elements\": [\n    { \"selector\": \"article\" },\n    { \"selector\": \".markdown-body\" },\n    { \"selector\": \"main\" },\n    { \"selector\": \"body\" }\n  ],\n  \"waitFor\": 2000\n}",
+                "jsonBody": "={\n  \"url\": \"{{ $json.url || 'https://example.com' }}\",\n  \"elements\": [\n    { \"selector\": \"article\" },\n    { \"selector\": \".markdown-body\" },\n    { \"selector\": \"main\" },\n    { \"selector\": \"body\" }\n  ],\n  \"waitFor\": 2000\n}",
                 "options": {}
             },
             "id": "browserless-req",
