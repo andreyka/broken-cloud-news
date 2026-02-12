@@ -1,48 +1,73 @@
-# Broken Cloud News Agent
+# Broken Cloud News Agent v2
 
-A fully automated cloud security newsfeed agent that collects, analyzes, and distributes security news. It leverages **n8n** for orchestration, **Postgres** for state management, and **DGX A100** infrastructure for local AI inference (Qwen-VL for analysis, Flux.1 for image generation).
+A Python-based cloud security briefing agent using the **Google A2A (Agent-to-Agent) protocol**. Collects, analyzes, and distributes security news via local AI inference on **DGX Spark** (Qwen LLM + ComfyUI Flux).
 
 ## Architecture
 
-1.  **Collectors**: Independent n8n workflows fetch data from GHSA, CISA, RSS, and Twitter/X.
-2.  **Scraper**: A headless browser (Browserless) fetches full content for analysis.
-3.  **Analyzer**: Uses **Qwen3-VL-30B** to filter "marketing fluff," summarize technical details, and score "juiciness".
-4.  **Distributor**: Generates a daily digest with a custom cover image using **Flux.1-schnell** and publishes it.
+Four A2A agents communicate via JSON-RPC, each running as an HTTP server:
+
+| Agent | Port | Role |
+|-------|------|------|
+| **Collector** | 9001 | GHSA, Twitter/X (Apify), RSS (CISA + AWS) |
+| **Analyst** | 9002 | LLM scoring & summarization via Qwen |
+| **Writer** | 9003 | Briefing generation + Flux cover image |
+| **Distributor** | 9004 | Telegram, Email, Slack publishing |
+
+```
+GitHub/RSS/Twitter --> Collector --> PostgreSQL --> Analyst --> Writer --> Distributor
+                                     (news_items)   (Qwen LLM)  (Flux)   (TG/Email/Slack)
+```
 
 ---
 
-## 🚀 Installation (Management Node)
+## Quick Start
 
-This node runs the orchestration and database. It can be a small VPS, LattePanda, or Raspberry Pi 5.
-
-### 1. Requirements
-*   Docker & Docker Compose
-*   Git
+### 1. Prerequisites
+- Python 3.12+
+- Docker & Docker Compose (for PostgreSQL)
+- DGX Spark with Qwen + ComfyUI deployed (see AI Infrastructure below)
 
 ### 2. Setup
 ```bash
-# Clone the repository
 git clone https://github.com/broken-cloud-news/broken-cloud-news.git
 cd broken-cloud-news
 
-# Start n8n, Postgres, and Browserless
+# Start PostgreSQL
+docker-compose up -d postgres
+
+# Install Python package
+pip install -e .
+
+# Configure
+cp .env.example .env
+# Edit .env with your tokens and endpoints
+```
+
+### 3. Run
+
+**Single commands:**
+```bash
+bcn collect              # Collect from all sources
+bcn collect -s ghsa      # Collect GHSA only
+bcn analyze              # Analyze new items with LLM
+bcn write                # Generate briefing + cover image
+bcn distribute           # Send to configured channels
+bcn pipeline             # Full pipeline (collect -> analyze -> write -> distribute)
+```
+
+**Daemon mode** (all agents + scheduler):
+```bash
+bcn run
+```
+
+**Docker (full stack):**
+```bash
 docker-compose up -d
 ```
 
-### 3. Import Workflows
-Access n8n at `http://localhost:5678`. Import the following workflows from the `n8n/` directory:
-
-1.  **Collectors**: `n8n/collectors/*.json`
-2.  **Scraper**: `n8n/scrapers/browserless.json`
-3.  **Analyzer**: `n8n/analyzers/main_analyzer.json`
-4.  **Generator**: `n8n/generators/digest_generator.json`
-5.  **Distributor**: `n8n/distributors/daily_digest.json`
-
-> **Note**: After importing `daily_digest.json`, manually add an **"Execute Workflow"** node to link it to the Generator workflow.
-
 ---
 
-## 🧠 AI Infrastructure (DGX Node)
+## AI Infrastructure (DGX Node)
 
 These components run on your NVIDIA DGX (or heavy GPU server) to provide offline inference.
 
@@ -79,8 +104,7 @@ Runs **ComfyUI** with a custom-built Docker image.
 
 #### A. Build Custom Image
 ```bash
-# Create Dockerfile
-cat <<EOF > Dockerfile
+cat <<EOF > Dockerfile.comfyui
 FROM nvcr.io/nvidia/pytorch:25.09-py3
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends git libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
@@ -89,22 +113,19 @@ RUN git clone https://github.com/comfyanonymous/ComfyUI.git
 WORKDIR /opt/ComfyUI
 RUN python -m pip install --upgrade pip
 RUN pip install torchsde
-# Prevent overwriting NVIDIA torch
 RUN sed -i '/^torch/d;/^torchvision/d;/^torchaudio/d' requirements.txt
 RUN pip install -r requirements.txt
 EXPOSE 8188
 CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
 EOF
 
-# Build
-docker build -t comfyui:arm64-cuda .
+docker build -t comfyui:arm64-cuda -f Dockerfile.comfyui .
 ```
 
 #### B. Prepare Models
 ```bash
 mkdir -p ~/comfyui/models/checkpoints ~/comfyui/input ~/comfyui/output
 
-# Download Flux.1-schnell
 wget -O ~/comfyui/models/checkpoints/flux1-schnell.safetensors \
   https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
 ```
@@ -127,8 +148,59 @@ docker run --rm -it \
 
 ---
 
-## 🔧 Configuration
+## Configuration
 
-Update your **n8n Credentials** and **Workflow Nodes** to point to your DGX IP address for:
-*   **LLM Analyze Node**: `http://<DGX_IP>:8000/v1` (Model: `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8`)
-*   **Gen Cover Image Node**: `http://<DGX_IP>:8188`
+All settings via environment variables with `BCN_` prefix. See `.env.example` for the full list.
+
+Key settings:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BCN_LLM_BASE_URL` | `http://192.168.0.9:8000/v1` | Qwen API endpoint |
+| `BCN_COMFYUI_URL` | `http://192.168.0.9:8188` | ComfyUI endpoint |
+| `BCN_GITHUB_TOKEN` | - | GitHub API token for GHSA |
+| `BCN_APIFY_TOKEN` | - | Apify token for Twitter/X |
+| `BCN_JUICINESS_THRESHOLD` | `7` | Min score (1-10) for briefing |
+
+---
+
+## A2A Protocol
+
+Each agent exposes a standard A2A interface:
+- Agent Card at `GET /.well-known/agent.json`
+- Message handling via JSON-RPC
+
+Agents can be discovered and invoked by any A2A-compatible client:
+```python
+from a2a.client import A2AClient
+import httpx
+
+async with httpx.AsyncClient() as http:
+    client = await A2AClient.get_client_from_agent_card_url(
+        http, "http://localhost:9001"
+    )
+    response = await client.send_message(request)
+```
+
+---
+
+## Project Structure
+```
+bcn/
+  cli.py              CLI commands + daemon mode
+  config.py           Pydantic Settings (env vars)
+  db.py               asyncpg database layer
+  models.py           Pydantic data models
+  llm.py              Qwen LLM client (OpenAI-compatible)
+  comfyui.py          ComfyUI Flux client
+  scraper.py          httpx + BeautifulSoup scraper
+  agents/
+    base.py           A2A agent boilerplate
+    collector.py      Data collection (GHSA, RSS, Twitter)
+    analyst.py        LLM analysis + scoring
+    writer.py         Briefing + cover image generation
+    distributor.py    Multi-channel distribution
+  distributors/
+    telegram.py       Telegram Bot API
+    email.py          SMTP email
+    slack.py          Slack webhook
+```
