@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # 1. The Memory (Database)
   postgres:
     image: postgres:16-alpine
     restart: always
@@ -14,49 +13,25 @@ services:
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
-    networks:
-      - n8n_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U n8n -d broken_cloud_news"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # 2. The Brain (n8n)
-  n8n:
-    image: docker.n8n.io/n8nio/n8n
+  bcn:
+    build: .
     restart: always
-    environment:
-      - N8N_SECURE_COOKIE=false
-      - GENERIC_TIMEZONE=America/Los_Angeles
-      - TZ=America/Los_Angeles
-      - NODE_OPTIONS=--max-old-space-size=4096
+    command: bcn run
+    env_file: .env
     ports:
-      - "5678:5678"
-    volumes:
-      - broken_cloud_news_n8n:/home/node/.n8n
-    networks:
-      - n8n_network
+      - "9001:9001"
+      - "9002:9002"
+      - "9003:9003"
+      - "9004:9004"
     depends_on:
       postgres:
         condition: service_healthy
 
-  # 3. The Eyes (Headless Browser)
-  browserless:
-    image: browserless/chrome:latest
-    restart: always
-    environment:
-      - MAX_CONCURRENT_SESSIONS=2
-      - TOKEN=secure_browser_token
-    ports:
-      - "3000:3000"
-    networks:
-      - n8n_network
-
-# --- FIXED SECTION BELOW ---
 volumes:
-  broken_cloud_news_n8n:  # Matches the n8n service volume
-  broken_cloud_news_db:   # Matches the postgres service volume
-
-networks:
-  n8n_network:
+  broken_cloud_news_db:
