@@ -42,6 +42,17 @@ async def insert_news_item(
     raw_data: dict,
     full_content: Optional[str] = None,
 ) -> Optional[UUID]:
+    from datetime import datetime, timezone
+
+    # asyncpg requires a datetime object, not a string
+    if isinstance(published_at, str):
+        try:
+            pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pub_dt = datetime.now(timezone.utc)
+    else:
+        pub_dt = published_at
+
     pool = await get_pool()
     row = await pool.fetchrow(
         """
@@ -54,7 +65,7 @@ async def insert_news_item(
         source_id,
         url,
         title,
-        published_at,
+        pub_dt,
         json.dumps(raw_data),
         full_content,
     )
@@ -82,7 +93,7 @@ async def update_item_scraped(item_id: UUID, full_content: str) -> None:
 async def update_item_analyzed(
     item_id: UUID,
     summary: str,
-    juiciness_score: int,
+    relevance_score: int,
     ai_tags: list[str],
     full_content: Optional[str],
     image_prompt: Optional[str],
@@ -91,13 +102,13 @@ async def update_item_analyzed(
     await pool.execute(
         """
         UPDATE news_items
-        SET summary = $1, juiciness_score = $2, ai_tags = $3::jsonb,
+        SET summary = $1, relevance_score = $2, ai_tags = $3::jsonb,
             full_content = COALESCE($4, full_content),
             image_prompt = $5, status = 'ANALYZED', updated_at = NOW()
         WHERE id = $6
         """,
         summary,
-        juiciness_score,
+        relevance_score,
         json.dumps(ai_tags),
         full_content,
         image_prompt,
@@ -111,9 +122,9 @@ async def get_analyzed_items(min_score: int = 7, hours: int = 24) -> list[asyncp
         """
         SELECT * FROM news_items
         WHERE status = 'ANALYZED'
-          AND juiciness_score >= $1
+          AND relevance_score >= $1
           AND published_at > NOW() - make_interval(hours => $2)
-        ORDER BY juiciness_score DESC
+        ORDER BY relevance_score DESC
         """,
         min_score,
         hours,

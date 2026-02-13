@@ -37,6 +37,7 @@ class AnalystExecutor(AgentExecutor):
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
             min_content_length=settings.scrape_min_content_length,
+            browserless_url=settings.browserless_url,
         )
 
     @override
@@ -51,12 +52,24 @@ class AnalystExecutor(AgentExecutor):
             title = item["title"] or ""
             content = item["full_content"] or ""
 
-            # If no full content and source is RSS, attempt scraping
-            # (collector may have already done this, but handle the gap)
-            if not content and item["source_type"] == "rss" and item["url"]:
-                content = await self.scraper.scrape(item["url"])
+            # If no full content, attempt scraping based on source type
+            if not content and item["url"]:
+                if item["source_type"] in ("rss", "ghsa"):
+                    content = await self.scraper.scrape(item["url"])
 
-            # For non-RSS items without full_content, use title as content
+            # For GHSA items, enrich with raw_data description if content is thin
+            if item["source_type"] == "ghsa":
+                import json as _json
+                try:
+                    raw = _json.loads(item["raw_data"]) if isinstance(item["raw_data"], str) else item["raw_data"]
+                    desc = raw.get("description", "")
+                    severity = raw.get("severity", "")
+                    if desc and (not content or len(content) < 200):
+                        content = f"[Severity: {severity}]\n{desc}\n\n{content or ''}"
+                except Exception:
+                    pass
+
+            # For items without full_content, use title as content
             if not content:
                 content = title
 
@@ -65,7 +78,7 @@ class AnalystExecutor(AgentExecutor):
                 await update_item_analyzed(
                     item_id=item["id"],
                     summary=result.summary,
-                    juiciness_score=result.juiciness_score,
+                    relevance_score=result.relevance_score,
                     ai_tags=result.tags,
                     full_content=content if content != title else item["full_content"],
                     image_prompt=result.image_prompt,
@@ -75,7 +88,7 @@ class AnalystExecutor(AgentExecutor):
                     "Analyzed %s [%s] score=%d",
                     item["source_id"],
                     item["source_type"],
-                    result.juiciness_score,
+                    result.relevance_score,
                 )
             except Exception:
                 logger.exception("Failed to analyze item %s", item["id"])

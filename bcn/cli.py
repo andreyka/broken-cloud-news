@@ -17,6 +17,9 @@ logging.basicConfig(
 logger = logging.getLogger("bcn")
 
 
+# Module-level settings reference (set by the `run` command for scheduler jobs)
+_settings: Settings | None = None
+
 # ---------------------------------------------------------------------------
 # A2A client helpers
 # ---------------------------------------------------------------------------
@@ -54,6 +57,27 @@ async def _send_to_agent(port: int, skill: str) -> str:
             return str(msg) if msg else str(result)
         except (KeyError, IndexError):
             return str(result)
+
+
+# ---------------------------------------------------------------------------
+# Scheduler job functions (must be top-level for APScheduler 4.x serialization)
+# ---------------------------------------------------------------------------
+
+async def _job_collect_ghsa() -> None:
+    await _send_to_agent(_settings.collector_port, "collect_ghsa")
+
+async def _job_collect_rss() -> None:
+    await _send_to_agent(_settings.collector_port, "collect_rss")
+
+async def _job_collect_twitter() -> None:
+    await _send_to_agent(_settings.collector_port, "collect_twitter")
+
+async def _job_analyze() -> None:
+    await _send_to_agent(_settings.analyst_port, "analyze_new_items")
+
+async def _job_daily_digest() -> None:
+    await _send_to_agent(_settings.writer_port, "generate_briefing")
+    await _send_to_agent(_settings.distributor_port, "distribute_briefing")
 
 
 async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> str:
@@ -162,7 +186,7 @@ def analyze() -> None:
 
         await get_pool(settings)
         llm = LLMClient(settings.llm_base_url, settings.llm_model, settings.llm_timeout)
-        scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length)
+        scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length, settings.browserless_url)
 
         items = await get_new_items()
         if not items:
@@ -185,13 +209,13 @@ def analyze() -> None:
                 await update_item_analyzed(
                     item_id=item["id"],
                     summary=result.summary,
-                    juiciness_score=result.juiciness_score,
+                    relevance_score=result.relevance_score,
                     ai_tags=result.tags,
                     full_content=content if content != title else item["full_content"],
                     image_prompt=result.image_prompt,
                 )
                 analyzed += 1
-                click.echo(f"  [{result.juiciness_score}/10] {item['source_type']}: {title[:60]}")
+                click.echo(f"  [{result.relevance_score}/10] {item['source_type']}: {title[:60]}")
             except Exception as exc:
                 click.echo(f"  [ERROR] {item['id']}: {exc}", err=True)
 
@@ -220,7 +244,7 @@ def write() -> None:
         llm = LLMClient(settings.llm_base_url, settings.llm_model, settings.llm_timeout)
         comfyui = ComfyUIClient(settings.comfyui_url, settings.comfyui_timeout, settings.comfyui_poll_interval)
 
-        items = await get_analyzed_items(settings.juiciness_threshold, settings.briefing_lookback_hours)
+        items = await get_analyzed_items(settings.relevance_threshold, settings.briefing_lookback_hours)
         if not items:
             click.echo("No items meet threshold for briefing")
             return
@@ -240,8 +264,12 @@ def write() -> None:
         except Exception as exc:
             click.echo(f"Cover image generation failed: {exc}", err=True)
 
-        markdown = WriterExecutor._format_markdown(items, cover_url)
-        html = WriterExecutor._format_html(items, cover_url)
+        # Generate the editorial briefing text via LLM
+        briefing_body = await llm.generate_briefing(items)
+        click.echo(f"Briefing generated ({len(briefing_body)} chars)")
+
+        markdown = WriterExecutor._format_markdown(briefing_body, cover_url)
+        html = WriterExecutor._format_html(briefing_body, cover_url)
 
         item_ids = [i["id"] for i in items]
         bid = await insert_briefing(markdown, html, cover_url, cover_prompt, item_ids)
@@ -340,7 +368,9 @@ def pipeline() -> None:
 @cli.command()
 def run() -> None:
     """Start daemon mode: all A2A agents + scheduler."""
+    global _settings
     settings = Settings()
+    _settings = settings
 
     async def _daemon():
         from bcn.agents.base import build_agent_card, serve_agent
@@ -363,7 +393,7 @@ def run() -> None:
             f"http://localhost:{settings.collector_port}/", COLL_SKILLS,
         )
         analyst_card = build_agent_card(
-            "BCN Analyst", "Analyzes news items for relevance and juiciness scoring",
+            "BCN Analyst", "Analyzes news items for relevance scoring",
             f"http://localhost:{settings.analyst_port}/", ANAL_SKILLS,
         )
         writer_card = build_agent_card(
@@ -394,39 +424,35 @@ def run() -> None:
         click.echo(f"  Writer   on :{settings.writer_port}")
         click.echo(f"  Distributor on :{settings.distributor_port}")
 
-        # Set up scheduler
+        # Set up scheduler (job functions are module-level for APScheduler 4.x)
         async with AsyncScheduler() as scheduler:
             # Collection schedules
             await scheduler.add_schedule(
-                lambda: asyncio.create_task(_send_to_agent(settings.collector_port, "collect_ghsa")),
+                _job_collect_ghsa,
                 IntervalTrigger(hours=settings.ghsa_interval_hours),
                 id="ghsa_collector",
             )
             await scheduler.add_schedule(
-                lambda: asyncio.create_task(_send_to_agent(settings.collector_port, "collect_rss")),
+                _job_collect_rss,
                 IntervalTrigger(hours=settings.rss_interval_hours),
                 id="rss_collector",
             )
             await scheduler.add_schedule(
-                lambda: asyncio.create_task(_send_to_agent(settings.collector_port, "collect_twitter")),
+                _job_collect_twitter,
                 IntervalTrigger(hours=settings.twitter_interval_hours),
                 id="twitter_collector",
             )
 
             # Analyst schedule
             await scheduler.add_schedule(
-                lambda: asyncio.create_task(_send_to_agent(settings.analyst_port, "analyze_new_items")),
+                _job_analyze,
                 IntervalTrigger(minutes=settings.analyst_interval_minutes),
                 id="analyst",
             )
 
             # Daily digest: write + distribute
-            async def _daily_digest():
-                await _send_to_agent(settings.writer_port, "generate_briefing")
-                await _send_to_agent(settings.distributor_port, "distribute_briefing")
-
             await scheduler.add_schedule(
-                lambda: asyncio.create_task(_daily_digest()),
+                _job_daily_digest,
                 CronTrigger(hour=settings.distribute_hour, minute=settings.distribute_minute),
                 id="daily_digest",
             )

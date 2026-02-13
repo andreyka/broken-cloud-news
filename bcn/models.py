@@ -17,7 +17,7 @@ class NewsItem(BaseModel):
     raw_data: Optional[dict] = None
     full_content: Optional[str] = None
     summary: Optional[str] = None
-    juiciness_score: Optional[int] = None
+    relevance_score: Optional[int] = None
     ai_tags: Optional[list[str]] = None
     image_prompt: Optional[str] = None
     image_url: Optional[str] = None
@@ -26,7 +26,7 @@ class NewsItem(BaseModel):
 
 class AnalysisResult(BaseModel):
     summary: str
-    juiciness_score: int = Field(ge=1, le=10)
+    relevance_score: int = Field(ge=1, le=10)
     tags: list[str] = Field(default_factory=list)
     image_prompt: str = "cloud security concept art"
 
