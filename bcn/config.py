@@ -1,11 +1,24 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="BCN_")
 
+    @field_validator(
+        "twitter_handles", "rss_feeds", "ghsa_severities",
+        "ghsa_keywords", "email_recipients",
+        mode="before",
+    )
+    @classmethod
+    def _empty_str_to_list(cls, v):
+        """Allow empty env-var strings to fall back to the field default."""
+        if isinstance(v, str) and v.strip() == "":
+            return []
+        return v
+
     # Database
-    database_url: str = "postgresql://n8n:cloud_security_agent@localhost:5432/broken_cloud_news"
+    database_url: str = "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
 
     # LLM (Qwen on DGX Spark)
     llm_base_url: str = "http://host.docker.internal:8000/v1"
@@ -71,10 +84,13 @@ class Settings(BaseSettings):
     distribute_hour: int = 9
     distribute_minute: int = 0
 
+    # Browserless (headless Chromium for content scraping)
+    browserless_url: str = "http://browserless:3000"
+
     # Scraping
     scrape_content_limit: int = 10000
     scrape_min_content_length: int = 100
 
     # Analysis
-    juiciness_threshold: int = 7
+    relevance_threshold: int = 7
     briefing_lookback_hours: int = 24

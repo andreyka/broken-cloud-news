@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS news_items (
 
     -- analysis results
     summary TEXT,
-    juiciness_score INTEGER,
+    relevance_score INTEGER,
     ai_tags JSONB,
     image_prompt TEXT,
     image_url TEXT,

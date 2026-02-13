@@ -51,7 +51,7 @@ SKILLS = [
     ),
 ]
 
-# From n8n/collectors/ghsa_collector.json
+# GHSA GraphQL query
 GHSA_QUERY = """
 query {
   securityAdvisories(first: 100, orderBy: {field: PUBLISHED_AT, direction: DESC}) {
@@ -76,6 +76,7 @@ class CollectorExecutor(AgentExecutor):
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
             min_content_length=settings.scrape_min_content_length,
+            browserless_url=settings.browserless_url,
         )
         self._http = httpx.AsyncClient(timeout=60)
 
@@ -114,7 +115,7 @@ class CollectorExecutor(AgentExecutor):
         return tuple(r if isinstance(r, int) else 0 for r in results)
 
     # ------------------------------------------------------------------
-    # GHSA - ported from n8n/collectors/ghsa_collector.json
+    # GHSA collection
     # ------------------------------------------------------------------
     async def _collect_ghsa(self) -> int:
         if not self.settings.github_token:
@@ -153,12 +154,17 @@ class CollectorExecutor(AgentExecutor):
             if not any(p.search(text) for p in keyword_patterns):
                 continue
 
-            # Prefer external link (not github.com or nist.gov)
+            # Collect all reference URLs
             refs = [r["url"] for r in item.get("references", [])]
+
+            # Prefer external link (not github.com or nist.gov) for the main URL
             url = next(
                 (u for u in refs if "github.com" not in u and "nist.gov" not in u),
                 item.get("permalink", ""),
             )
+
+            # Build enriched content from advisory + scraped references
+            full_content = await self._enrich_ghsa_content(item, refs)
 
             inserted = await insert_news_item(
                 source_type="ghsa",
@@ -167,14 +173,68 @@ class CollectorExecutor(AgentExecutor):
                 title=item.get("summary"),
                 published_at=item.get("publishedAt", datetime.now(timezone.utc).isoformat()),
                 raw_data=item,
+                full_content=full_content or None,
             )
             if inserted:
                 count += 1
 
         return count
 
+    async def _enrich_ghsa_content(self, item: dict, refs: list[str]) -> str:
+        """Build enriched content for a GHSA item by scraping reference links.
+
+        Prioritizes blog posts, GitHub repo descriptions, and PoC repos.
+        Falls back to the advisory description if scraping yields nothing.
+        """
+        parts = []
+
+        # Start with the advisory description (always available)
+        description = item.get("description", "")
+        if description:
+            parts.append(f"[Advisory Description]\n{description}")
+
+        # Identify CVE IDs for context
+        cves = [
+            ident["value"]
+            for ident in item.get("identifiers", [])
+            if ident.get("type") == "CVE"
+        ]
+        if cves:
+            parts.append(f"[CVE IDs] {', '.join(cves)}")
+
+        parts.append(f"[Severity] {item.get('severity', 'UNKNOWN')}")
+
+        # Skip known non-content domains when scraping
+        skip_domains = {"nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com/errata"}
+
+        # Prioritize reference URLs: GitHub repos/PRs first, then blog posts
+        github_refs = []
+        other_refs = []
+        for ref_url in refs:
+            if any(d in ref_url for d in skip_domains):
+                continue
+            if "github.com" in ref_url:
+                github_refs.append(ref_url)
+            else:
+                other_refs.append(ref_url)
+
+        # Scrape: up to 2 GitHub refs + 1 external blog/write-up
+        scrape_targets = github_refs[:2] + other_refs[:1]
+
+        for ref_url in scrape_targets:
+            try:
+                scraped = await self.scraper.scrape(ref_url)
+                if scraped and len(scraped) >= self.scraper.min_content_length:
+                    label = "GitHub" if "github.com" in ref_url else "Blog/Write-up"
+                    parts.append(f"[{label}: {ref_url}]\n{scraped[:3000]}")
+                    logger.info("GHSA enrichment: scraped %s (%d chars)", ref_url, len(scraped))
+            except Exception as exc:
+                logger.warning("GHSA enrichment: failed to scrape %s: %s", ref_url, exc)
+
+        return "\n\n---\n\n".join(parts) if parts else ""
+
     # ------------------------------------------------------------------
-    # RSS - ported from n8n/collectors/rss_cisa.json
+    # RSS collection
     # ------------------------------------------------------------------
     async def _collect_rss(self) -> int:
         count = 0
@@ -219,7 +279,7 @@ class CollectorExecutor(AgentExecutor):
         return count
 
     # ------------------------------------------------------------------
-    # Twitter/X - ported from n8n/collectors/x_apify.json
+    # Twitter/X collection via Apify
     # ------------------------------------------------------------------
     async def _collect_twitter(self) -> int:
         if not self.settings.apify_token:
@@ -243,7 +303,7 @@ class CollectorExecutor(AgentExecutor):
 
         count = 0
         for tweet in tweets:
-            # Fallback chains from n8n/collectors/x_apify.json
+            # Fallback chains for tweet field extraction
             source_id = str(tweet.get("id") or tweet.get("conversationId") or "")
             if not source_id:
                 continue
