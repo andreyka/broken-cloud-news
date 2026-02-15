@@ -217,7 +217,7 @@ def analyze() -> None:
                 analyzed += 1
                 click.echo(f"  [{result.relevance_score}/10] {item['source_type']}: {title[:60]}")
             except Exception as exc:
-                click.echo(f"  [ERROR] {item['id']}: {exc}", err=True)
+                click.echo(f"  [ERROR] {item['id']}: {type(exc).__name__}: {exc or repr(exc)}", err=True)
 
         click.echo(f"\nAnalyzed {analyzed}/{len(items)} items")
         await llm.close()
@@ -457,6 +457,7 @@ def run() -> None:
                 id="daily_digest",
             )
 
+            await scheduler.start_in_background()
             click.echo("Scheduler started. Press Ctrl+C to stop.")
             await asyncio.gather(*tasks)
 

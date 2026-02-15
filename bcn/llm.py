@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -73,19 +74,32 @@ class LLMClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def chat(self, system_prompt: str, user_content: str) -> str:
-        response = await self._client.post(
-            f"{self.base_url}/chat/completions",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-            },
-        )
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+    async def chat(self, system_prompt: str, user_content: str, retries: int = 3) -> str:
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                response = await self._client.post(
+                    f"{self.base_url}/chat/completions",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_content},
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                return response.json()["choices"][0]["message"]["content"]
+            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+                last_exc = exc
+                if attempt < retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "LLM request failed (attempt %d/%d, %s), retrying in %ds",
+                        attempt, retries, type(exc).__name__, wait,
+                    )
+                    await asyncio.sleep(wait)
+        raise last_exc
 
     async def analyze_item(self, title: str, content: str) -> AnalysisResult:
         user_msg = f"Title: {title}\n\nContent: {content}"
