@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+import os
+
+from bcn.config import Settings
+
+
+class TestSettings:
+    def test_defaults(self):
+        s = Settings()
+        assert s.llm_timeout == 120
+        assert s.ghsa_severities == ["CRITICAL", "HIGH"]
+        assert s.collector_port == 9001
+
+    def test_env_override(self, monkeypatch):
+        monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")
+        monkeypatch.setenv("BCN_COLLECTOR_PORT", "5000")
+        s = Settings()
+        assert s.llm_timeout == 60
+        assert s.collector_port == 5000
+
+    def test_empty_string_list_fields(self, monkeypatch):
+        """Empty env strings should fall back to default lists, not become ['']."""
+        monkeypatch.setenv("BCN_TWITTER_HANDLES", "")
+        monkeypatch.setenv("BCN_RSS_FEEDS", "")
+        monkeypatch.setenv("BCN_GHSA_KEYWORDS", "")
+        s = Settings()
+        assert s.twitter_handles == []
+        assert s.rss_feeds == []
+        assert s.ghsa_keywords == []
