@@ -18,8 +18,8 @@ def build_agent_card(
         description=description,
         url=url,
         version="2.0.0",
-        defaultInputModes=["text"],
-        defaultOutputModes=["text"],
+        default_input_modes=["text"],
+        default_output_modes=["text"],
         capabilities=AgentCapabilities(),
         skills=skills,
     )
