@@ -315,7 +315,7 @@ cmd_setup() {
     header "Database Configuration"
     info "The default PostgreSQL credentials work with docker-compose out of the box."
     prompt_value BCN_DATABASE_URL "PostgreSQL connection URL" \
-        "postgresql://broken_cloud_news_agent_db:cloud_security_agent@postgres:5432/broken_cloud_news"
+        "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
     DB_URL="$REPLY_VALUE"
 
     header "LLM Configuration (Qwen on DGX Spark)"
