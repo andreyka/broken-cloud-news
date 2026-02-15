@@ -27,21 +27,19 @@ _settings: Settings | None = None
 async def _send_to_agent(port: int, skill: str) -> str:
     """Send a message to a local A2A agent and return the response text."""
     from a2a.client import A2AClient
-    from a2a.types import MessageSendParams, SendMessageRequest
+    from a2a.types import MessageSendParams, SendMessageRequest, Message, TextPart
 
     async with httpx.AsyncClient() as http_client:
-        client = await A2AClient.get_client_from_agent_card_url(
-            http_client, f"http://localhost:{port}"
-        )
+        client = A2AClient(http_client, url=f"http://localhost:{port}")
 
-        payload: dict[str, Any] = {
-            "message": {
-                "role": "user",
-                "parts": [{"type": "text", "text": skill}],
-                "messageId": uuid4().hex,
-            },
-        }
-        request = SendMessageRequest(params=MessageSendParams(**payload))
+        message = Message(
+            role="user",
+            parts=[TextPart(text=skill)],
+            message_id=uuid4().hex,
+        )
+        request = SendMessageRequest(
+            params=MessageSendParams(message=message),
+        )
         response = await client.send_message(request)
 
         # Extract text from response
@@ -87,9 +85,9 @@ async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> s
     await get_pool(settings)
     executor = executor_cls(settings)
 
-    # Simple direct invocation - create a mock context and capture result
+    # Simple direct invocation - create a minimal context and capture result
     from a2a.server.agent_execution import RequestContext
-    from a2a.server.events import EventQueue
+    from a2a.types import MessageSendParams, Message, TextPart
 
     class ResultCapture:
         def __init__(self):
@@ -98,7 +96,6 @@ async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> s
 
         def enqueue_event(self, event):
             self._events.append(event)
-            # Try to extract text from the event
             try:
                 parts = event.parts if hasattr(event, "parts") else []
                 for part in parts:
@@ -109,22 +106,15 @@ async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> s
 
     capture = ResultCapture()
 
-    # Build a minimal context
-    msg_obj = {
-        "role": "user",
-        "parts": [{"kind": "text", "text": skill}],
-        "messageId": uuid4().hex,
-    }
+    message = Message(
+        role="user",
+        parts=[TextPart(text=skill)],
+        message_id=uuid4().hex,
+    )
+    params = MessageSendParams(message=message)
+    context = RequestContext(request=params)
 
-    try:
-        await executor.execute(
-            context=RequestContext.build(None, msg_obj),
-            event_queue=capture,
-        )
-    except TypeError:
-        # If RequestContext.build doesn't exist, try alternative construction
-        # Fall back to the A2A server approach
-        pass
+    await executor.execute(context=context, event_queue=capture)
 
     await close_pool()
     return "\n".join(capture.messages) if capture.messages else "Done"
