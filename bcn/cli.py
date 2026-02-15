@@ -38,6 +38,7 @@ async def _send_to_agent(port: int, skill: str) -> str:
             message_id=uuid4().hex,
         )
         request = SendMessageRequest(
+            id=uuid4().hex,
             params=MessageSendParams(message=message),
         )
         response = await client.send_message(request)
