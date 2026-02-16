@@ -1,3 +1,5 @@
+"""CLI entry-point and daemon mode for Broken Cloud News."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,15 +19,24 @@ logging.basicConfig(
 logger = logging.getLogger("bcn")
 
 
-# Module-level settings reference (set by the `run` command for scheduler jobs)
+# Module-level settings reference (set by the ``run`` command for scheduler jobs).
 _settings: Settings | None = None
 
 # ---------------------------------------------------------------------------
 # A2A client helpers
 # ---------------------------------------------------------------------------
 
+
 async def _send_to_agent(port: int, skill: str) -> str:
-    """Send a message to a local A2A agent and return the response text."""
+    """Send a JSON-RPC message to a local A2A agent and return its reply.
+
+    Args:
+        port: TCP port the target agent is listening on.
+        skill: The skill/command string to send.
+
+    Returns:
+        The text content extracted from the agent's response.
+    """
     from a2a.client import A2AClient
     from a2a.types import MessageSendParams, SendMessageRequest, Message, TextPart
 
@@ -62,40 +73,68 @@ async def _send_to_agent(port: int, skill: str) -> str:
 # Scheduler job functions (must be top-level for APScheduler 4.x serialization)
 # ---------------------------------------------------------------------------
 
+
 async def _job_collect_ghsa() -> None:
+    """Scheduled job: trigger GHSA collection."""
     await _send_to_agent(_settings.collector_port, "collect_ghsa")
 
+
 async def _job_collect_rss() -> None:
+    """Scheduled job: trigger RSS collection."""
     await _send_to_agent(_settings.collector_port, "collect_rss")
 
+
 async def _job_collect_twitter() -> None:
+    """Scheduled job: trigger Twitter/X collection."""
     await _send_to_agent(_settings.collector_port, "collect_twitter")
 
+
 async def _job_analyze() -> None:
+    """Scheduled job: trigger item analysis."""
     await _send_to_agent(_settings.analyst_port, "analyze_new_items")
 
+
 async def _job_daily_digest() -> None:
+    """Scheduled job: generate and distribute a daily briefing."""
     await _send_to_agent(_settings.writer_port, "generate_briefing")
     await _send_to_agent(_settings.distributor_port, "distribute_briefing")
 
 
-async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> str:
-    """Run an agent executor directly without the A2A server (for CLI commands)."""
+async def _run_agent_directly(
+    executor_cls: type,
+    settings: Settings,
+    skill: str,
+) -> str:
+    """Run an agent executor directly without the A2A server.
+
+    Used by CLI commands to invoke agent logic in-process rather than
+    through the JSON-RPC transport.
+
+    Args:
+        executor_cls: The ``AgentExecutor`` subclass to instantiate.
+        settings: Application settings.
+        skill: The skill/command string to pass to the executor.
+
+    Returns:
+        Concatenated text output from the executor.
+    """
     from bcn.db import get_pool, close_pool
 
     await get_pool(settings)
     executor = executor_cls(settings)
 
-    # Simple direct invocation - create a minimal context and capture result
     from a2a.server.agent_execution import RequestContext
     from a2a.types import MessageSendParams, Message, TextPart
 
     class ResultCapture:
-        def __init__(self):
-            self.messages: list[str] = []
-            self._events: list = []
+        """Lightweight event-queue stand-in that captures agent text output."""
 
-        def enqueue_event(self, event):
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+            self._events: list[Any] = []
+
+        def enqueue_event(self, event: Any) -> None:
+            """Capture text parts from an agent event."""
             self._events.append(event)
             try:
                 parts = event.parts if hasattr(event, "parts") else []
@@ -128,15 +167,19 @@ async def _run_agent_directly(executor_cls, settings: Settings, skill: str) -> s
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 def cli(verbose: bool) -> None:
-    """Broken Cloud News - Cloud Security Briefing Agent"""
+    """Broken Cloud News - Cloud Security Briefing Agent."""
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
 
 @cli.command()
-@click.option("--source", "-s", type=click.Choice(["all", "ghsa", "rss", "twitter"]), default="all")
+@click.option(
+    "--source", "-s",
+    type=click.Choice(["all", "ghsa", "rss", "twitter"]),
+    default="all",
+)
 def collect(source: str) -> None:
-    """Run collector (all sources or a specific one)."""
+    """Run collector for all sources or a specific one."""
     settings = Settings()
 
     async def _run():
@@ -166,7 +209,7 @@ def collect(source: str) -> None:
 
 @cli.command()
 def analyze() -> None:
-    """Analyze unprocessed news items."""
+    """Score and summarize unprocessed news items via the LLM."""
     settings = Settings()
 
     async def _run():
@@ -220,7 +263,7 @@ def analyze() -> None:
 
 @cli.command()
 def write() -> None:
-    """Generate a briefing from analyzed items."""
+    """Generate a briefing with cover image from top-scored items."""
     settings = Settings()
 
     async def _run():
@@ -278,7 +321,7 @@ def write() -> None:
 
 @cli.command()
 def distribute() -> None:
-    """Distribute the latest briefing to configured channels."""
+    """Send the latest briefing to configured distribution channels."""
     settings = Settings()
 
     async def _run():
@@ -295,7 +338,7 @@ def distribute() -> None:
             await close_pool()
             return
 
-        channels: list[tuple[str, object]] = []
+        channels: list[tuple[str, TelegramDistributor | EmailDistributor | SlackDistributor]] = []
         if settings.telegram_bot_token and settings.telegram_chat_id:
             channels.append(("telegram", TelegramDistributor(settings.telegram_bot_token, settings.telegram_chat_id)))
         if settings.smtp_host and settings.email_recipients:
@@ -344,7 +387,7 @@ def distribute() -> None:
 
 @cli.command()
 def pipeline() -> None:
-    """Run full pipeline: collect -> analyze -> write -> distribute."""
+    """Run the full pipeline: collect, analyze, write, distribute."""
     settings = Settings()
     ctx = click.get_current_context()
 
@@ -361,7 +404,7 @@ def pipeline() -> None:
 
 @cli.command()
 def run() -> None:
-    """Start daemon mode: all A2A agents + scheduler."""
+    """Start daemon mode with all A2A agents and the scheduler."""
     global _settings
     settings = Settings()
     _settings = settings
