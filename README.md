@@ -1,16 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Broken Cloud News" width="200"/>
-</p>
-
-<h1 align="center">Broken Cloud News</h1>
-
-<p align="center">
-  AI-powered cloud security briefing agent built on the <strong>Google A2A protocol</strong>
-</p>
-
-<p align="center">
-  Collects, analyzes, writes, and distributes daily cloud security briefings<br/>
-  using local LLM inference on <strong>NVIDIA DGX Spark</strong> (Qwen + Flux)
+  <img src="assets/logo.png" alt="Broken Cloud News" width="400"/>
 </p>
 
 ---
