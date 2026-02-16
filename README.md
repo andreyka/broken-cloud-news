@@ -1,58 +1,119 @@
-# Broken Cloud News Agent v2
+<p align="center">
+  <img src="assets/logo.png" alt="Broken Cloud News" width="200"/>
+</p>
 
-A Python-based cloud security briefing agent using the **Google A2A (Agent-to-Agent) protocol**. Collects, analyzes, and distributes security news via local AI inference on **DGX Spark** (Qwen LLM + ComfyUI Flux).
+<h1 align="center">Broken Cloud News</h1>
+
+<p align="center">
+  AI-powered cloud security briefing agent built on the <strong>Google A2A protocol</strong>
+</p>
+
+<p align="center">
+  Collects, analyzes, writes, and distributes daily cloud security briefings<br/>
+  using local LLM inference on <strong>NVIDIA DGX Spark</strong> (Qwen + Flux)
+</p>
+
+---
 
 ## Architecture
 
-Four A2A agents communicate via JSON-RPC, each running as an HTTP server:
+Four A2A agents work together, coordinated by an internal scheduler. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
 
-| Agent | Port | Role |
-|-------|------|------|
-| **Collector** | 9001 | GHSA, Twitter/X (X API), RSS (CISA + AWS) |
-| **Analyst** | 9002 | LLM scoring & summarization via Qwen |
-| **Writer** | 9003 | Briefing generation + Flux cover image |
-| **Distributor** | 9004 | Telegram, Email, Slack publishing |
+```mermaid
+flowchart TB
+    subgraph Sources["Data Sources"]
+        GHSA["GitHub Security\nAdvisories"]
+        RSS["RSS Feeds\n(CISA, AWS)"]
+        Twitter["Twitter/X\n(X API v2)"]
+    end
 
+    subgraph BCN["Broken Cloud News Agents"]
+        direction TB
+        Collector["Collector\n:9001"]
+        DB[("PostgreSQL\nnews_items\nbriefings")]
+        Analyst["Analyst\n:9002"]
+        Writer["Writer\n:9003"]
+        Distributor["Distributor\n:9004"]
+    end
+
+    subgraph AI["DGX Spark"]
+        Qwen["Qwen3-VL\n(vLLM :8000)"]
+        Flux["Flux.1-schnell\n(ComfyUI :8188)"]
+    end
+
+    subgraph Channels["Distribution"]
+        TG["Telegram\nChannel"]
+        Email["Email\n(SMTP)"]
+        Slack["Slack\n(Webhook)"]
+    end
+
+    GHSA --> Collector
+    RSS --> Collector
+    Twitter --> Collector
+    Collector -- "store items" --> DB
+    DB -- "unanalyzed items" --> Analyst
+    Analyst -- "score & summarize" --> Qwen
+    Qwen -- "analysis result" --> Analyst
+    Analyst -- "update scores/tags" --> DB
+    DB -- "top scored items" --> Writer
+    Writer -- "generate briefing" --> Qwen
+    Writer -- "generate cover" --> Flux
+    Qwen -- "briefing text" --> Writer
+    Flux -- "cover image" --> Writer
+    Writer -- "store briefing" --> DB
+    DB -- "latest briefing" --> Distributor
+    Distributor --> TG
+    Distributor -.-> Email
+    Distributor -.-> Slack
 ```
-GitHub/RSS/Twitter --> Collector --> PostgreSQL --> Analyst --> Writer --> Distributor
-                                     (news_items)   (Qwen LLM)  (Flux)   (TG/Email/Slack)
-```
+
+### Agent Details
+
+| Agent | Port | Trigger | Role |
+|-------|------|---------|------|
+| **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA + AWS), Twitter/X via API v2 |
+| **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
+| **Writer** | 9003 | Daily 9:00 | Generates briefing + Flux cover image from top items |
+| **Distributor** | 9004 | After Writer | Sends photo+caption to Telegram channel |
+
+All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The scheduler orchestrates the pipeline automatically in daemon mode.
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
+### Prerequisites
 - Python 3.12+
-- Docker & Docker Compose (for PostgreSQL)
-- DGX Spark with Qwen + ComfyUI deployed (see AI Infrastructure below)
+- Docker & Docker Compose
+- NVIDIA DGX / GPU server with Qwen + ComfyUI deployed (see [AI Infrastructure](#ai-infrastructure))
 
-### 2. Setup
+### Setup
 ```bash
-git clone https://github.com/broken-cloud-news/broken-cloud-news.git
+git clone https://github.com/andreyka/broken-cloud-news.git
 cd broken-cloud-news
 
 # Start PostgreSQL
-docker-compose up -d postgres
+docker compose up -d postgres
 
 # Install Python package
 pip install -e .
+playwright install chromium
 
 # Configure
 cp .env.example .env
 # Edit .env with your tokens and endpoints
 ```
 
-### 3. Run
+### Run
 
-**Single commands:**
+**CLI commands:**
 ```bash
 bcn collect              # Collect from all sources
 bcn collect -s ghsa      # Collect GHSA only
 bcn analyze              # Analyze new items with LLM
 bcn write                # Generate briefing + cover image
 bcn distribute           # Send to configured channels
-bcn pipeline             # Full pipeline (collect -> analyze -> write -> distribute)
+bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
 ```
 
 **Daemon mode** (all agents + scheduler):
@@ -62,89 +123,8 @@ bcn run
 
 **Docker (full stack):**
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
-
----
-
-## AI Infrastructure (DGX Node)
-
-These components run on your NVIDIA DGX (or heavy GPU server) to provide offline inference.
-
-### Prerequisites
-*   NVIDIA Drivers & CUDA 12.x
-*   NVIDIA Container Toolkit installed and configured for Docker.
-
-### 1. Deploy Qwen3-VL (Visual Understanding)
-Runs as an OpenAI-compatible API using **vLLM**.
-
-```bash
-docker run --rm -it \
-    --gpus all \
-    --ipc=host \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
-    --shm-size=32g \
-    -p 8000:8000 \
-    -e HF_HOME=/root/.cache/huggingface \
-    -v ~/.cache/huggingface:/root/.cache/huggingface \
-    nvcr.io/nvidia/vllm:25.12.post1-py3 \
-    vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 \
-    --host 0.0.0.0 --port 8000 \
-    --trust-remote-code \
-    --dtype auto \
-    --gpu-memory-utilization 0.55 \
-    --max-model-len 16384 \
-    --limit-mm-per-prompt '{"image":2,"video":0}'
-```
-
-*   **Endpoint**: `http://<DGX_IP>:8000/v1`
-
-### 2. Deploy Flux.1-schnell (Image Generation)
-Runs **ComfyUI** with a custom-built Docker image.
-
-#### A. Build Custom Image
-```bash
-cat <<EOF > Dockerfile.comfyui
-FROM nvcr.io/nvidia/pytorch:25.09-py3
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends git libgl1 libglib2.0-0 && rm -rf /var/lib/apt/lists/*
-WORKDIR /opt
-RUN git clone https://github.com/comfyanonymous/ComfyUI.git
-WORKDIR /opt/ComfyUI
-RUN python -m pip install --upgrade pip
-RUN pip install torchsde
-RUN sed -i '/^torch/d;/^torchvision/d;/^torchaudio/d' requirements.txt
-RUN pip install -r requirements.txt
-EXPOSE 8188
-CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188"]
-EOF
-
-docker build -t comfyui:arm64-cuda -f Dockerfile.comfyui .
-```
-
-#### B. Prepare Models
-```bash
-mkdir -p ~/comfyui/models/checkpoints ~/comfyui/input ~/comfyui/output
-
-wget -O ~/comfyui/models/checkpoints/flux1-schnell.safetensors \
-  https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
-```
-
-#### C. Run Flux
-```bash
-docker run --rm -it \
-  --gpus all \
-  --ipc=host \
-  --ulimit memlock=-1 --ulimit stack=67108864 \
-  --shm-size=32g \
-  -p 8188:8188 \
-  -v ~/comfyui/models:/opt/ComfyUI/models \
-  -v ~/comfyui/input:/opt/ComfyUI/input \
-  -v ~/comfyui/output:/opt/ComfyUI/output \
-  comfyui:arm64-cuda
-```
-
-*   **Endpoint**: `http://<DGX_IP>:8188`
 
 ---
 
@@ -152,24 +132,71 @@ docker run --rm -it \
 
 All settings via environment variables with `BCN_` prefix. See `.env.example` for the full list.
 
-Key settings:
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BCN_DATABASE_URL` | `postgresql://...` | PostgreSQL connection string |
 | `BCN_LLM_BASE_URL` | `http://192.168.0.9:8000/v1` | Qwen API endpoint |
-| `BCN_COMFYUI_URL` | `http://192.168.0.9:8188` | ComfyUI endpoint |
+| `BCN_COMFYUI_URL` | `http://192.168.0.9:8188` | ComfyUI Flux endpoint |
 | `BCN_GITHUB_TOKEN` | - | GitHub API token for GHSA |
-| `BCN_TWITTER_BEARER_TOKEN` | - | X API bearer token for Twitter/X |
-| `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) for briefing |
+| `BCN_TWITTER_BEARER_TOKEN` | - | X API v2 bearer token |
+| `BCN_TELEGRAM_BOT_TOKEN` | - | Telegram bot token |
+| `BCN_TELEGRAM_CHAT_ID` | - | Telegram channel chat ID |
+| `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) to include in briefing |
+
+---
+
+## AI Infrastructure (DGX Spark)
+
+### 1. Qwen3-VL (LLM Inference)
+
+Runs as an OpenAI-compatible API via **vLLM**:
+
+```bash
+docker run --rm -it \
+    --gpus all \
+    --ipc=host \
+    --shm-size=32g \
+    -p 8000:8000 \
+    -v ~/.cache/huggingface:/root/.cache/huggingface \
+    nvcr.io/nvidia/vllm:25.12.post1-py3 \
+    vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 \
+    --host 0.0.0.0 --port 8000 \
+    --trust-remote-code \
+    --dtype auto \
+    --gpu-memory-utilization 0.55 \
+    --max-model-len 16384
+```
+
+### 2. Flux.1-schnell (Cover Image Generation)
+
+Runs **ComfyUI** with Flux model:
+
+```bash
+# Build image
+docker build -t comfyui:arm64-cuda -f Dockerfile.comfyui .
+
+# Download model
+mkdir -p ~/comfyui/models/checkpoints
+wget -O ~/comfyui/models/checkpoints/flux1-schnell.safetensors \
+  https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
+
+# Run
+docker run --rm -it \
+  --gpus all --shm-size=32g \
+  -p 8188:8188 \
+  -v ~/comfyui/models:/opt/ComfyUI/models \
+  -v ~/comfyui/output:/opt/ComfyUI/output \
+  comfyui:arm64-cuda
+```
 
 ---
 
 ## A2A Protocol
 
-Each agent exposes a standard A2A interface:
+Each agent exposes a standard Google A2A interface:
 - Agent Card at `GET /.well-known/agent.json`
 - Message handling via JSON-RPC
 
-Agents can be discovered and invoked by any A2A-compatible client:
 ```python
 from a2a.client import A2AClient
 import httpx
@@ -186,21 +213,23 @@ async with httpx.AsyncClient() as http:
 ## Project Structure
 ```
 bcn/
-  cli.py              CLI commands + daemon mode
+  cli.py              CLI commands + daemon scheduler
   config.py           Pydantic Settings (env vars)
   db.py               asyncpg database layer
   models.py           Pydantic data models
-  llm.py              Qwen LLM client (OpenAI-compatible)
-  comfyui.py          ComfyUI Flux client
+  llm.py              Qwen LLM client (analysis + briefing)
+  comfyui.py          ComfyUI Flux client (cover images)
   scraper.py          Playwright headless Chromium scraper
   agents/
     base.py           A2A agent boilerplate
-    collector.py      Data collection (GHSA, RSS, Twitter)
-    analyst.py        LLM analysis + scoring
+    collector.py      Data collection (GHSA, RSS, Twitter/X)
+    analyst.py        LLM relevance scoring + summarization
     writer.py         Briefing + cover image generation
     distributor.py    Multi-channel distribution
   distributors/
-    telegram.py       Telegram Bot API
+    telegram.py       Telegram Bot API (photo + caption)
     email.py          SMTP email
     slack.py          Slack webhook
+assets/
+  logo.png            Project logo
 ```
