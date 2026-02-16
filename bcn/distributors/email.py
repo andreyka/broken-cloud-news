@@ -1,3 +1,5 @@
+"""Email distribution channel using aiosmtplib."""
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 class EmailDistributor:
+    """Sends briefings as HTML emails via SMTP.
+
+    Attributes:
+        smtp_host: SMTP server hostname.
+        smtp_port: SMTP server port (typically 587 for STARTTLS).
+        smtp_user: SMTP authentication username.
+        smtp_password: SMTP authentication password.
+        from_addr: Sender email address.
+        recipients: List of recipient email addresses.
+    """
+
     def __init__(
         self,
         smtp_host: str,
@@ -18,16 +31,24 @@ class EmailDistributor:
         smtp_password: str,
         from_addr: str,
         recipients: list[str],
-    ):
-        self.smtp_host = smtp_host
-        self.smtp_port = smtp_port
-        self.smtp_user = smtp_user
-        self.smtp_password = smtp_password
-        self.from_addr = from_addr
-        self.recipients = recipients
+    ) -> None:
+        self.smtp_host: str = smtp_host
+        self.smtp_port: int = smtp_port
+        self.smtp_user: str = smtp_user
+        self.smtp_password: str = smtp_password
+        self.from_addr: str = from_addr
+        self.recipients: list[str] = recipients
 
     async def send(self, subject: str, html_body: str) -> bool:
-        """Send HTML email to all configured recipients."""
+        """Send an HTML email to all configured recipients.
+
+        Args:
+            subject: Email subject line.
+            html_body: HTML content for the email body.
+
+        Returns:
+            ``True`` if the email was sent successfully.
+        """
         if not self.recipients:
             logger.warning("No email recipients configured")
             return False

@@ -1,3 +1,5 @@
+"""Collector agent: fetches news from GHSA, RSS feeds, and Twitter/X."""
+
 from __future__ import annotations
 
 import asyncio
@@ -69,9 +71,15 @@ query {
 }
 """
 
+_SKIP_SCRAPE_DOMAINS = frozenset({
+    "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com/errata",
+})
+
 
 class CollectorExecutor(AgentExecutor):
-    def __init__(self, settings: Settings):
+    """A2A agent that collects cloud security news from multiple sources."""
+
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
@@ -80,7 +88,12 @@ class CollectorExecutor(AgentExecutor):
         self._http = httpx.AsyncClient(timeout=60)
 
     @override
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Dispatch to the appropriate collector based on the user message."""
         msg = context.get_user_input() or "collect_all"
         text = msg.lower()
 
@@ -101,10 +114,16 @@ class CollectorExecutor(AgentExecutor):
         event_queue.enqueue_event(new_agent_text_message(result))
 
     @override
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise Exception("cancel not supported")
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Cancel is not supported."""
+        raise NotImplementedError("cancel not supported")
 
     async def _collect_all(self) -> tuple[int, int, int]:
+        """Run all collectors concurrently and return per-source counts."""
         results = await asyncio.gather(
             self._collect_ghsa(),
             self._collect_rss(),
@@ -116,7 +135,13 @@ class CollectorExecutor(AgentExecutor):
     # ------------------------------------------------------------------
     # GHSA collection
     # ------------------------------------------------------------------
+
     async def _collect_ghsa(self) -> int:
+        """Fetch GitHub Security Advisories matching cloud keywords.
+
+        Returns:
+            Number of newly inserted items.
+        """
         if not self.settings.github_token:
             logger.warning("No GitHub token configured, skipping GHSA collection")
             return 0
@@ -133,7 +158,7 @@ class CollectorExecutor(AgentExecutor):
         resp.raise_for_status()
         data = resp.json()
 
-        nodes = (
+        nodes: list[dict] = (
             data.get("data", {})
             .get("securityAdvisories", {})
             .get("nodes", [])
@@ -153,16 +178,13 @@ class CollectorExecutor(AgentExecutor):
             if not any(p.search(text) for p in keyword_patterns):
                 continue
 
-            # Collect all reference URLs
             refs = [r["url"] for r in item.get("references", [])]
 
-            # Prefer external link (not github.com or nist.gov) for the main URL
             url = next(
                 (u for u in refs if "github.com" not in u and "nist.gov" not in u),
                 item.get("permalink", ""),
             )
 
-            # Build enriched content from advisory + scraped references
             full_content = await self._enrich_ghsa_content(item, refs)
 
             inserted = await insert_news_item(
@@ -170,7 +192,9 @@ class CollectorExecutor(AgentExecutor):
                 source_id=item["ghsaId"],
                 url=url,
                 title=item.get("summary"),
-                published_at=item.get("publishedAt", datetime.now(timezone.utc).isoformat()),
+                published_at=item.get(
+                    "publishedAt", datetime.now(timezone.utc).isoformat()
+                ),
                 raw_data=item,
                 full_content=full_content or None,
             )
@@ -179,20 +203,29 @@ class CollectorExecutor(AgentExecutor):
 
         return count
 
-    async def _enrich_ghsa_content(self, item: dict, refs: list[str]) -> str:
+    async def _enrich_ghsa_content(
+        self,
+        item: dict,
+        refs: list[str],
+    ) -> str:
         """Build enriched content for a GHSA item by scraping reference links.
 
         Prioritizes blog posts, GitHub repo descriptions, and PoC repos.
         Falls back to the advisory description if scraping yields nothing.
-        """
-        parts = []
 
-        # Start with the advisory description (always available)
+        Args:
+            item: The raw GHSA advisory node.
+            refs: Reference URLs from the advisory.
+
+        Returns:
+            Concatenated content sections separated by ``---``.
+        """
+        parts: list[str] = []
+
         description = item.get("description", "")
         if description:
             parts.append(f"[Advisory Description]\n{description}")
 
-        # Identify CVE IDs for context
         cves = [
             ident["value"]
             for ident in item.get("identifiers", [])
@@ -203,21 +236,16 @@ class CollectorExecutor(AgentExecutor):
 
         parts.append(f"[Severity] {item.get('severity', 'UNKNOWN')}")
 
-        # Skip known non-content domains when scraping
-        skip_domains = {"nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com/errata"}
-
-        # Prioritize reference URLs: GitHub repos/PRs first, then blog posts
-        github_refs = []
-        other_refs = []
+        github_refs: list[str] = []
+        other_refs: list[str] = []
         for ref_url in refs:
-            if any(d in ref_url for d in skip_domains):
+            if any(d in ref_url for d in _SKIP_SCRAPE_DOMAINS):
                 continue
             if "github.com" in ref_url:
                 github_refs.append(ref_url)
             else:
                 other_refs.append(ref_url)
 
-        # Scrape: up to 2 GitHub refs + 1 external blog/write-up
         scrape_targets = github_refs[:2] + other_refs[:1]
 
         for ref_url in scrape_targets:
@@ -226,16 +254,26 @@ class CollectorExecutor(AgentExecutor):
                 if scraped and len(scraped) >= self.scraper.min_content_length:
                     label = "GitHub" if "github.com" in ref_url else "Blog/Write-up"
                     parts.append(f"[{label}: {ref_url}]\n{scraped[:3000]}")
-                    logger.info("GHSA enrichment: scraped %s (%d chars)", ref_url, len(scraped))
+                    logger.info(
+                        "GHSA enrichment: scraped %s (%d chars)", ref_url, len(scraped)
+                    )
             except Exception as exc:
-                logger.warning("GHSA enrichment: failed to scrape %s: %s", ref_url, exc)
+                logger.warning(
+                    "GHSA enrichment: failed to scrape %s: %s", ref_url, exc
+                )
 
         return "\n\n---\n\n".join(parts) if parts else ""
 
     # ------------------------------------------------------------------
     # RSS collection
     # ------------------------------------------------------------------
+
     async def _collect_rss(self) -> int:
+        """Fetch items from configured RSS feeds.
+
+        Returns:
+            Number of newly inserted items.
+        """
         count = 0
         for feed_url in self.settings.rss_feeds:
             try:
@@ -250,9 +288,11 @@ class CollectorExecutor(AgentExecutor):
                 source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
-                published = getattr(entry, "published", None) or datetime.now(timezone.utc).isoformat()
+                published = (
+                    getattr(entry, "published", None)
+                    or datetime.now(timezone.utc).isoformat()
+                )
 
-                # Scrape full content for RSS items
                 full_content = ""
                 if url:
                     full_content = await self.scraper.scrape(url)
@@ -280,16 +320,22 @@ class CollectorExecutor(AgentExecutor):
     # ------------------------------------------------------------------
     # Twitter/X collection via X API v2
     # ------------------------------------------------------------------
+
     async def _collect_twitter(self) -> int:
+        """Fetch recent tweets from configured handles via X API v2.
+
+        Returns:
+            Number of newly inserted items.
+        """
         if not self.settings.twitter_bearer_token:
-            logger.warning("No X API bearer token configured, skipping Twitter collection")
+            logger.warning(
+                "No X API bearer token configured, skipping Twitter collection"
+            )
             return 0
 
-        # Build search query: (from:user1 OR from:user2 OR ...)
         from_clauses = [f"from:{h}" for h in self.settings.twitter_handles]
         query = f"({' OR '.join(from_clauses)}) -is:retweet"
 
-        # Resolve author_id -> username mapping for URL construction
         users_by_id: dict[str, str] = {}
 
         count = 0
@@ -309,14 +355,15 @@ class CollectorExecutor(AgentExecutor):
 
             resp = await self._http.get(
                 "https://api.x.com/2/tweets/search/recent",
-                headers={"Authorization": f"Bearer {self.settings.twitter_bearer_token}"},
+                headers={
+                    "Authorization": f"Bearer {self.settings.twitter_bearer_token}",
+                },
                 params=params,
                 timeout=30,
             )
             resp.raise_for_status()
             body = resp.json()
 
-            # Build author_id -> username lookup from includes
             for user in body.get("includes", {}).get("users", []):
                 users_by_id[user["id"]] = user["username"]
 
@@ -324,9 +371,15 @@ class CollectorExecutor(AgentExecutor):
                 source_id = tweet["id"]
                 author_id = tweet.get("author_id", "")
                 username = users_by_id.get(author_id, "")
-                url = f"https://x.com/{username}/status/{source_id}" if username else ""
+                url = (
+                    f"https://x.com/{username}/status/{source_id}"
+                    if username
+                    else ""
+                )
                 title = tweet.get("text", "")
-                published = tweet.get("created_at", datetime.now(timezone.utc).isoformat())
+                published = tweet.get(
+                    "created_at", datetime.now(timezone.utc).isoformat()
+                )
 
                 inserted = await insert_news_item(
                     source_type="twitter",

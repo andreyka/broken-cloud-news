@@ -1,5 +1,8 @@
+"""Analyst agent: scores and summarizes news items using the Qwen LLM."""
+
 from __future__ import annotations
 
+import json
 import logging
 
 from typing_extensions import override
@@ -28,7 +31,9 @@ SKILLS = [
 
 
 class AnalystExecutor(AgentExecutor):
-    def __init__(self, settings: Settings):
+    """A2A agent that scores and summarizes news items via the LLM."""
+
+    def __init__(self, settings: Settings) -> None:
         self.llm = LLMClient(
             base_url=settings.llm_base_url,
             model=settings.llm_model,
@@ -40,27 +45,35 @@ class AnalystExecutor(AgentExecutor):
         )
 
     @override
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Analyze all ``NEW`` items: scrape if needed, then score via LLM."""
         items = await get_new_items()
         if not items:
-            event_queue.enqueue_event(new_agent_text_message("No new items to analyze"))
+            event_queue.enqueue_event(
+                new_agent_text_message("No new items to analyze")
+            )
             return
 
         analyzed = 0
         for item in items:
-            title = item["title"] or ""
-            content = item["full_content"] or ""
+            title: str = item["title"] or ""
+            content: str = item["full_content"] or ""
 
-            # If no full content, attempt scraping based on source type
             if not content and item["url"]:
                 if item["source_type"] in ("rss", "ghsa"):
                     content = await self.scraper.scrape(item["url"])
 
-            # For GHSA items, enrich with raw_data description if content is thin
             if item["source_type"] == "ghsa":
-                import json as _json
                 try:
-                    raw = _json.loads(item["raw_data"]) if isinstance(item["raw_data"], str) else item["raw_data"]
+                    raw = (
+                        json.loads(item["raw_data"])
+                        if isinstance(item["raw_data"], str)
+                        else item["raw_data"]
+                    )
                     desc = raw.get("description", "")
                     severity = raw.get("severity", "")
                     if desc and (not content or len(content) < 200):
@@ -68,7 +81,6 @@ class AnalystExecutor(AgentExecutor):
                 except Exception:
                     pass
 
-            # For items without full_content, use title as content
             if not content:
                 content = title
 
@@ -79,7 +91,9 @@ class AnalystExecutor(AgentExecutor):
                     summary=result.summary,
                     relevance_score=result.relevance_score,
                     ai_tags=result.tags,
-                    full_content=content if content != title else item["full_content"],
+                    full_content=(
+                        content if content != title else item["full_content"]
+                    ),
                     image_prompt=result.image_prompt,
                 )
                 analyzed += 1
@@ -98,5 +112,10 @@ class AnalystExecutor(AgentExecutor):
         event_queue.enqueue_event(new_agent_text_message(msg))
 
     @override
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise Exception("cancel not supported")
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Cancel is not supported."""
+        raise NotImplementedError("cancel not supported")
