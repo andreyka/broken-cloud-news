@@ -1,3 +1,5 @@
+"""Slack distribution channel using incoming webhooks."""
+
 from __future__ import annotations
 
 import logging
@@ -8,11 +10,21 @@ logger = logging.getLogger(__name__)
 
 
 class SlackDistributor:
-    def __init__(self, webhook_url: str):
-        self.webhook_url = webhook_url
-        self._client = httpx.AsyncClient(timeout=30)
+    """Sends briefings to Slack via an incoming webhook.
+
+    Uses Block Kit to format messages with optional cover images and
+    automatic chunking for Slack's 3000-char section limit.
+
+    Attributes:
+        webhook_url: Slack incoming webhook URL.
+    """
+
+    def __init__(self, webhook_url: str) -> None:
+        self.webhook_url: str = webhook_url
+        self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
 
     async def close(self) -> None:
+        """Close the underlying HTTP client."""
         await self._client.aclose()
 
     async def send(
@@ -20,7 +32,15 @@ class SlackDistributor:
         markdown: str,
         cover_image_url: str | None = None,
     ) -> bool:
-        """Send briefing to Slack via webhook using Block Kit."""
+        """Send a briefing to Slack via the configured webhook.
+
+        Args:
+            markdown: Briefing text in Markdown format.
+            cover_image_url: Optional URL to a cover image.
+
+        Returns:
+            ``True`` if the webhook request succeeded.
+        """
         try:
             blocks = self._build_blocks(markdown, cover_image_url)
             resp = await self._client.post(
@@ -34,8 +54,23 @@ class SlackDistributor:
             return False
 
     @staticmethod
-    def _build_blocks(markdown: str, cover_image_url: str | None) -> list[dict]:
-        blocks: list[dict] = []
+    def _build_blocks(
+        markdown: str,
+        cover_image_url: str | None,
+    ) -> list[dict[str, object]]:
+        """Build Slack Block Kit blocks from briefing content.
+
+        Splits the Markdown text into 3000-char sections (Slack's limit)
+        and optionally prepends a cover image block.
+
+        Args:
+            markdown: Briefing text in Markdown format.
+            cover_image_url: Optional URL to a cover image.
+
+        Returns:
+            A list of Slack Block Kit block dicts.
+        """
+        blocks: list[dict[str, object]] = []
 
         if cover_image_url:
             blocks.append({
