@@ -38,8 +38,8 @@ SKILLS = [
     AgentSkill(
         id="collect_twitter",
         name="Collect Twitter",
-        description="Collect tweets from security researchers via Apify",
-        tags=["twitter", "apify"],
+        description="Collect tweets from security researchers via X API",
+        tags=["twitter", "x"],
         examples=["collect twitter"],
     ),
     AgentSkill(
@@ -279,48 +279,72 @@ class CollectorExecutor(AgentExecutor):
         return count
 
     # ------------------------------------------------------------------
-    # Twitter/X collection via Apify
+    # Twitter/X collection via X API v2
     # ------------------------------------------------------------------
     async def _collect_twitter(self) -> int:
-        if not self.settings.apify_token:
-            logger.warning("No Apify token configured, skipping Twitter collection")
+        if not self.settings.twitter_bearer_token:
+            logger.warning("No X API bearer token configured, skipping Twitter collection")
             return 0
 
-        resp = await self._http.post(
-            "https://api.apify.com/v2/acts/apidojo~twitter-scraper-lite/run-sync-get-dataset-items",
-            headers={
-                "Authorization": f"Bearer {self.settings.apify_token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "twitterHandles": self.settings.twitter_handles,
-                "maxItems": self.settings.twitter_max_items,
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        tweets = resp.json()
+        # Build search query: (from:user1 OR from:user2 OR ...)
+        from_clauses = [f"from:{h}" for h in self.settings.twitter_handles]
+        query = f"({' OR '.join(from_clauses)}) -is:retweet"
+
+        # Resolve author_id -> username mapping for URL construction
+        users_by_id: dict[str, str] = {}
 
         count = 0
-        for tweet in tweets:
-            # Fallback chains for tweet field extraction
-            source_id = str(tweet.get("id") or tweet.get("conversationId") or "")
-            if not source_id:
-                continue
+        next_token: str | None = None
+        remaining = self.settings.twitter_max_items * len(self.settings.twitter_handles)
 
-            url = tweet.get("url") or tweet.get("twitterUrl") or ""
-            title = tweet.get("text") or tweet.get("fullText") or ""
-            published = tweet.get("createdAt") or tweet.get("date") or datetime.now(timezone.utc).isoformat()
+        while remaining > 0:
+            params: dict[str, str | int] = {
+                "query": query,
+                "max_results": max(10, min(remaining, 100)),
+                "tweet.fields": "id,text,created_at,author_id",
+                "expansions": "author_id",
+                "user.fields": "username",
+            }
+            if next_token:
+                params["next_token"] = next_token
 
-            inserted = await insert_news_item(
-                source_type="twitter",
-                source_id=source_id,
-                url=url,
-                title=title,
-                published_at=published,
-                raw_data=tweet,
+            resp = await self._http.get(
+                "https://api.x.com/2/tweets/search/recent",
+                headers={"Authorization": f"Bearer {self.settings.twitter_bearer_token}"},
+                params=params,
+                timeout=30,
             )
-            if inserted:
-                count += 1
+            resp.raise_for_status()
+            body = resp.json()
+
+            # Build author_id -> username lookup from includes
+            for user in body.get("includes", {}).get("users", []):
+                users_by_id[user["id"]] = user["username"]
+
+            for tweet in body.get("data", []):
+                source_id = tweet["id"]
+                author_id = tweet.get("author_id", "")
+                username = users_by_id.get(author_id, "")
+                url = f"https://x.com/{username}/status/{source_id}" if username else ""
+                title = tweet.get("text", "")
+                published = tweet.get("created_at", datetime.now(timezone.utc).isoformat())
+
+                inserted = await insert_news_item(
+                    source_type="twitter",
+                    source_id=source_id,
+                    url=url,
+                    title=title,
+                    published_at=published,
+                    raw_data=tweet,
+                )
+                if inserted:
+                    count += 1
+
+            next_token = body.get("meta", {}).get("next_token")
+            result_count = body.get("meta", {}).get("result_count", 0)
+            remaining -= result_count
+
+            if not next_token or result_count == 0:
+                break
 
         return count
