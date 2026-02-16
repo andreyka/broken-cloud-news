@@ -1,3 +1,5 @@
+"""Qwen LLM client for item analysis and briefing generation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -45,7 +47,8 @@ ANALYZER_SYSTEM_PROMPT = (
 COVER_ART_SYSTEM_PROMPT = (
     "You are an AI art director for a security newsletter. Create a single, high-contrast, dramatic "
     "image prompt that abstractly represents the following security topics. Avoid text. Focus on visual "
-    "metaphors (e.g., cloud, cybersecurity, data centers, digital storms, cyber shields, cyber warfare, cyberpunk). Be creative. Return ONLY the prompt text."
+    "metaphors (e.g., cloud, cybersecurity, data centers, digital storms, cyber shields, cyber warfare, "
+    "cyberpunk). Be creative. Return ONLY the prompt text."
 )
 
 
@@ -87,17 +90,42 @@ BRIEFING_SYSTEM_PROMPT = (
     "Do NOT use score numbers or 'Source:' labels. Write for humans, not robots."
 )
 
+_SKIP_DOMAINS = frozenset({
+    "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
+})
+
 
 class LLMClient:
-    def __init__(self, base_url: str, model: str, timeout: int = 120):
+    """OpenAI-compatible chat client for the Qwen LLM on DGX Spark."""
+
+    def __init__(self, base_url: str, model: str, timeout: int = 120) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._client = httpx.AsyncClient(timeout=timeout)
 
     async def close(self) -> None:
+        """Release the underlying HTTP connection pool."""
         await self._client.aclose()
 
-    async def chat(self, system_prompt: str, user_content: str, retries: int = 3) -> str:
+    async def chat(
+        self,
+        system_prompt: str,
+        user_content: str,
+        retries: int = 3,
+    ) -> str:
+        """Send a chat-completion request with automatic retries.
+
+        Args:
+            system_prompt: The system message.
+            user_content: The user message.
+            retries: Maximum number of attempts.
+
+        Returns:
+            The assistant's reply text.
+
+        Raises:
+            httpx.TimeoutException: If all retries are exhausted.
+        """
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
@@ -122,14 +150,21 @@ class LLMClient:
                         attempt, retries, type(exc).__name__, wait,
                     )
                     await asyncio.sleep(wait)
-        raise last_exc
+        raise last_exc  # type: ignore[misc]
 
     async def analyze_item(self, title: str, content: str) -> AnalysisResult:
+        """Score and summarize a single news item.
+
+        Args:
+            title: The item title.
+            content: The item body text.
+
+        Returns:
+            An ``AnalysisResult`` with summary, score, tags, and image prompt.
+        """
         user_msg = f"Title: {title}\n\nContent: {content}"
         raw = await self.chat(ANALYZER_SYSTEM_PROMPT, user_msg)
 
-        # JSON parsing with markdown fence stripping + fallback
-        # Parse LLM JSON response with fallback
         try:
             cleaned = re.sub(r"```json\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned)
@@ -150,9 +185,16 @@ class LLMClient:
             )
 
     async def generate_briefing(self, items: list[dict]) -> str:
-        """Generate a creative editorial briefing from analyzed items."""
-        skip_domains = {"nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com"}
-        entries = []
+        """Generate a creative editorial briefing from analyzed items.
+
+        Args:
+            items: Database records with ``title``, ``url``, ``summary``,
+                ``relevance_score``, ``source_type``, and ``raw_data``.
+
+        Returns:
+            Markdown text of the complete briefing.
+        """
+        entries: list[str] = []
         for item in items:
             entry = (
                 f"- Title: {item['title']}\n"
@@ -161,8 +203,7 @@ class LLMClient:
                 f"  Score: {item['relevance_score']}/10\n"
                 f"  Source: {item['source_type']}"
             )
-            # Extract reference links from raw_data if available
-            ref_urls = []
+            ref_urls: list[str] = []
             raw = item.get("raw_data")
             if raw:
                 if isinstance(raw, str):
@@ -171,19 +212,21 @@ class LLMClient:
                     except (json.JSONDecodeError, TypeError):
                         raw = {}
                 refs = raw.get("references", [])
-                seen = set()
+                seen: set[str] = set()
                 for ref in refs:
                     url = ref.get("url", "") if isinstance(ref, dict) else str(ref)
                     if (
                         url
                         and url not in seen
-                        and not any(d in url for d in skip_domains)
+                        and not any(d in url for d in _SKIP_DOMAINS)
                         and url != item["url"]
                     ):
                         seen.add(url)
                         ref_urls.append(url)
             if ref_urls:
-                entry += "\n  Reference links:\n" + "\n".join(f"    - {u}" for u in ref_urls[:5])
+                entry += "\n  Reference links:\n" + "\n".join(
+                    f"    - {u}" for u in ref_urls[:5]
+                )
             else:
                 entry += "\n  Reference links: none"
             entries.append(entry)
@@ -191,7 +234,14 @@ class LLMClient:
         return await self.chat(BRIEFING_SYSTEM_PROMPT, user_msg)
 
     async def generate_cover_prompt(self, topics: str) -> str:
+        """Generate a Flux image prompt from today's security topics.
+
+        Args:
+            topics: Bullet-list summary of today's items.
+
+        Returns:
+            A single-line image generation prompt.
+        """
         user_msg = f"Topics:\n{topics}"
         raw = await self.chat(COVER_ART_SYSTEM_PROMPT, user_msg)
-        # Strip markdown fences if present
         return raw.replace("`", "").strip()

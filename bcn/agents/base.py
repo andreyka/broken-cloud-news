@@ -1,6 +1,9 @@
+"""Shared A2A agent infrastructure (card builder, server launcher)."""
+
 from __future__ import annotations
 
 import uvicorn
+from a2a.server.agent_execution import AgentExecutor
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
@@ -13,6 +16,17 @@ def build_agent_card(
     url: str,
     skills: list[AgentSkill],
 ) -> AgentCard:
+    """Create an A2A agent card with default capabilities.
+
+    Args:
+        name: Human-readable agent name.
+        description: One-line description of the agent's purpose.
+        url: Base URL where the agent is reachable.
+        skills: List of skills the agent advertises.
+
+    Returns:
+        A fully populated ``AgentCard``.
+    """
     return AgentCard(
         name=name,
         description=description,
@@ -25,7 +39,19 @@ def build_agent_card(
     )
 
 
-def make_app(agent_card: AgentCard, executor) -> A2AStarletteApplication:
+def make_app(
+    agent_card: AgentCard,
+    executor: AgentExecutor,
+) -> A2AStarletteApplication:
+    """Wire an agent executor into a Starlette ASGI application.
+
+    Args:
+        agent_card: The card describing this agent.
+        executor: The executor that handles incoming messages.
+
+    Returns:
+        A configured ``A2AStarletteApplication``.
+    """
     handler = DefaultRequestHandler(
         agent_executor=executor,
         task_store=InMemoryTaskStore(),
@@ -36,8 +62,18 @@ def make_app(agent_card: AgentCard, executor) -> A2AStarletteApplication:
     )
 
 
-async def serve_agent(agent_card: AgentCard, executor, port: int) -> None:
-    """Run an A2A agent as an async uvicorn server (non-blocking)."""
+async def serve_agent(
+    agent_card: AgentCard,
+    executor: AgentExecutor,
+    port: int,
+) -> None:
+    """Run an A2A agent as an async uvicorn server.
+
+    Args:
+        agent_card: The card describing this agent.
+        executor: The executor that handles incoming messages.
+        port: TCP port to bind.
+    """
     app_builder = make_app(agent_card, executor)
     config = uvicorn.Config(
         app_builder.build(),

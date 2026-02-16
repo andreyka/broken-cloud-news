@@ -1,8 +1,10 @@
+"""Writer agent: generates daily briefings with cover images."""
+
 from __future__ import annotations
 
 import logging
+import re
 import time
-from datetime import datetime, timezone
 
 from typing_extensions import override
 
@@ -30,7 +32,9 @@ SKILLS = [
 
 
 class WriterExecutor(AgentExecutor):
-    def __init__(self, settings: Settings):
+    """A2A agent that composes briefings from top-scored items."""
+
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.llm = LLMClient(
             base_url=settings.llm_base_url,
@@ -44,7 +48,12 @@ class WriterExecutor(AgentExecutor):
         )
 
     @override
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Generate a briefing from top-scored items and store it as DRAFT."""
         items = await get_analyzed_items(
             min_score=self.settings.relevance_threshold,
             hours=self.settings.briefing_lookback_hours,
@@ -53,25 +62,22 @@ class WriterExecutor(AgentExecutor):
         if not items:
             msg = (
                 f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
-                f"in the last {self.settings.briefing_lookback_hours}h. Skipping briefing."
+                f"in the last {self.settings.briefing_lookback_hours}h. "
+                f"Skipping briefing."
             )
             logger.info(msg)
             event_queue.enqueue_event(new_agent_text_message(msg))
             return
 
-        # Take top 5
         items = items[:5]
 
-        # Generate creative briefing via LLM
         briefing_body = await self.llm.generate_briefing(items)
         logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
-        # Generate cover image prompt from topics
         topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in items)
         cover_prompt = await self.llm.generate_cover_prompt(topics)
         logger.info("Cover prompt: %s", cover_prompt[:100])
 
-        # Generate cover image via ComfyUI Flux
         cover_url = ""
         try:
             timestamp = int(time.time() * 1000)
@@ -81,11 +87,9 @@ class WriterExecutor(AgentExecutor):
         except Exception:
             logger.exception("Failed to generate cover image, continuing without it")
 
-        # Assemble final markdown and HTML
         markdown = self._format_markdown(briefing_body, cover_url)
         html = self._format_html(briefing_body, cover_url)
 
-        # Store briefing
         item_ids = [i["id"] for i in items]
         briefing_id = await insert_briefing(
             content_markdown=markdown,
@@ -100,11 +104,25 @@ class WriterExecutor(AgentExecutor):
         event_queue.enqueue_event(new_agent_text_message(msg))
 
     @override
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise Exception("cancel not supported")
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Cancel is not supported."""
+        raise NotImplementedError("cancel not supported")
 
     @staticmethod
     def _format_markdown(briefing_body: str, cover_url: str) -> str:
+        """Wrap the briefing body with an optional cover image in Markdown.
+
+        Args:
+            briefing_body: The LLM-generated briefing text.
+            cover_url: URL of the cover image (may be empty).
+
+        Returns:
+            Complete Markdown document.
+        """
         md = ""
         if cover_url:
             md += f"![Daily Cover]({cover_url})\n\n"
@@ -113,27 +131,38 @@ class WriterExecutor(AgentExecutor):
 
     @staticmethod
     def _format_html(briefing_body: str, cover_url: str) -> str:
-        # Convert markdown to basic HTML: headers, bold, links, paragraphs
-        import re
+        """Convert the briefing body to basic HTML.
 
+        Handles ``###``/``##`` headers, bold, italic, links, and paragraphs.
+
+        Args:
+            briefing_body: The LLM-generated briefing text.
+            cover_url: URL of the cover image (may be empty).
+
+        Returns:
+            A minimal HTML document string.
+        """
         html_body = briefing_body
-        # ### headers
-        html_body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
-        ## headers
-        html_body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE)
-        # bold
+        html_body = re.sub(
+            r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE
+        )
+        html_body = re.sub(
+            r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE
+        )
         html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
-        # italic
         html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body)
-        # links
-        html_body = re.sub(r"\[([^\]]+)]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body)
-        # paragraphs
+        html_body = re.sub(
+            r"\[([^\]]+)]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body
+        )
         html_body = re.sub(r"\n{2,}", "</p>\n<p>", html_body)
         html_body = f"<p>{html_body}</p>"
 
         parts = ["<html><body>"]
         if cover_url:
-            parts.append(f'<img src="{cover_url}" alt="Daily Cover" style="max-width:600px"/>')
+            parts.append(
+                f'<img src="{cover_url}" alt="Daily Cover" '
+                f'style="max-width:600px"/>'
+            )
         parts.append(html_body)
         parts.append("</body></html>")
         return "\n".join(parts)

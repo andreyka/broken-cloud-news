@@ -1,8 +1,16 @@
+"""Application settings loaded from environment variables."""
+
+from __future__ import annotations
+
+from typing import Any
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """BCN configuration backed by ``BCN_``-prefixed environment variables."""
+
     model_config = SettingsConfigDict(env_file=".env", env_prefix="BCN_")
 
     @field_validator(
@@ -11,7 +19,7 @@ class Settings(BaseSettings):
         mode="before",
     )
     @classmethod
-    def _empty_str_to_list(cls, v):
+    def _empty_str_to_list(cls, v: Any) -> Any:
         """Allow empty env-var strings to fall back to the field default."""
         if isinstance(v, str) and v.strip() == "":
             return []
