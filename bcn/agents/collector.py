@@ -76,7 +76,6 @@ class CollectorExecutor(AgentExecutor):
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
             min_content_length=settings.scrape_min_content_length,
-            browserless_url=settings.browserless_url,
         )
         self._http = httpx.AsyncClient(timeout=60)
 
