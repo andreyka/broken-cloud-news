@@ -201,18 +201,6 @@ cmd_check() {
         warn "BCN_LLM_BASE_URL not set (using default)"
     fi
 
-    # Browserless
-    if [[ -n "${BCN_BROWSERLESS_URL:-}" ]]; then
-        ok "BCN_BROWSERLESS_URL = $BCN_BROWSERLESS_URL"
-        if curl -sf --connect-timeout 5 "${BCN_BROWSERLESS_URL}/json/version" >/dev/null 2>&1; then
-            ok "Browserless endpoint is reachable"
-        else
-            warn "Browserless endpoint is not reachable (may start with docker-compose)"
-        fi
-    else
-        warn "BCN_BROWSERLESS_URL not set (using default http://browserless:3000)"
-    fi
-
     # GitHub
     if [[ -n "${BCN_GITHUB_TOKEN:-}" && "${BCN_GITHUB_TOKEN}" != "ghp_xxxxxxxxxxxx" ]]; then
         ok "BCN_GITHUB_TOKEN is set"
@@ -329,12 +317,6 @@ cmd_setup() {
     prompt_value BCN_COMFYUI_URL "ComfyUI API URL" "http://192.168.0.9:8188"
     COMFYUI_URL="$REPLY_VALUE"
 
-    header "Browserless Configuration (headless Chromium)"
-    info "Used for scraping full article content from RSS feed URLs."
-    info "Default works with docker-compose (browserless service on port 3000)."
-    prompt_value BCN_BROWSERLESS_URL "Browserless API URL" "http://browserless:3000"
-    BROWSERLESS_URL="$REPLY_VALUE"
-
     header "GitHub Token (for GHSA advisory collection)"
     info "Create a token at: https://github.com/settings/tokens"
     info "No special scopes required — only public advisory data is read."
@@ -416,9 +398,6 @@ BCN_LLM_MODEL=$LLM_MODEL
 # ComfyUI (Flux image generation)
 BCN_COMFYUI_URL=$COMFYUI_URL
 
-# Browserless (headless Chromium for content scraping)
-BCN_BROWSERLESS_URL=$BROWSERLESS_URL
-
 # GitHub API token (GHSA collection)
 BCN_GITHUB_TOKEN=$GH_TOKEN
 
@@ -486,22 +465,6 @@ start_services() {
         err "PostgreSQL did not become ready in time."
         err "Check logs: $COMPOSE_CMD -f '$COMPOSE_FILE' logs postgres"
         exit 1
-    fi
-
-    info "Waiting for Browserless (headless Chromium) to be ready..."
-    retries=15
-    while [[ $retries -gt 0 ]]; do
-        if curl -sf --connect-timeout 2 "http://localhost:3000/json/version" >/dev/null 2>&1; then
-            ok "Browserless is ready!"
-            break
-        fi
-        retries=$((retries - 1))
-        sleep 2
-    done
-
-    if [[ $retries -eq 0 ]]; then
-        warn "Browserless did not respond in time (may still be starting)."
-        warn "Check logs: $COMPOSE_CMD -f '$COMPOSE_FILE' logs browserless"
     fi
 
     echo ""

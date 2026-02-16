@@ -177,7 +177,7 @@ def analyze() -> None:
 
         await get_pool(settings)
         llm = LLMClient(settings.llm_base_url, settings.llm_model, settings.llm_timeout)
-        scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length, settings.browserless_url)
+        scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length)
 
         items = await get_new_items()
         if not items:
