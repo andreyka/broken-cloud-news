@@ -25,17 +25,22 @@ class TelegramDistributor:
         markdown: str,
         cover_image_url: str | None = None,
     ) -> bool:
-        """Send briefing to Telegram. Returns True on success."""
+        """Send briefing to Telegram as a single photo+caption message.
+
+        If the briefing text exceeds the 1024-char caption limit, the
+        remainder is sent as a reply to the photo message.
+        Falls back to plain text if no cover image is available.
+        """
         import re
 
         # Strip markdown image tags — Telegram doesn't render them
         clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown)
 
         try:
-            photo_sent = False
+            photo_msg_id: int | None = None
+
             if cover_image_url:
-                # Extract the title line for the photo caption
-                title_line = clean_text.split("\n")[0] if clean_text else ""
+                caption = self._truncate_caption(clean_text)
                 try:
                     img_resp = await self._client.get(cover_image_url, timeout=30)
                     img_resp.raise_for_status()
@@ -44,25 +49,34 @@ class TelegramDistributor:
                         f"{self.api}/sendPhoto",
                         data={
                             "chat_id": self.chat_id,
-                            "caption": title_line,
+                            "caption": caption,
                             "parse_mode": "Markdown",
                         },
                         files={"photo": ("cover.png", img_bytes, "image/png")},
                     )
                     resp.raise_for_status()
-                    photo_sent = True
+                    photo_msg_id = resp.json().get("result", {}).get("message_id")
                 except Exception as exc:
                     logger.warning("Failed to send cover photo: %s", exc)
 
-            # Send the briefing body as a single message (skip title if photo had it)
-            body = clean_text
-            if photo_sent:
-                # Remove the title line since it was in the photo caption
-                lines = clean_text.split("\n", 1)
-                body = lines[1].lstrip("\n") if len(lines) > 1 else ""
-
-            if body:
-                for chunk in self._split_message(body):
+            if photo_msg_id is not None:
+                # Send overflow text (beyond caption limit) as a reply
+                overflow = clean_text[len(self._truncate_caption(clean_text)):].lstrip("\n")
+                if overflow:
+                    for chunk in self._split_message(overflow):
+                        await self._client.post(
+                            f"{self.api}/sendMessage",
+                            json={
+                                "chat_id": self.chat_id,
+                                "text": chunk,
+                                "parse_mode": "Markdown",
+                                "disable_web_page_preview": True,
+                                "reply_to_message_id": photo_msg_id,
+                            },
+                        )
+            else:
+                # Fallback: no photo, send as plain text message(s)
+                for chunk in self._split_message(clean_text):
                     await self._client.post(
                         f"{self.api}/sendMessage",
                         json={

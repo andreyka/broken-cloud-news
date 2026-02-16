@@ -237,7 +237,10 @@ def write() -> None:
 
         items = await get_analyzed_items(settings.relevance_threshold, settings.briefing_lookback_hours)
         if not items:
-            click.echo("No items meet threshold for briefing")
+            click.echo(
+                f"Quiet day — no items scored >= {settings.relevance_threshold} "
+                f"in the last {settings.briefing_lookback_hours}h. Skipping briefing."
+            )
             return
 
         items = items[:5]

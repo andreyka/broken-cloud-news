@@ -51,9 +51,12 @@ class WriterExecutor(AgentExecutor):
         )
 
         if not items:
-            event_queue.enqueue_event(
-                new_agent_text_message("No items meet threshold for briefing")
+            msg = (
+                f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
+                f"in the last {self.settings.briefing_lookback_hours}h. Skipping briefing."
             )
+            logger.info(msg)
+            event_queue.enqueue_event(new_agent_text_message(msg))
             return
 
         # Take top 5
@@ -102,8 +105,7 @@ class WriterExecutor(AgentExecutor):
 
     @staticmethod
     def _format_markdown(briefing_body: str, cover_url: str) -> str:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        md = f"*Broken Cloud Daily Briefing — {today}*\n\n"
+        md = ""
         if cover_url:
             md += f"![Daily Cover]({cover_url})\n\n"
         md += briefing_body
@@ -111,7 +113,6 @@ class WriterExecutor(AgentExecutor):
 
     @staticmethod
     def _format_html(briefing_body: str, cover_url: str) -> str:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         # Convert markdown to basic HTML: headers, bold, links, paragraphs
         import re
 
@@ -130,10 +131,7 @@ class WriterExecutor(AgentExecutor):
         html_body = re.sub(r"\n{2,}", "</p>\n<p>", html_body)
         html_body = f"<p>{html_body}</p>"
 
-        parts = [
-            "<html><body>",
-            f"<h1>Broken Cloud Daily Briefing — {today}</h1>",
-        ]
+        parts = ["<html><body>"]
         if cover_url:
             parts.append(f'<img src="{cover_url}" alt="Daily Cover" style="max-width:600px"/>')
         parts.append(html_body)
