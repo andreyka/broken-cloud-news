@@ -229,11 +229,11 @@ cmd_check() {
         err "BCN_GITHUB_TOKEN is missing or placeholder"; ((issues++))
     fi
 
-    # Apify
-    if [[ -n "${BCN_APIFY_TOKEN:-}" && "${BCN_APIFY_TOKEN}" != "apify_api_xxxxxxxxxxxx" ]]; then
-        ok "BCN_APIFY_TOKEN is set"
+    # X API (Twitter)
+    if [[ -n "${BCN_TWITTER_BEARER_TOKEN:-}" && "${BCN_TWITTER_BEARER_TOKEN}" != "AAAA..." ]]; then
+        ok "BCN_TWITTER_BEARER_TOKEN is set"
     else
-        warn "BCN_APIFY_TOKEN is missing (Twitter collection disabled)"
+        warn "BCN_TWITTER_BEARER_TOKEN is missing (Twitter collection disabled)"
     fi
 
     # Telegram
@@ -341,11 +341,11 @@ cmd_setup() {
     prompt_value BCN_GITHUB_TOKEN "GitHub token (ghp_...)" "" "true"
     GH_TOKEN="$REPLY_VALUE"
 
-    header "Apify Token (for Twitter/X collection)"
-    info "Sign up at: https://apify.com and get your API token."
+    header "X API Bearer Token (for Twitter/X collection)"
+    info "Get a bearer token from: https://developer.x.com/en/portal/dashboard"
     info "Leave blank to skip Twitter collection."
-    prompt_value BCN_APIFY_TOKEN "Apify API token" "" "true"
-    APIFY_TOKEN="$REPLY_VALUE"
+    prompt_value BCN_TWITTER_BEARER_TOKEN "X API Bearer Token" "" "true"
+    TWITTER_BEARER_TOKEN="$REPLY_VALUE"
 
     # -- Distribution channels --
     header "Distribution Channels"
@@ -422,8 +422,8 @@ BCN_BROWSERLESS_URL=$BROWSERLESS_URL
 # GitHub API token (GHSA collection)
 BCN_GITHUB_TOKEN=$GH_TOKEN
 
-# Apify API token (Twitter/X collection)
-BCN_APIFY_TOKEN=$APIFY_TOKEN
+# X API Bearer Token (Twitter/X collection)
+BCN_TWITTER_BEARER_TOKEN=$TWITTER_BEARER_TOKEN
 
 # Telegram distribution
 BCN_TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
