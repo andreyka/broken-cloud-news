@@ -1,3 +1,5 @@
+"""Distributor agent: publishes briefings to Telegram, Email, and Slack."""
+
 from __future__ import annotations
 
 import logging
@@ -30,14 +32,18 @@ SKILLS = [
 
 
 class DistributorExecutor(AgentExecutor):
-    def __init__(self, settings: Settings):
+    """A2A agent that sends briefings to configured distribution channels."""
+
+    def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.channels: list[tuple[str, object]] = []
+        self.channels: list[tuple[str, TelegramDistributor | EmailDistributor | SlackDistributor]] = []
 
         if settings.telegram_bot_token and settings.telegram_chat_id:
             self.channels.append((
                 "telegram",
-                TelegramDistributor(settings.telegram_bot_token, settings.telegram_chat_id),
+                TelegramDistributor(
+                    settings.telegram_bot_token, settings.telegram_chat_id
+                ),
             ))
 
         if settings.smtp_host and settings.email_recipients:
@@ -60,10 +66,17 @@ class DistributorExecutor(AgentExecutor):
             ))
 
     @override
-    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Send the latest DRAFT briefing to all configured channels."""
         briefing = await get_latest_briefing()
         if not briefing:
-            event_queue.enqueue_event(new_agent_text_message("No new briefing to distribute"))
+            event_queue.enqueue_event(
+                new_agent_text_message("No new briefing to distribute")
+            )
             return
 
         if not self.channels:
@@ -77,17 +90,20 @@ class DistributorExecutor(AgentExecutor):
 
         for name, channel in self.channels:
             try:
-                if name == "telegram":
+                if isinstance(channel, TelegramDistributor):
                     ok = await channel.send(
                         markdown=briefing["content_markdown"],
                         cover_image_url=briefing["cover_image_url"],
                     )
-                elif name == "email":
+                elif isinstance(channel, EmailDistributor):
                     ok = await channel.send(
                         subject=f"Broken Cloud News - {today}",
-                        html_body=briefing["content_html"] or briefing["content_markdown"],
+                        html_body=(
+                            briefing["content_html"]
+                            or briefing["content_markdown"]
+                        ),
                     )
-                elif name == "slack":
+                elif isinstance(channel, SlackDistributor):
                     ok = await channel.send(
                         markdown=briefing["content_markdown"],
                         cover_image_url=briefing["cover_image_url"],
@@ -96,11 +112,10 @@ class DistributorExecutor(AgentExecutor):
                     ok = False
 
                 results[name] = "ok" if ok else "failed"
-            except Exception as exc:
+            except Exception:
                 logger.exception("Distribution to %s failed", name)
-                results[name] = f"error: {exc}"
+                results[name] = "error"
 
-        # Mark briefing and items as distributed/published
         await mark_briefing_distributed(briefing["id"], results)
         item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
         await mark_items_published(item_ids)
@@ -110,5 +125,10 @@ class DistributorExecutor(AgentExecutor):
         event_queue.enqueue_event(new_agent_text_message(msg))
 
     @override
-    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
-        raise Exception("cancel not supported")
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """Cancel is not supported."""
+        raise NotImplementedError("cancel not supported")

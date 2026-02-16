@@ -1,8 +1,11 @@
+"""Playwright-based headless Chromium scraper for extracting article text."""
+
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext
+from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
 
 logger = logging.getLogger(__name__)
 
@@ -18,25 +21,30 @@ class Scraper:
         self,
         content_limit: int = 10000,
         min_content_length: int = 100,
-    ):
+    ) -> None:
         self.content_limit = content_limit
         self.min_content_length = min_content_length
-        self._pw = None
-        self._browser: Browser | None = None
-        self._context: BrowserContext | None = None
+        self._pw: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
 
     async def _ensure_browser(self) -> BrowserContext:
+        """Lazily start Playwright and return a reusable browser context."""
         if self._context is not None:
             return self._context
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=True)
         self._context = await self._browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
             java_script_enabled=True,
         )
         return self._context
 
     async def close(self) -> None:
+        """Shut down the browser and Playwright runtime."""
         if self._context:
             await self._context.close()
             self._context = None
@@ -50,14 +58,20 @@ class Scraper:
     async def scrape(self, url: str) -> str:
         """Navigate to *url* and return extracted article text.
 
-        Tries CSS selectors ``article``, ``.markdown-body``, ``main`` in order,
-        falling back to ``body``.  Returns an empty string on any failure.
+        Tries CSS selectors ``article``, ``.markdown-body``, ``main`` in
+        order, falling back to ``body``.  Returns an empty string on any
+        failure.
+
+        Args:
+            url: The page URL to scrape.
+
+        Returns:
+            Extracted text truncated to ``content_limit``, or ``""``.
         """
         context = await self._ensure_browser()
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            # Give dynamic content a moment to render
             await page.wait_for_timeout(2000)
 
             selectors = ["article", ".markdown-body", "main", "body"]

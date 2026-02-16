@@ -1,3 +1,5 @@
+"""Pydantic data models for news items, analysis results, and briefings."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,6 +10,8 @@ from pydantic import BaseModel, Field
 
 
 class NewsItem(BaseModel):
+    """A single collected news item from any source."""
+
     id: UUID
     source_type: str
     source_id: str
@@ -25,6 +29,8 @@ class NewsItem(BaseModel):
 
 
 class AnalysisResult(BaseModel):
+    """LLM analysis output for a single news item."""
+
     summary: str
     relevance_score: int = Field(ge=1, le=10)
     tags: list[str] = Field(default_factory=list)
@@ -32,6 +38,8 @@ class AnalysisResult(BaseModel):
 
 
 class Briefing(BaseModel):
+    """A generated daily briefing with optional cover image."""
+
     id: UUID
     created_at: datetime
     content_markdown: str
