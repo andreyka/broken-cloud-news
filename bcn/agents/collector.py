@@ -294,7 +294,7 @@ class CollectorExecutor(AgentExecutor):
 
         count = 0
         next_token: str | None = None
-        remaining = self.settings.twitter_max_items * len(self.settings.twitter_handles)
+        remaining = self.settings.twitter_max_items
 
         while remaining > 0:
             params: dict[str, str | int] = {
