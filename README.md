@@ -24,7 +24,7 @@ GitHub/RSS/Twitter --> Collector --> PostgreSQL --> Analyst --> Writer --> Distr
 
 ### 1. Prerequisites
 - Python 3.12+
-- Docker & Docker Compose (for PostgreSQL + Browserless)
+- Docker & Docker Compose (for PostgreSQL)
 - DGX Spark with Qwen + ComfyUI deployed (see AI Infrastructure below)
 
 ### 2. Setup
@@ -157,7 +157,6 @@ Key settings:
 |----------|---------|-------------|
 | `BCN_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | Qwen API endpoint |
 | `BCN_COMFYUI_URL` | `http://host.docker.internal:8188` | ComfyUI endpoint |
-| `BCN_BROWSERLESS_URL` | `http://browserless:3000` | Browserless headless Chromium |
 | `BCN_GITHUB_TOKEN` | - | GitHub API token for GHSA |
 | `BCN_TWITTER_BEARER_TOKEN` | - | X API bearer token for Twitter/X |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) for briefing |
@@ -193,7 +192,7 @@ bcn/
   models.py           Pydantic data models
   llm.py              Qwen LLM client (OpenAI-compatible)
   comfyui.py          ComfyUI Flux client
-  scraper.py          Browserless headless Chromium scraper
+  scraper.py          Playwright headless Chromium scraper
   agents/
     base.py           A2A agent boilerplate
     collector.py      Data collection (GHSA, RSS, Twitter)

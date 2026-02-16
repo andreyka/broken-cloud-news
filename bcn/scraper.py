@@ -2,108 +2,79 @@ from __future__ import annotations
 
 import logging
 
-import httpx
+from playwright.async_api import async_playwright, Browser, BrowserContext
 
 logger = logging.getLogger(__name__)
 
-# Browserless /content endpoint returns the text content of a fully-rendered
-# page (JavaScript executed, dynamic content loaded).  We POST a JSON payload
-# with the target URL and receive plain text back — no Python-side HTML parsing.
-
-DEFAULT_BROWSERLESS_URL = "http://browserless:3000"
-
 
 class Scraper:
-    """Fetch page content via a Browserless (headless Chromium) service.
+    """Fetch page content via Playwright (headless Chromium).
 
-    The Browserless ``/content`` endpoint navigates to the URL in a real
-    browser, waits for the network to settle, and returns the rendered HTML.
-    We then use the ``/scrape`` endpoint with CSS selectors to extract the
-    article text server-side — zero Python parsing required.
+    Launches a persistent headless browser and uses CSS selectors to extract
+    article text from ``article``, ``.markdown-body``, ``main``, or ``body``.
     """
 
     def __init__(
         self,
         content_limit: int = 10000,
         min_content_length: int = 100,
-        browserless_url: str = DEFAULT_BROWSERLESS_URL,
     ):
         self.content_limit = content_limit
         self.min_content_length = min_content_length
-        self.browserless_url = browserless_url.rstrip("/")
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._pw = None
+        self._browser: Browser | None = None
+        self._context: BrowserContext | None = None
+
+    async def _ensure_browser(self) -> BrowserContext:
+        if self._context is not None:
+            return self._context
+        self._pw = await async_playwright().start()
+        self._browser = await self._pw.chromium.launch(headless=True)
+        self._context = await self._browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            java_script_enabled=True,
+        )
+        return self._context
 
     async def close(self) -> None:
-        await self._client.aclose()
+        if self._context:
+            await self._context.close()
+            self._context = None
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        if self._pw:
+            await self._pw.stop()
+            self._pw = None
 
     async def scrape(self, url: str) -> str:
-        """Fetch *url* via Browserless and return extracted article text.
+        """Navigate to *url* and return extracted article text.
 
-        Uses the ``/scrape`` endpoint with CSS selectors to pull content from
-        ``article``, ``.markdown-body``, or ``main`` elements — falling back
-        to ``body`` if none match.  Returns an empty string on any failure.
+        Tries CSS selectors ``article``, ``.markdown-body``, ``main`` in order,
+        falling back to ``body``.  Returns an empty string on any failure.
         """
-        # First try targeted selectors that typically hold article content
-        text = await self._scrape_with_selectors(
-            url,
-            [
-                {"selector": "article"},
-                {"selector": ".markdown-body"},
-                {"selector": "main"},
-            ],
-        )
-
-        if text and len(text) >= self.min_content_length:
-            return text[: self.content_limit]
-
-        # Fallback: grab the whole <body>
-        text = await self._scrape_with_selectors(
-            url,
-            [{"selector": "body"}],
-        )
-
-        if text:
-            return text[: self.content_limit]
-
-        return ""
-
-    # --------------------------------------------------------------------- #
-    # Internal helpers
-    # --------------------------------------------------------------------- #
-
-    async def _scrape_with_selectors(
-        self, url: str, elements: list[dict]
-    ) -> str:
-        """Call Browserless ``/scrape`` and return the first non-empty text."""
-        payload = {
-            "url": url,
-            "elements": elements,
-            "gotoOptions": {
-                "waitUntil": "networkidle2",
-                "timeout": 60000,
-            },
-        }
-
+        context = await self._ensure_browser()
+        page = await context.new_page()
         try:
-            resp = await self._client.post(
-                f"{self.browserless_url}/scrape",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except httpx.HTTPError as exc:
-            logger.warning("Browserless /scrape failed for %s: %s", url, exc)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # Give dynamic content a moment to render
+            await page.wait_for_timeout(2000)
+
+            selectors = ["article", ".markdown-body", "main", "body"]
+            for selector in selectors:
+                try:
+                    el = await page.query_selector(selector)
+                    if el is None:
+                        continue
+                    text = (await el.inner_text()).strip()
+                    if text and len(text) >= self.min_content_length:
+                        return text[: self.content_limit]
+                except Exception:
+                    continue
+
             return ""
         except Exception as exc:
-            logger.warning("Unexpected error scraping %s: %s", url, exc)
+            logger.warning("Playwright scrape failed for %s: %s", url, exc)
             return ""
-
-        # data.data is a list matching the requested selectors
-        for item in data.get("data", []):
-            results = item.get("results", [])
-            for result in results:
-                text = result.get("text", "").strip()
-                if text and len(text) >= self.min_content_length:
-                    return text
-
-        return ""
+        finally:
+            await page.close()

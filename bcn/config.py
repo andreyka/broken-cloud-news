@@ -84,9 +84,6 @@ class Settings(BaseSettings):
     distribute_hour: int = 9
     distribute_minute: int = 0
 
-    # Browserless (headless Chromium for content scraping)
-    browserless_url: str = "http://browserless:3000"
-
     # Scraping
     scrape_content_limit: int = 10000
     scrape_min_content_length: int = 100
