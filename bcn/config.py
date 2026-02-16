@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     # GitHub
     github_token: str = ""
 
-    # Apify (Twitter/X scraping)
-    apify_token: str = ""
+    # X API (Twitter)
+    twitter_bearer_token: str = ""
     twitter_handles: list[str] = [
         "GoogleVRP", "HackingLZ", "anton_chuvakin", "AISecHub",
         "_JohnHammond", "lauriewired", "chompie1337", "Steph3nSims",

@@ -8,7 +8,7 @@ Four A2A agents communicate via JSON-RPC, each running as an HTTP server:
 
 | Agent | Port | Role |
 |-------|------|------|
-| **Collector** | 9001 | GHSA, Twitter/X (Apify), RSS (CISA + AWS) |
+| **Collector** | 9001 | GHSA, Twitter/X (X API), RSS (CISA + AWS) |
 | **Analyst** | 9002 | LLM scoring & summarization via Qwen |
 | **Writer** | 9003 | Briefing generation + Flux cover image |
 | **Distributor** | 9004 | Telegram, Email, Slack publishing |
@@ -159,7 +159,7 @@ Key settings:
 | `BCN_COMFYUI_URL` | `http://host.docker.internal:8188` | ComfyUI endpoint |
 | `BCN_BROWSERLESS_URL` | `http://browserless:3000` | Browserless headless Chromium |
 | `BCN_GITHUB_TOKEN` | - | GitHub API token for GHSA |
-| `BCN_APIFY_TOKEN` | - | Apify token for Twitter/X |
+| `BCN_TWITTER_BEARER_TOKEN` | - | X API bearer token for Twitter/X |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) for briefing |
 
 ---
