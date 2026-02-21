@@ -449,6 +449,48 @@ class TestWriterExecutor:
         assert "Missing selected URL" in issue_text
         assert "exactly 3 bullets" in issue_text
 
+    def test_detemplate_rewrites_detection_and_source_fields(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        markdown = (
+            "**Detection: AI Security at the Edge**\n"
+            "Cloudflare blocks unsafe prompts early.\n"
+            "*Source: [Cloudflare Blog](https://blog.cloudflare.com/block-unsafe-llm-prompts-with-firewall-for-ai/)*"
+        )
+
+        rewritten = executor._de_template_fields(markdown)
+        assert "**AI Security at the Edge**" in rewritten
+        assert "Detection:" not in rewritten
+        assert "Source:" not in rewritten
+        assert "reference: [Cloudflare Blog]" in rewritten
+
+    def test_missing_items_fallback_is_readable_without_fixed_heading(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        markdown = "Core digest body."
+        missing = [
+            {
+                "title": "First extra",
+                "summary": "Cloud issue one",
+                "url": "https://example.com/one",
+            },
+            {
+                "title": "Second extra",
+                "summary": "Cloud issue two",
+                "url": "https://example.com/two",
+            },
+        ]
+
+        out = executor._append_missing_items_section(markdown, missing)
+        assert "Additional High-Signal Items" not in out
+        assert "[First extra](https://example.com/one)" in out
+        assert "[Second extra](https://example.com/two)" in out
+        assert "\n\n[Second extra](https://example.com/two)" in out
+
     def test_quiet_day_mode_detection(self):
         from bcn.agents.writer import WriterExecutor
 

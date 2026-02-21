@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -292,6 +293,37 @@ def write() -> None:
 
 
 @cli.command()
+@click.option("--latest", is_flag=True, help="Critique the latest stored briefing")
+@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--text", "text_input", type=str, help="Inline markdown text to critique")
+def critique(latest: bool, file_path: str | None, text_input: str | None) -> None:
+    """Run the critic against latest briefing or provided markdown text."""
+    settings = Settings()
+
+    async def _run():
+        from bcn.agents.critic import CriticExecutor
+
+        skill: str
+        if text_input:
+            skill = f"critique_markdown::{text_input}"
+        elif file_path:
+            body = Path(file_path).read_text(encoding="utf-8")
+            skill = f"critique_markdown::{body}"
+        else:
+            # Default to latest briefing to make this command useful out-of-the-box.
+            skill = "critique_latest" if latest or (not file_path and not text_input) else ""
+
+        result = await _run_agent_directly(
+            executor_cls=CriticExecutor,
+            settings=settings,
+            skill=skill,
+        )
+        click.echo(result)
+
+    asyncio.run(_run())
+
+
+@cli.command()
 def distribute() -> None:
     """Send the latest briefing to configured distribution channels."""
     settings = Settings()
@@ -394,6 +426,7 @@ def run() -> None:
         from bcn.agents.analyst import AnalystExecutor, SKILLS as ANAL_SKILLS
         from bcn.agents.writer import WriterExecutor, SKILLS as WRIT_SKILLS
         from bcn.agents.distributor import DistributorExecutor, SKILLS as DIST_SKILLS
+        from bcn.agents.critic import CriticExecutor, SKILLS as CRIT_SKILLS
         from bcn.db import get_pool
         from apscheduler import AsyncScheduler
         from apscheduler.triggers.interval import IntervalTrigger
@@ -420,12 +453,17 @@ def run() -> None:
             "BCN Distributor", "Distributes briefings to Telegram, Email, Slack",
             f"http://localhost:{settings.distributor_port}/", DIST_SKILLS,
         )
+        critic_card = build_agent_card(
+            "BCN Critic", "Critiques briefing quality and provides recommendations",
+            f"http://localhost:{settings.critic_port}/", CRIT_SKILLS,
+        )
 
         # Create executors
         collector_exec = CollectorExecutor(settings)
         analyst_exec = AnalystExecutor(settings)
         writer_exec = WriterExecutor(settings)
         distributor_exec = DistributorExecutor(settings)
+        critic_exec = CriticExecutor(settings)
 
         # Launch agent servers
         tasks = [
@@ -433,12 +471,14 @@ def run() -> None:
             asyncio.create_task(serve_agent(analyst_card, analyst_exec, settings.analyst_port)),
             asyncio.create_task(serve_agent(writer_card, writer_exec, settings.writer_port)),
             asyncio.create_task(serve_agent(distributor_card, distributor_exec, settings.distributor_port)),
+            asyncio.create_task(serve_agent(critic_card, critic_exec, settings.critic_port)),
         ]
 
         click.echo(f"  Collector on :{settings.collector_port}")
         click.echo(f"  Analyst  on :{settings.analyst_port}")
         click.echo(f"  Writer   on :{settings.writer_port}")
         click.echo(f"  Distributor on :{settings.distributor_port}")
+        click.echo(f"  Critic on :{settings.critic_port}")
 
         # Set up scheduler (job functions are module-level for APScheduler 4.x)
         async with AsyncScheduler() as scheduler:

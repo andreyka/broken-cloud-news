@@ -1,1 +1,1 @@
-"""BCN agent executors (Collector, Analyst, Writer, Distributor)."""
+"""BCN agent executors (Collector, Analyst, Writer, Distributor, Critic)."""
