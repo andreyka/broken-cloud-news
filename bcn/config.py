@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     # Scraping
     scrape_content_limit: int = 10000
     scrape_min_content_length: int = 100
+    scrape_playwright_fetch_fallback: bool = True
 
     # Analysis
     relevance_threshold: int = 7
@@ -141,6 +142,28 @@ class Settings(BaseSettings):
     briefing_min_chars: int = 1200
     briefing_target_chars: int = 1700
     briefing_hard_max_chars: int = 2300
+    briefing_critique_enabled: bool = True
+    briefing_critique_max_rounds: int = 3
+    briefing_novelty_lookback_hours: int = 24 * 14
+    briefing_novelty_max_items: int = 250
+    briefing_novelty_title_similarity_threshold: float = 0.86
+    briefing_mix_min_urgent: int = 1
+    briefing_mix_min_platform: int = 1
+    briefing_mix_min_tooling: int = 1
+    briefing_mix_min_regulatory: int = 1
+    briefing_min_reddit_engagement_score: float = 24.0
+    briefing_min_twitter_engagement_score: float = 180.0
+    briefing_social_floor_exempt_relevance: int = 9
+    briefing_untrusted_rss_min_score: int = 8
+    briefing_quiet_day_enabled: bool = True
+    briefing_quiet_day_high_signal_threshold: int = 8
+    briefing_quiet_day_min_high_signal_items: int = 3
+    briefing_quiet_day_max_items: int = 3
+    briefing_quiet_day_min_chars: int = 900
+    briefing_quiet_day_target_chars: int = 1300
+    briefing_quiet_day_hard_max_chars: int = 1800
+    briefing_social_proof_weight: float = 0.35
+    briefing_social_proof_max_bonus: float = 2.5
 
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never

@@ -92,3 +92,35 @@ class Scraper:
             return ""
         finally:
             await page.close()
+
+    async def fetch_text(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        timeout_ms: int = 45000,
+    ) -> tuple[int, str]:
+        """Fetch raw response text through Playwright network stack.
+
+        Useful as a fallback when direct HTTP requests are blocked or flaky.
+
+        Args:
+            url: Target URL.
+            headers: Optional request headers.
+            timeout_ms: Request timeout in milliseconds.
+
+        Returns:
+            Tuple of (status_code, response_text). Returns (0, "") on failure.
+        """
+        context = await self._ensure_browser()
+        try:
+            response = await context.request.get(
+                url,
+                headers=headers or {},
+                timeout=timeout_ms,
+            )
+            status = int(response.status)
+            text = await response.text()
+            return status, text
+        except Exception as exc:
+            logger.warning("Playwright fetch failed for %s: %s", url, exc)
+            return 0, ""

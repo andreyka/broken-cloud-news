@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -176,6 +177,58 @@ class CollectorExecutor(AgentExecutor):
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
 
+    async def _fetch_text_with_fallback(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 30,
+    ) -> str:
+        """Fetch text via HTTP and optionally fall back to Playwright request API."""
+        try:
+            resp = await self._http.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as primary_exc:
+            if not self.settings.scrape_playwright_fetch_fallback:
+                raise
+
+            status, text = await self.scraper.fetch_text(
+                url=url,
+                headers=headers,
+                timeout_ms=timeout * 1000,
+            )
+            if status >= 200 and status < 400 and text:
+                logger.info(
+                    "Fetched via Playwright fallback: %s (status=%d, %d chars)",
+                    url,
+                    status,
+                    len(text),
+                )
+                return text
+            raise primary_exc
+
+    async def _fetch_json_with_fallback(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int = 20,
+    ) -> dict:
+        """Fetch JSON via HTTP with optional Playwright fallback."""
+        text = await self._fetch_text_with_fallback(
+            url=url,
+            headers=headers,
+            timeout=timeout,
+        )
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse JSON from {url}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Unexpected JSON shape from {url}")
+        return payload
+
     # ------------------------------------------------------------------
     # GHSA collection
     # ------------------------------------------------------------------
@@ -321,9 +374,8 @@ class CollectorExecutor(AgentExecutor):
         count = 0
         for feed_url in self.settings.rss_feeds:
             try:
-                resp = await self._http.get(feed_url)
-                resp.raise_for_status()
-                feed = feedparser.parse(resp.text)
+                feed_text = await self._fetch_text_with_fallback(feed_url)
+                feed = feedparser.parse(feed_text)
             except Exception as exc:
                 logger.warning("Failed to fetch RSS %s: %s", feed_url, exc)
                 continue
@@ -394,7 +446,7 @@ class CollectorExecutor(AgentExecutor):
             params: dict[str, str | int] = {
                 "query": query,
                 "max_results": max(10, min(remaining, 100)),
-                "tweet.fields": "id,text,created_at,author_id",
+                "tweet.fields": "id,text,created_at,author_id,public_metrics",
                 "expansions": "author_id",
                 "user.fields": "username",
             }
@@ -437,7 +489,10 @@ class CollectorExecutor(AgentExecutor):
                     url=url,
                     title=title,
                     published_at=published,
-                    raw_data=tweet,
+                    raw_data={
+                        **tweet,
+                        "username": username,
+                    },
                 )
                 if inserted:
                     count += 1
@@ -460,15 +515,16 @@ class CollectorExecutor(AgentExecutor):
         count = 0
         for subreddit in self.settings.reddit_subreddits:
             feed_url = f"https://www.reddit.com/r/{subreddit}/.rss"
+            engagement_map = await self._fetch_reddit_engagement(subreddit)
             try:
-                resp = await self._http.get(
+                feed_text = await self._fetch_text_with_fallback(
                     feed_url,
                     headers={
                         "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
                     },
+                    timeout=30,
                 )
-                resp.raise_for_status()
-                feed = feedparser.parse(resp.text)
+                feed = feedparser.parse(feed_text)
             except Exception as exc:
                 logger.warning("Failed to fetch Reddit feed %s: %s", feed_url, exc)
                 continue
@@ -490,6 +546,8 @@ class CollectorExecutor(AgentExecutor):
                 text_for_filter = f"{title} {summary} r/{subreddit}"
                 if not self._is_cloud_security_relevant(text_for_filter):
                     continue
+                post_id = self._extract_reddit_post_id(source_id, url)
+                engagement = engagement_map.get(post_id, {})
 
                 inserted = await insert_news_item(
                     source_type="reddit",
@@ -504,6 +562,7 @@ class CollectorExecutor(AgentExecutor):
                         "link": url,
                         "published": published,
                         "summary": summary,
+                        "engagement": engagement,
                     },
                     full_content=summary or None,
                 )
@@ -512,3 +571,44 @@ class CollectorExecutor(AgentExecutor):
                     per_sub += 1
 
         return count
+
+    async def _fetch_reddit_engagement(self, subreddit: str) -> dict[str, dict[str, float]]:
+        """Fetch engagement metrics for recent subreddit posts via Reddit JSON API."""
+        url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
+        try:
+            payload = await self._fetch_json_with_fallback(
+                url,
+                headers={
+                    "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
+                },
+                timeout=20,
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch Reddit metrics %s: %s", url, exc)
+            return {}
+
+        out: dict[str, dict[str, float]] = {}
+        children = payload.get("data", {}).get("children", [])
+        for child in children:
+            data = child.get("data", {})
+            post_id = str(data.get("id") or "").strip()
+            if not post_id:
+                continue
+            out[post_id] = {
+                "upvotes": float(data.get("ups") or data.get("score") or 0),
+                "comments": float(data.get("num_comments") or 0),
+                "upvote_ratio": float(data.get("upvote_ratio") or 0),
+            }
+        return out
+
+    @staticmethod
+    def _extract_reddit_post_id(source_id: str, url: str) -> str:
+        """Extract Reddit post id from feed source id or permalink."""
+        sid = (source_id or "").strip()
+        if sid.startswith("t3_"):
+            return sid[3:]
+
+        match = re.search(r"/comments/([a-z0-9]+)/", url or "", flags=re.IGNORECASE)
+        if match:
+            return match.group(1).lower()
+        return ""

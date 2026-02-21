@@ -109,6 +109,37 @@ BRIEFING_ENRICHER_PROMPT = (
     "Output only the rewritten digest."
 )
 
+BRIEFING_CRITIC_PROMPT = (
+    "You are the editorial quality gate for 'Broken Cloud Daily Briefing'.\n"
+    "Judge drafts like a demanding cloud-security staff engineer.\n\n"
+    "Evaluate:\n"
+    "- Actionability (clear immediate moves for defenders/operators)\n"
+    "- Practicality (patch/detect/contain relevance, not generic commentary)\n"
+    "- Diversity (no monoculture of source/theme)\n"
+    "- Clarity and flow (no abrupt/mid-thought sections)\n"
+    "- Style quality (avoid AI-cliche and repetitive framing)\n"
+    "- Link hygiene (selected URLs covered exactly once)\n\n"
+    "Return STRICT JSON only:\n"
+    "{\n"
+    '  "passed": true|false,\n'
+    '  "score": 0-100,\n'
+    '  "issues": ["short concrete issue 1", "issue 2"],\n'
+    '  "recommendations": ["short concrete fix 1", "fix 2"]\n'
+    "}\n"
+)
+
+BRIEFING_REWRITE_PROMPT = (
+    "You are rewriting a cloud-security digest to satisfy an editorial critic.\n"
+    "Apply all feedback while keeping factual grounding and valid links.\n"
+    "Rules:\n"
+    "- Markdown only.\n"
+    "- Keep all selected URLs present exactly once.\n"
+    "- Improve actionability, clarity, and section flow.\n"
+    "- Remove repetitive/boilerplate phrasing.\n"
+    "- Stay inside requested length bounds.\n"
+    "Output only revised digest."
+)
+
 _SKIP_DOMAINS = frozenset({
     "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
 })
@@ -188,6 +219,7 @@ class LLMClient:
         self,
         items: list[dict],
         recent_briefings: list[dict] | None = None,
+        mode: str = "standard",
     ) -> str:
         """Generate an editorial briefing from analyzed items."""
         entries: list[str] = []
@@ -195,8 +227,16 @@ class LLMClient:
             entries.append(await self._build_briefing_entry(item))
 
         style_memory = self._build_style_memory(recent_briefings or [])
+        mode_block = (
+            "Mode: quiet_day.\n"
+            "- Fewer stories are acceptable.\n"
+            "- Add deeper operator guidance and telemetry checks per item.\n"
+            "- Explain tradeoffs clearly.\n"
+            if mode == "quiet_day"
+            else "Mode: standard daily briefing."
+        )
         user_msg = (
-            f"Today's candidate items ({len(entries)} total). "
+            f"{mode_block}\n\nToday's candidate items ({len(entries)} total). "
             "Use every main URL exactly once.\n\n"
             + "\n\n".join(entries)
         )
@@ -227,14 +267,21 @@ class LLMClient:
         target_chars: int = 1700,
         hard_max_chars: int = 2300,
         missing_urls: list[str] | None = None,
+        mode: str = "standard",
     ) -> str:
         """Rewrite a draft briefing to improve depth and ensure URL coverage."""
         entries: list[str] = []
         for item in items:
             entries.append(await self._build_briefing_entry(item))
 
+        mode_hint = (
+            "quiet_day: deepen practical guidance per item and include concrete playbook flavor."
+            if mode == "quiet_day"
+            else "standard: balanced actionable digest."
+        )
         user_msg = (
             f"Length goal: {min_chars}-{hard_max_chars} chars (target ~{target_chars}).\n"
+            f"Mode: {mode_hint}\n"
             f"Current draft length: {len(draft_markdown)} chars.\n\n"
             f"Current draft:\n{draft_markdown}\n\n"
             f"Candidate items ({len(entries)} total):\n\n"
@@ -246,6 +293,93 @@ class LLMClient:
 
         rewritten = await self.chat(BRIEFING_ENRICHER_PROMPT, user_msg)
         return rewritten.strip()
+
+    async def critique_briefing(
+        self,
+        draft_markdown: str,
+        items: list[dict],
+        *,
+        mode: str = "standard",
+        gate_issues: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Critique a draft briefing and return structured pass/fail guidance."""
+        item_lines = [
+            f"- [{item.get('source_type', '')}] {item.get('title', '')} :: {item.get('url', '')}"
+            for item in items
+        ]
+        gate_text = "\n".join(f"- {issue}" for issue in (gate_issues or [])) or "- none"
+        mode_text = "quiet_day" if mode == "quiet_day" else "standard"
+        user_msg = (
+            f"Mode: {mode_text}\n"
+            f"Selected items ({len(items)}):\n"
+            + "\n".join(item_lines)
+            + "\n\nLocal quality-gate findings:\n"
+            + gate_text
+            + "\n\nDraft:\n"
+            + draft_markdown
+        )
+        raw = await self.chat(BRIEFING_CRITIC_PROMPT, user_msg)
+        try:
+            cleaned = re.sub(r"```json\s*", "", raw)
+            cleaned = re.sub(r"```\s*", "", cleaned)
+            parsed = json.loads(cleaned)
+            passed = bool(parsed.get("passed", False))
+            score = max(0, min(100, int(parsed.get("score", 0))))
+            issues = parsed.get("issues", [])
+            recommendations = parsed.get("recommendations", [])
+            if not isinstance(issues, list):
+                issues = [str(issues)]
+            if not isinstance(recommendations, list):
+                recommendations = [str(recommendations)]
+            return {
+                "passed": passed,
+                "score": score,
+                "issues": [str(i) for i in issues[:12]],
+                "recommendations": [str(r) for r in recommendations[:12]],
+            }
+        except Exception:
+            logger.warning("Failed to parse briefing critique JSON, using fallback")
+            return {
+                "passed": False,
+                "score": 0,
+                "issues": ["Critic response parsing failed"],
+                "recommendations": ["Regenerate briefing with stricter structure and actionable guidance"],
+            }
+
+    async def revise_briefing(
+        self,
+        draft_markdown: str,
+        items: list[dict],
+        feedback: list[str],
+        *,
+        mode: str = "standard",
+        min_chars: int = 1200,
+        target_chars: int = 1700,
+        hard_max_chars: int = 2300,
+    ) -> str:
+        """Regenerate a briefing draft using explicit critic/gate feedback."""
+        entries: list[str] = []
+        for item in items:
+            entries.append(await self._build_briefing_entry(item))
+
+        fb = "\n".join(f"- {line}" for line in feedback[:20]) or "- improve overall quality"
+        mode_text = (
+            "quiet_day: deeper practical guidance with fewer items accepted"
+            if mode == "quiet_day"
+            else "standard daily briefing"
+        )
+        user_msg = (
+            f"Mode: {mode_text}\n"
+            f"Target length: {min_chars}-{hard_max_chars} chars (ideal ~{target_chars}).\n\n"
+            "Feedback to address:\n"
+            f"{fb}\n\n"
+            "Current draft:\n"
+            f"{draft_markdown}\n\n"
+            "Selected items:\n\n"
+            + "\n\n".join(entries)
+        )
+        revised = await self.chat(BRIEFING_REWRITE_PROMPT, user_msg)
+        return revised.strip()
 
     async def generate_cover_prompt(self, topics: str) -> str:
         """Generate a Flux image prompt from today's security topics."""

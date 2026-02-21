@@ -154,6 +154,25 @@ class TestCollectorExecutor:
         respx.get("https://www.reddit.com/r/netsec/.rss").mock(
             return_value=httpx.Response(200, text=rss_body)
         )
+        respx.get("https://www.reddit.com/r/netsec/new.json?limit=100").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "children": [
+                            {
+                                "data": {
+                                    "id": "abc123",
+                                    "ups": 120,
+                                    "num_comments": 42,
+                                    "upvote_ratio": 0.97,
+                                }
+                            }
+                        ]
+                    }
+                },
+            )
+        )
 
         with patch("bcn.agents.collector.insert_news_item", new_callable=AsyncMock) as mock_insert:
             from uuid import uuid4
@@ -162,6 +181,9 @@ class TestCollectorExecutor:
 
         assert count == 1
         mock_insert.assert_called_once()
+        raw = mock_insert.call_args.kwargs["raw_data"]
+        assert raw["engagement"]["upvotes"] == 120
+        assert raw["engagement"]["comments"] == 42
 
 
 # ── Analyst tests ────────────────────────────────────────────────────────
@@ -310,6 +332,170 @@ class TestWriterExecutor:
         missing = executor._missing_items_for_markdown(markdown, items)
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/two"
+
+    def test_social_proof_bonus_prioritizes_high_engagement_tweet(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_social_proof_weight=0.35,
+            briefing_social_proof_max_bonus=2.5,
+        )
+        executor = WriterExecutor(settings)
+
+        low_reddit = {
+            "id": str(uuid4()),
+            "title": "Low-engagement reddit post",
+            "summary": "Cloud note",
+            "relevance_score": 8,
+            "source_type": "reddit",
+            "url": "https://www.reddit.com/r/netsec/comments/aaa111/post/",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "raw_data": {"engagement": {"upvotes": 2, "comments": 0}},
+        }
+        high_tweet = {
+            "id": str(uuid4()),
+            "title": "High-engagement tweet",
+            "summary": "Cloud exploit chain and fixes",
+            "relevance_score": 8,
+            "source_type": "twitter",
+            "url": "https://x.com/user/status/123",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+            "raw_data": {
+                "public_metrics": {
+                    "like_count": 5200,
+                    "retweet_count": 1300,
+                    "reply_count": 200,
+                    "quote_count": 180,
+                }
+            },
+        }
+
+        assert executor._priority_score(high_tweet) > executor._priority_score(low_reddit)
+
+    def test_source_floor_filters_low_social_noise(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_min_reddit_engagement_score=40,
+            briefing_min_twitter_engagement_score=400,
+            briefing_social_floor_exempt_relevance=9,
+        )
+        executor = WriterExecutor(settings)
+
+        low_reddit = {
+            "id": str(uuid4()),
+            "title": "Tiny reddit post",
+            "summary": "Cloud thought",
+            "relevance_score": 7,
+            "source_type": "reddit",
+            "url": "https://www.reddit.com/r/netsec/comments/aaa111/post/",
+            "raw_data": {"engagement": {"upvotes": 2, "comments": 1}},
+        }
+        high_tweet = {
+            "id": str(uuid4()),
+            "title": "Popular cloud vuln thread",
+            "summary": "Exploit + mitigations",
+            "relevance_score": 7,
+            "source_type": "twitter",
+            "url": "https://x.com/user/status/123",
+            "raw_data": {
+                "public_metrics": {
+                    "like_count": 900,
+                    "retweet_count": 120,
+                    "reply_count": 30,
+                    "quote_count": 10,
+                }
+            },
+        }
+        exempt_high_relevance = {
+            "id": str(uuid4()),
+            "title": "Critical cloud incident report",
+            "summary": "High-confidence exploit path and patch",
+            "relevance_score": 9,
+            "source_type": "reddit",
+            "url": "https://www.reddit.com/r/netsec/comments/bbb222/post/",
+            "raw_data": {"engagement": {"upvotes": 1, "comments": 0}},
+        }
+
+        assert executor._passes_source_floor(low_reddit) is False
+        assert executor._passes_source_floor(high_tweet) is True
+        assert executor._passes_source_floor(exempt_high_relevance) is True
+
+    def test_quality_gate_flags_missing_urls_and_structure(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        selected = [
+            {"url": "https://example.com/one", "source_type": "ghsa"},
+            {"url": "https://example.com/two", "source_type": "rss"},
+        ]
+        markdown = (
+            "**Threat Radar**\n"
+            "- [One](https://example.com/one) has exploit details.\n\n"
+            "**Operator Moves (next 24h)**\n"
+            "- Patch now"
+        )
+
+        gate = executor._quality_gate(
+            markdown=markdown,
+            selected_items=selected,
+            mode="standard",
+            min_chars=200,
+            hard_max_chars=2000,
+        )
+        issue_text = " ".join(gate["issues"])
+        assert gate["passed"] is False
+        assert "Missing selected URL" in issue_text
+        assert "exactly 3 bullets" in issue_text
+
+    def test_quiet_day_mode_detection(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_quiet_day_enabled=True,
+            briefing_quiet_day_high_signal_threshold=8,
+            briefing_quiet_day_min_high_signal_items=3,
+        )
+        executor = WriterExecutor(settings)
+
+        low_signal_items = [
+            {
+                "title": "General cloud update",
+                "summary": "Not directly actionable",
+                "relevance_score": 7,
+                "source_type": "rss",
+            },
+            {
+                "title": "Another note",
+                "summary": "Context only",
+                "relevance_score": 7,
+                "source_type": "reddit",
+            },
+        ]
+        high_signal_items = [
+            {
+                "title": "CVE-2026-1234 auth bypass patch",
+                "summary": "Exploit in the wild, mitigation available",
+                "relevance_score": 9,
+                "source_type": "ghsa",
+            },
+            {
+                "title": "CVE-2026-1111 container escape",
+                "summary": "Patch + detections published",
+                "relevance_score": 9,
+                "source_type": "rss",
+            },
+            {
+                "title": "RCE in cloud control plane",
+                "summary": "Fix and IOC guidance",
+                "relevance_score": 8,
+                "source_type": "twitter",
+            },
+        ]
+
+        assert executor._is_quiet_day(low_signal_items) is True
+        assert executor._is_quiet_day(high_signal_items) is False
 
 
 # ── Distributor tests ────────────────────────────────────────────────────

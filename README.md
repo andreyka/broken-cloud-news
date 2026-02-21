@@ -140,6 +140,10 @@ Important briefing-quality knobs:
 - `BCN_BRIEFING_MAX_ITEMS_PER_DOMAIN` (default `2`) prevents single-domain monoculture.
 - `BCN_BRIEFING_MIN_CHARS`/`BCN_BRIEFING_TARGET_CHARS`/`BCN_BRIEFING_HARD_MAX_CHARS`
   (defaults `1200`/`1700`/`2300`) increase depth while keeping Telegram-safe output.
+- `BCN_BRIEFING_SOCIAL_PROOF_WEIGHT` + `BCN_BRIEFING_SOCIAL_PROOF_MAX_BONUS`
+  add bounded engagement influence (likes/retweets/upvotes/comments) to ranking.
+- `BCN_SCRAPE_PLAYWRIGHT_FETCH_FALLBACK` (default `true`) uses Playwright request
+  fallback when direct HTTP fetches of feeds/Reddit endpoints fail.
 
 ---
 
