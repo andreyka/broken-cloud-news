@@ -192,6 +192,16 @@ class WriterExecutor(AgentExecutor):
                     hard_max_chars=hard_max_chars,
                 )
 
+        briefing_body = self._normalize_section_headings(briefing_body)
+        # Final deterministic safety net before persistence/distribution.
+        final_missing = self._missing_items_for_markdown(briefing_body, selected_items)
+        if final_missing:
+            logger.warning(
+                "Final guard: appending %d missing selected URLs before publishing",
+                len(final_missing),
+            )
+            briefing_body = self._append_missing_items_section(briefing_body, final_missing)
+
         logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
         topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in selected_items)
@@ -601,7 +611,9 @@ class WriterExecutor(AgentExecutor):
         hard_max_chars: int,
     ) -> str:
         """Enforce URL coverage and depth/length constraints on LLM draft."""
-        markdown = self._dedupe_markdown_links((briefing_body or "").strip())
+        markdown = self._normalize_section_headings(
+            self._dedupe_markdown_links((briefing_body or "").strip())
+        )
 
         for _ in range(2):
             missing_items = self._missing_items_for_markdown(markdown, selected_items)
@@ -619,7 +631,9 @@ class WriterExecutor(AgentExecutor):
                 missing_urls=missing_urls or None,
                 mode=mode,
             )
-            markdown = self._dedupe_markdown_links(markdown.strip())
+            markdown = self._normalize_section_headings(
+                self._dedupe_markdown_links(markdown.strip())
+            )
 
         missing_items = self._missing_items_for_markdown(markdown, selected_items)
         if missing_items:
@@ -631,7 +645,9 @@ class WriterExecutor(AgentExecutor):
                 target_chars=target_chars,
                 hard_max_chars=hard_max_chars,
             )
-            markdown = self._dedupe_markdown_links(markdown.strip())
+            markdown = self._normalize_section_headings(
+                self._dedupe_markdown_links(markdown.strip())
+            )
             missing_items = self._missing_items_for_markdown(markdown, selected_items)
             if missing_items:
                 markdown = self._append_missing_items_section(markdown, missing_items)
@@ -639,7 +655,27 @@ class WriterExecutor(AgentExecutor):
         if len(markdown) > hard_max_chars:
             markdown = self._clip_markdown(markdown, hard_max_chars)
 
+        # URL coverage is a hard requirement; restore any missing links even if over target length.
+        missing_items = self._missing_items_for_markdown(markdown, selected_items)
+        if missing_items:
+            markdown = self._append_missing_items_section(markdown, missing_items)
+
         return markdown.strip()
+
+    @staticmethod
+    def _normalize_section_headings(markdown: str) -> str:
+        """Convert markdown headings to Telegram-friendly bold section lines."""
+        lines = markdown.splitlines()
+        normalized: list[str] = []
+        for line in lines:
+            match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+            if not match:
+                normalized.append(line)
+                continue
+            heading = match.group(1).strip()
+            heading = re.sub(r"^\*\*(.+)\*\*$", r"\1", heading).strip()
+            normalized.append(f"**{heading}**")
+        return "\n".join(normalized)
 
     def _quality_gate(
         self,
