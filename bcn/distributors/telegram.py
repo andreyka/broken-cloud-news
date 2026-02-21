@@ -25,10 +25,16 @@ class TelegramDistributor:
         api: Base URL for the Telegram Bot API.
     """
 
-    def __init__(self, bot_token: str, chat_id: str) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        overflow_mode: str = "smart",
+    ) -> None:
         self.bot_token: str = bot_token
         self.chat_id: str = chat_id
         self.api: str = f"https://api.telegram.org/bot{bot_token}"
+        self.overflow_mode: str = overflow_mode
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
 
     async def close(self) -> None:
@@ -83,7 +89,7 @@ class TelegramDistributor:
             if photo_msg_id is not None:
                 # Send overflow text (beyond caption limit) as a reply
                 overflow = clean_text[len(self._truncate_caption(clean_text)):].lstrip("\n")
-                if overflow:
+                if overflow and self._should_send_overflow(overflow):
                     for chunk in self._split_message(overflow):
                         await self._client.post(
                             f"{self.api}/sendMessage",
@@ -95,6 +101,11 @@ class TelegramDistributor:
                                 "reply_to_message_id": photo_msg_id,
                             },
                         )
+                elif overflow:
+                    logger.info(
+                        "Telegram overflow omitted by '%s' mode (%d chars)",
+                        self.overflow_mode, len(overflow),
+                    )
             else:
                 # Fallback: no photo, send as plain text message(s)
                 for chunk in self._split_message(clean_text):
@@ -117,8 +128,8 @@ class TelegramDistributor:
     def _truncate_caption(text: str) -> str:
         """Truncate text to fit Telegram's photo caption limit.
 
-        Splits at the last newline before the limit so that words are
-        not cut mid-line.
+        Splits on semantic boundaries and avoids ending on dangling
+        section headers.
 
         Args:
             text: The full message text.
@@ -128,10 +139,8 @@ class TelegramDistributor:
         """
         if len(text) <= TELEGRAM_MAX_CAPTION:
             return text
-        split_at = text.rfind("\n", 0, TELEGRAM_MAX_CAPTION)
-        if split_at == -1:
-            split_at = TELEGRAM_MAX_CAPTION
-        return text[:split_at]
+        split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_CAPTION)
+        return text[:split_at].rstrip("\n")
 
     @staticmethod
     def _split_message(text: str) -> list[str]:
@@ -155,12 +164,87 @@ class TelegramDistributor:
                 chunks.append(text)
                 break
 
-            # Try to split at a newline near the limit
-            split_at = text.rfind("\n", 0, TELEGRAM_MAX_MESSAGE)
-            if split_at == -1:
+            split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_MESSAGE)
+            if split_at <= 0:
                 split_at = TELEGRAM_MAX_MESSAGE
 
-            chunks.append(text[:split_at])
+            chunks.append(text[:split_at].rstrip("\n"))
             text = text[split_at:].lstrip("\n")
 
         return chunks
+
+    @staticmethod
+    def _find_split_at(text: str, limit: int) -> int:
+        """Find a safe split index near ``limit`` without dangling headings."""
+        if len(text) <= limit:
+            return len(text)
+
+        min_idx = max(1, int(limit * 0.55))
+        para_split = text.rfind("\n\n", 0, limit + 1)
+        line_split = text.rfind("\n", 0, limit + 1)
+
+        if para_split >= min_idx:
+            split_at = para_split
+        elif line_split >= min_idx:
+            split_at = line_split
+        elif para_split > 0:
+            split_at = para_split
+        elif line_split > 0:
+            split_at = line_split
+        else:
+            split_at = limit
+
+        split_at = TelegramDistributor._rewind_if_dangling_tail(
+            text=text,
+            split_at=split_at,
+            min_idx=max(1, int(limit * 0.45)),
+        )
+        return split_at
+
+    @staticmethod
+    def _rewind_if_dangling_tail(text: str, split_at: int, min_idx: int) -> int:
+        """Rewind split if chunk ends with a heading or incomplete lead-in."""
+        current = split_at
+        for _ in range(3):
+            chunk = text[:current].rstrip("\n")
+            if not TelegramDistributor._ends_with_dangling_line(chunk):
+                break
+
+            prev_para = text.rfind("\n\n", 0, max(current - 1, 0))
+            prev_line = text.rfind("\n", 0, max(current - 1, 0))
+            candidate = prev_para if prev_para >= min_idx else prev_line
+            if candidate < min_idx:
+                break
+            current = candidate
+
+        return current
+
+    @staticmethod
+    def _ends_with_dangling_line(chunk: str) -> bool:
+        """Detect chunk tails that should not be final line of a message."""
+        lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
+        if not lines:
+            return False
+
+        tail = lines[-1]
+        if re.fullmatch(r"\*\*[^*].*?\*\*", tail):
+            return True
+        if tail.endswith(":") and len(tail) <= 100:
+            return True
+        return False
+
+    def _should_send_overflow(self, overflow: str) -> bool:
+        """Decide whether overflow should be posted as a second Telegram message."""
+        mode = (self.overflow_mode or "smart").lower()
+        if mode == "always":
+            return True
+        if mode == "never":
+            return False
+
+        if re.search(r"https?://", overflow):
+            return True
+        if re.search(r"(cve-\d{4}-\d+|ghsa-|patch|fix|exploit|advisory)", overflow, re.I):
+            return True
+
+        # Drop short trailing remarks to avoid needless second messages.
+        return len(overflow) >= 320 and overflow.count("\n") >= 2

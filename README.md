@@ -12,7 +12,8 @@ Four A2A agents work together, coordinated by an internal scheduler. Each agent 
 flowchart TB
     subgraph Sources["Data Sources"]
         GHSA["GitHub Security\nAdvisories"]
-        RSS["RSS Feeds\n(CISA, AWS)"]
+        RSS["RSS Feeds\n(CISA, AWS, Cloudflare)"]
+        Reddit["Reddit RSS\n(r/netsec + cloud subreddits)"]
         Twitter["Twitter/X\n(X API v2)"]
     end
 
@@ -38,6 +39,7 @@ flowchart TB
 
     GHSA --> Collector
     RSS --> Collector
+    Reddit --> Collector
     Twitter --> Collector
     Collector -- "store items" --> DB
     DB -- "unanalyzed items" --> Analyst
@@ -60,7 +62,7 @@ flowchart TB
 
 | Agent | Port | Trigger | Role |
 |-------|------|---------|------|
-| **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA + AWS), Twitter/X via API v2 |
+| **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA/AWS/Cloudflare), Reddit RSS, Twitter/X via API v2 |
 | **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
 | **Writer** | 9003 | Daily 9:00 | Generates briefing + Flux cover image from top items |
 | **Distributor** | 9004 | After Writer | Sends photo+caption to Telegram channel |
@@ -99,6 +101,7 @@ cp .env.example .env
 ```bash
 bcn collect              # Collect from all sources
 bcn collect -s ghsa      # Collect GHSA only
+bcn collect -s reddit    # Collect Reddit RSS only
 bcn analyze              # Analyze new items with LLM
 bcn write                # Generate briefing + cover image
 bcn distribute           # Send to configured channels
@@ -131,6 +134,12 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_TELEGRAM_BOT_TOKEN` | - | Telegram bot token |
 | `BCN_TELEGRAM_CHAT_ID` | - | Telegram channel chat ID |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) to include in briefing |
+
+Important briefing-quality knobs:
+- `BCN_BRIEFING_MAX_RSS_ITEMS` (default `3`) limits RSS dominance.
+- `BCN_BRIEFING_MAX_ITEMS_PER_DOMAIN` (default `2`) prevents single-domain monoculture.
+- `BCN_BRIEFING_MIN_CHARS`/`BCN_BRIEFING_TARGET_CHARS`/`BCN_BRIEFING_HARD_MAX_CHARS`
+  (defaults `1200`/`1700`/`2300`) increase depth while keeping Telegram-safe output.
 
 ---
 
@@ -211,7 +220,7 @@ bcn/
   scraper.py          Playwright headless Chromium scraper
   agents/
     base.py           A2A agent boilerplate
-    collector.py      Data collection (GHSA, RSS, Twitter/X)
+    collector.py      Data collection (GHSA, RSS, Reddit, Twitter/X)
     analyst.py        LLM relevance scoring + summarization
     writer.py         Briefing + cover image generation
     distributor.py    Multi-channel distribution

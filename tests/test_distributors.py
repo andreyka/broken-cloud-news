@@ -28,6 +28,37 @@ class TestTelegramDistributor:
         truncated = TelegramDistributor._truncate_caption(text)
         assert len(truncated) <= 1024
 
+    def test_truncate_caption_avoids_dangling_heading(self):
+        prefix = ("Complete sentence about previous item.\n" * 30).strip()
+        text = (
+            prefix
+            + "\n\n**Network Protocol Exploits**\n"
+            + "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
+        )
+        truncated = TelegramDistributor._truncate_caption(text)
+        assert not truncated.rstrip().endswith("**Network Protocol Exploits**")
+        overflow = text[len(truncated):].lstrip("\n")
+        assert overflow.startswith("**Network Protocol Exploits**")
+
+    def test_overflow_smart_drops_short_fluff(self):
+        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100", overflow_mode="smart")
+        assert dist._should_send_overflow("quick trailing remark") is False
+
+    def test_overflow_smart_keeps_actionable(self):
+        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100", overflow_mode="smart")
+        assert dist._should_send_overflow("Patch: CVE-2026-1234 fix here https://example.com") is True
+
+    def test_split_message_avoids_heading_tail(self):
+        prefix = ("line\n" * 900).strip()
+        text = (
+            prefix
+            + "\n\n**Network Protocol Exploits**\n"
+            + "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
+        )
+        chunks = TelegramDistributor._split_message(text)
+        assert len(chunks) > 1
+        assert not chunks[0].rstrip().endswith("**Network Protocol Exploits**")
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_send_text_only(self):

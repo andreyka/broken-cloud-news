@@ -40,7 +40,8 @@ async def _send_to_agent(port: int, skill: str) -> str:
     from a2a.client import A2AClient
     from a2a.types import MessageSendParams, SendMessageRequest, Message, TextPart
 
-    async with httpx.AsyncClient() as http_client:
+    timeout = (_settings.a2a_request_timeout_seconds if _settings else 180)
+    async with httpx.AsyncClient(timeout=timeout) as http_client:
         client = A2AClient(http_client, url=f"http://localhost:{port}")
 
         message = Message(
@@ -87,6 +88,11 @@ async def _job_collect_rss() -> None:
 async def _job_collect_twitter() -> None:
     """Scheduled job: trigger Twitter/X collection."""
     await _send_to_agent(_settings.collector_port, "collect_twitter")
+
+
+async def _job_collect_reddit() -> None:
+    """Scheduled job: trigger Reddit collection."""
+    await _send_to_agent(_settings.collector_port, "collect_reddit")
 
 
 async def _job_analyze() -> None:
@@ -175,7 +181,7 @@ def cli(verbose: bool) -> None:
 @cli.command()
 @click.option(
     "--source", "-s",
-    type=click.Choice(["all", "ghsa", "rss", "twitter"]),
+    type=click.Choice(["all", "ghsa", "rss", "twitter", "reddit"]),
     default="all",
 )
 def collect(source: str) -> None:
@@ -198,9 +204,15 @@ def collect(source: str) -> None:
         elif source == "twitter":
             count = await executor._collect_twitter()
             click.echo(f"Twitter: collected {count} items")
+        elif source == "reddit":
+            count = await executor._collect_reddit()
+            click.echo(f"Reddit: collected {count} items")
         else:
             counts = await executor._collect_all()
-            click.echo(f"All: GHSA={counts[0]}, RSS={counts[1]}, Twitter={counts[2]}")
+            click.echo(
+                f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                f"Twitter={counts[2]}, Reddit={counts[3]}"
+            )
 
         await close_pool()
 
@@ -268,53 +280,13 @@ def write() -> None:
 
     async def _run():
         from bcn.agents.writer import WriterExecutor
-        from bcn.db import get_pool, close_pool, get_analyzed_items, insert_briefing
-        from bcn.comfyui import ComfyUIClient
-        from bcn.llm import LLMClient
-        import time
-        from datetime import datetime, timezone
 
-        await get_pool(settings)
-        llm = LLMClient(settings.llm_base_url, settings.llm_model, settings.llm_timeout)
-        comfyui = ComfyUIClient(settings.comfyui_url, settings.comfyui_timeout, settings.comfyui_poll_interval)
-
-        items = await get_analyzed_items(settings.relevance_threshold, settings.briefing_lookback_hours)
-        if not items:
-            click.echo(
-                f"Quiet day — no items scored >= {settings.relevance_threshold} "
-                f"in the last {settings.briefing_lookback_hours}h. Skipping briefing."
-            )
-            return
-
-        items = items[:5]
-        click.echo(f"Generating briefing from {len(items)} items...")
-
-        topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in items)
-        cover_prompt = await llm.generate_cover_prompt(topics)
-        click.echo(f"Cover prompt: {cover_prompt[:80]}...")
-
-        cover_url = ""
-        try:
-            prefix = f"Digest_Cover_{int(time.time() * 1000)}"
-            cover_url = await comfyui.generate_image(cover_prompt, prefix)
-            click.echo(f"Cover image: {cover_url}")
-        except Exception as exc:
-            click.echo(f"Cover image generation failed: {exc}", err=True)
-
-        # Generate the editorial briefing text via LLM
-        briefing_body = await llm.generate_briefing(items)
-        click.echo(f"Briefing generated ({len(briefing_body)} chars)")
-
-        markdown = WriterExecutor._format_markdown(briefing_body, cover_url)
-        html = WriterExecutor._format_html(briefing_body, cover_url)
-
-        item_ids = [i["id"] for i in items]
-        bid = await insert_briefing(markdown, html, cover_url, cover_prompt, item_ids)
-        click.echo(f"Briefing {bid} created")
-
-        await llm.close()
-        await comfyui.close()
-        await close_pool()
+        result = await _run_agent_directly(
+            executor_cls=WriterExecutor,
+            settings=settings,
+            skill="generate_briefing",
+        )
+        click.echo(result)
 
     asyncio.run(_run())
 
@@ -340,7 +312,14 @@ def distribute() -> None:
 
         channels: list[tuple[str, TelegramDistributor | EmailDistributor | SlackDistributor]] = []
         if settings.telegram_bot_token and settings.telegram_chat_id:
-            channels.append(("telegram", TelegramDistributor(settings.telegram_bot_token, settings.telegram_chat_id)))
+            channels.append((
+                "telegram",
+                TelegramDistributor(
+                    settings.telegram_bot_token,
+                    settings.telegram_chat_id,
+                    overflow_mode=settings.telegram_overflow_mode,
+                ),
+            ))
         if settings.smtp_host and settings.email_recipients:
             channels.append(("email", EmailDistributor(
                 settings.smtp_host, settings.smtp_port, settings.smtp_user,
@@ -426,7 +405,7 @@ def run() -> None:
 
         # Build agent cards
         collector_card = build_agent_card(
-            "BCN Collector", "Collects cloud security news from GHSA, Twitter, RSS",
+            "BCN Collector", "Collects cloud security news from GHSA, Twitter, RSS, Reddit",
             f"http://localhost:{settings.collector_port}/", COLL_SKILLS,
         )
         analyst_card = build_agent_card(
@@ -473,6 +452,11 @@ def run() -> None:
                 _job_collect_rss,
                 IntervalTrigger(hours=settings.rss_interval_hours),
                 id="rss_collector",
+            )
+            await scheduler.add_schedule(
+                _job_collect_reddit,
+                IntervalTrigger(hours=settings.reddit_interval_hours),
+                id="reddit_collector",
             )
             await scheduler.add_schedule(
                 _job_collect_twitter,

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+from typing import Any
 
 import httpx
 
@@ -15,79 +16,97 @@ logger = logging.getLogger(__name__)
 
 # Analyzer system prompt
 ANALYZER_SYSTEM_PROMPT = (
-    "You are a Senior Cloud Security Engineer curating the 'Broken Cloud' daily security brief. "
-    "Your goal is to identify practical, hands-on cloud and cloud-native security content while "
-    "filtering out marketing fluff, theoretical chatter, and off-topic items.\n\n"
-    "SCOPE: The newsletter is strictly about CLOUD and CLOUD-NATIVE security — "
-    "Kubernetes, Docker, containers, serverless, AWS/Azure/GCP, Terraform, IAM, CI/CD pipelines, "
-    "supply chain security, cloud-native tooling. "
-    "General AI/ML news, ICS/SCADA, on-prem-only vulnerabilities, and generic infosec commentary "
-    "that don't directly relate to cloud infrastructure should score LOW (1-3).\n\n"
-    "Analyze the following content and return JSON with:\n"
-    "1. summary: A concise, technical summary (1-2 sentences MAX) focusing on the 'so what?' for a cloud practitioner. Be brief.\n"
-    "2. relevance_score: 1-10 based on THESE criteria (not just severity!):\n"
-    "   - 9-10: Active exploitation in the wild, public PoC available, or critical vuln widely "
-    "     present in cloud workloads (Kubernetes, Docker, AWS/Azure/GCP, Terraform, IAM). "
-    "     Must have concrete technical details, not just a CVE number.\n"
-    "   - 7-8: Critical/High severity WITH detailed write-up, exploit path described, "
-    "     or significant tooling for offensive/defensive cloud security. Affects common cloud components.\n"
-    "   - 5-6: Important cloud advisory but lacking detail, or good cloud security content that's not immediately actionable.\n"
-    "   - 3-4: Niche/ICS-only vulnerabilities, compliance updates, vendor-specific without broad cloud impact, "
-    "     or general AI/security content only tangentially related to cloud.\n"
-    "   - 1-2: Marketing fluff, policy-only content, or unrelated to cloud security practice.\n"
-    "   KEY: A CRITICAL severity CVE with only a title and no details/PoC/exploit path should score 5-6, "
-    "   NOT 8-10. Score is about actionability and depth, not just severity label.\n"
-    "3. tags: Array of 3-5 technical tags.\n"
-    "4. image_prompt: A creative, eye-catching image prompt for an AI art generator. "
-    "Abstractly represent the core technical concept (e.g., cyberpunk server room, glowing digital shield). "
-    "Avoid text. Make it dramatic and high contrast."
+    "You are a principal cloud security engineer curating the 'Broken Cloud' digest.\n"
+    "Goal: prioritize practical, patchable, high-signal cloud security items.\n\n"
+    "Audience:\n"
+    "- Cloud provider defenders (CSP side)\n"
+    "- Cloud customers running production workloads\n\n"
+    "Scoring rules (1-10):\n"
+    "- 9-10: actively exploited / high-confidence exploit path / concrete patch+detection guidance.\n"
+    "- 7-8: major cloud-native security issue with actionable technical detail.\n"
+    "- 5-6: relevant but weakly actionable or missing technical depth.\n"
+    "- 1-4: noisy, generic AI hype, CTF/event announcements, marketing, off-topic items.\n\n"
+    "Hard scope: cloud and cloud-native security only (Kubernetes, containers, cloud IAM, "
+    "serverless, AWS/Azure/GCP, Terraform, supply chain, managed data services, service mesh).\n\n"
+    "Output STRICT JSON only:\n"
+    "{\n"
+    '  "summary": "1-2 sentence practitioner-focused summary",\n'
+    '  "relevance_score": 1-10,\n'
+    '  "tags": ["3-5 technical tags"],\n'
+    '  "image_prompt": "dramatic visual concept, no text"\n'
+    "}\n\n"
+    "Think through relevance and actionability internally before answering; "
+    "do not reveal reasoning or intermediate steps.\n\n"
+    "Few-shot examples:\n"
+    "Example A (high signal):\n"
+    "Input title: Critical auth bypass in managed Kubernetes ingress allows unauthenticated admin actions\n"
+    "Input content: includes exploit path, affected versions, patch release and detection query.\n"
+    "Output JSON:\n"
+    '{"summary":"Auth bypass in managed K8s ingress enables unauthenticated admin actions; patch immediately and hunt for suspicious admin API calls.","relevance_score":9,"tags":["kubernetes","auth-bypass","managed-k8s","ingress","detection"],"image_prompt":"storm over a neon container cluster, breached gateway shield, high contrast cinematic lighting"}\n\n'
+    "Example B (low signal):\n"
+    "Input title: Join our weekend CTF challenge about AI agents!\n"
+    "Input content: event announcement, no production exploit or remediation.\n"
+    "Output JSON:\n"
+    '{"summary":"CTF/event announcement without production cloud impact or actionable remediation guidance.","relevance_score":2,"tags":["ctf","event","ai-agents"],"image_prompt":"digital arena with training targets and holographic puzzles, dramatic but abstract"}'
 )
 
 # Cover art system prompt
 COVER_ART_SYSTEM_PROMPT = (
-    "You are an AI art director for a security newsletter. Create a single, high-contrast, dramatic "
-    "image prompt that abstractly represents the following security topics. Avoid text. Focus on visual "
-    "metaphors (e.g., cloud, cybersecurity, data centers, digital storms, cyber shields, cyber warfare, "
-    "cyberpunk). Be creative. Return ONLY the prompt text."
+    "You are an AI art director for a cloud security newsletter. Create one dramatic, "
+    "high-contrast image prompt that visualizes the provided topics. No text in image."
 )
 
-
 BRIEFING_SYSTEM_PROMPT = (
-    "You are the editor-in-chief of 'Broken Cloud Daily Briefing', a punchy cloud-security newsletter "
-    "beloved for its sharp wit, clear insight, and no-BS tone.\n\n"
-    "SCOPE: This newsletter is strictly about CLOUD and CLOUD-NATIVE security. "
-    "Only include items that directly relate to cloud infrastructure, containers, Kubernetes, "
-    "serverless, AWS/Azure/GCP, Terraform, IAM, CI/CD, or supply chain security. "
-    "Skip items that are general AI news, generic infosec commentary, or off-topic — even if they "
-    "appear in the input. It is perfectly fine to have a briefing with only 1-2 items, or even to "
-    "report that it's a quiet day.\n\n"
-    "You will receive a set of scored security items. Each item has a title, summary, main URL, "
-    "and possibly extra reference links (GitHub commits, blog write-ups, etc.).\n\n"
-    "Write a single cohesive briefing in Markdown that:\n"
-    "1. Opens with a short editorial intro (1 sentence) capturing the security mood of the day.\n"
-    "2. Groups items by theme with a short, creative section name derived from the actual content. "
-    "Each briefing should have unique section names — never reuse the same ones across days. "
-    "Keep them to 2-3 words.\n"
-    "3. For each item write ONE sentence — your sharp take on why it matters. "
-    "Include the main title as a Markdown hyperlink using the item's URL. "
-    "If the item includes 'Reference links', you may pick 1-2 of the MOST useful ones "
-    "(prioritize: blog write-ups > GitHub PRs/commits > official advisories). "
-    "Add them as extra inline links like [write-up](url) or [fix](url). "
-    "Skip generic NVD/MITRE/errata links.\n"
-    "CRITICAL: Only use URLs that are explicitly provided in the input data. "
-    "NEVER fabricate, guess, or construct URLs. NEVER duplicate the main URL as a reference link. "
-    "If an item has no reference links, just use the main URL — do NOT add extra links.\n"
-    "4. Closes with a punchy one-liner sign-off.\n\n"
-    "LENGTH GUIDANCE:\n"
-    "The briefing is sent as a Telegram photo caption (limit: 1024 characters). "
-    "You MUST aim for under 1000 characters. This is a hard target, not a suggestion. "
-    "A single clean message with the cover image looks far better than a message with overflow. "
-    "Brevity is the entire point: cut filler words, use short section names, one short sentence per item, "
-    "skip the intro if space is tight.\n"
-    "Going over 1000 characters should be RARE — only for truly exceptional days (major breach, "
-    "critical 0-day with PoC). Even then, cap at 1500 characters.\n\n"
-    "Do NOT include a title/header line — that will be added by the system. "
-    "Do NOT use score numbers or 'Source:' labels. Write for humans, not robots."
+    "You are the technical editor of 'Broken Cloud Daily Briefing'.\n"
+    "Write like a senior cloud security engineer + tech writer: human, practical, vivid, and precise.\n\n"
+    "Primary objective:\n"
+    "- Deliver actionable signal for offensive and defensive practitioners.\n"
+    "- Prefer exploitable flaws, incidents, hardening changes, patches, and detection opportunities.\n"
+    "- De-prioritize generic AI hype and social chatter.\n\n"
+    "Format rules:\n"
+    "1. Markdown only.\n"
+    "2. Opening: 1-2 lines with a concrete scene setter (no cliches).\n"
+    "3. 3-4 short themed sections (`**Section Name**`).\n"
+    "4. Cover every candidate item exactly once with its main Markdown link.\n"
+    "5. Each item line must include: what happened, why it matters, and the immediate move.\n"
+    "6. Add a section `**Operator Moves (next 24h)**` with exactly 3 bullets.\n"
+    "7. One short closing line.\n\n"
+    "Hard constraints:\n"
+    "- Every candidate item URL must appear exactly once in the output.\n"
+    "- Use only URLs provided in input.\n"
+    "- Never duplicate the same URL in the same item line.\n"
+    "- Never invent links.\n"
+    "- Avoid repetitive cliches and AI-stamp phrasing.\n"
+    "- Target 1200-2300 characters.\n\n"
+    "Think internally about novelty and phrasing diversity using the provided history, "
+    "but do not output reasoning.\n\n"
+    "Few-shot style example (target quality):\n"
+    "Opening: 'Patch Tuesday energy, but for cloud control planes.'\n"
+    "Section: **Identity Breaks**\n"
+    "Line: [Managed IAM token confusion bug](https://example.com/advisory) enables cross-tenant privilege use; ship vendor patch and alert on anomalous token audience mismatches.\n"
+    "Section: **Control Plane Heat**\n"
+    "Line: [Ingress auth bypass in K8s](https://example.com/k8s) exposes admin verbs without auth; prioritize cluster edge upgrades and tighten admission policies.\n"
+    "Closing: 'Patch first, postmortem later.'"
+)
+
+BRIEFING_TIGHTENER_PROMPT = (
+    "You are editing a cloud-security digest for Telegram caption delivery.\n"
+    "Rewrite the text to fit the target length while preserving meaning and links.\n"
+    "Rules: keep Markdown links intact, remove fluff, keep practical details, keep section structure, "
+    "and output only revised Markdown."
+)
+
+BRIEFING_ENRICHER_PROMPT = (
+    "You are rewriting a cloud-security digest draft.\n"
+    "Goal: increase depth, practical value, and stylistic freshness while preserving factual grounding.\n"
+    "Rules:\n"
+    "- Keep Markdown format.\n"
+    "- Keep all links valid and from the provided item list only.\n"
+    "- Include every required URL exactly once.\n"
+    "- Keep sections compact but informative, with concrete defensive/offensive next steps.\n"
+    "- Avoid generic AI hype language and stale newsletter cliches.\n"
+    "- Stay within requested length bounds.\n"
+    "Output only the rewritten digest."
 )
 
 _SKIP_DOMAINS = frozenset({
@@ -102,6 +121,7 @@ class LLMClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._url_status_cache: dict[str, bool] = {}
 
     async def close(self) -> None:
         """Release the underlying HTTP connection pool."""
@@ -113,19 +133,7 @@ class LLMClient:
         user_content: str,
         retries: int = 3,
     ) -> str:
-        """Send a chat-completion request with automatic retries.
-
-        Args:
-            system_prompt: The system message.
-            user_content: The user message.
-            retries: Maximum number of attempts.
-
-        Returns:
-            The assistant's reply text.
-
-        Raises:
-            httpx.TimeoutException: If all retries are exhausted.
-        """
+        """Send a chat-completion request with automatic retries."""
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
@@ -153,15 +161,7 @@ class LLMClient:
         raise last_exc  # type: ignore[misc]
 
     async def analyze_item(self, title: str, content: str) -> AnalysisResult:
-        """Score and summarize a single news item.
-
-        Args:
-            title: The item title.
-            content: The item body text.
-
-        Returns:
-            An ``AnalysisResult`` with summary, score, tags, and image prompt.
-        """
+        """Score and summarize a single news item."""
         user_msg = f"Title: {title}\n\nContent: {content}"
         raw = await self.chat(ANALYZER_SYSTEM_PROMPT, user_msg)
 
@@ -184,64 +184,171 @@ class LLMClient:
                 image_prompt="cloud security concept art",
             )
 
-    async def generate_briefing(self, items: list[dict]) -> str:
-        """Generate a creative editorial briefing from analyzed items.
-
-        Args:
-            items: Database records with ``title``, ``url``, ``summary``,
-                ``relevance_score``, ``source_type``, and ``raw_data``.
-
-        Returns:
-            Markdown text of the complete briefing.
-        """
+    async def generate_briefing(
+        self,
+        items: list[dict],
+        recent_briefings: list[dict] | None = None,
+    ) -> str:
+        """Generate an editorial briefing from analyzed items."""
         entries: list[str] = []
         for item in items:
-            entry = (
-                f"- Title: {item['title']}\n"
-                f"  URL: {item['url']}\n"
-                f"  Summary: {item['summary']}\n"
-                f"  Score: {item['relevance_score']}/10\n"
-                f"  Source: {item['source_type']}"
-            )
-            ref_urls: list[str] = []
-            raw = item.get("raw_data")
-            if raw:
-                if isinstance(raw, str):
-                    try:
-                        raw = json.loads(raw)
-                    except (json.JSONDecodeError, TypeError):
-                        raw = {}
-                refs = raw.get("references", [])
-                seen: set[str] = set()
-                for ref in refs:
-                    url = ref.get("url", "") if isinstance(ref, dict) else str(ref)
-                    if (
-                        url
-                        and url not in seen
-                        and not any(d in url for d in _SKIP_DOMAINS)
-                        and url != item["url"]
-                    ):
-                        seen.add(url)
-                        ref_urls.append(url)
-            if ref_urls:
-                entry += "\n  Reference links:\n" + "\n".join(
-                    f"    - {u}" for u in ref_urls[:5]
-                )
-            else:
-                entry += "\n  Reference links: none"
-            entries.append(entry)
-        user_msg = "Today's items:\n\n" + "\n\n".join(entries)
+            entries.append(await self._build_briefing_entry(item))
+
+        style_memory = self._build_style_memory(recent_briefings or [])
+        user_msg = (
+            f"Today's candidate items ({len(entries)} total). "
+            "Use every main URL exactly once.\n\n"
+            + "\n\n".join(entries)
+        )
+        if style_memory:
+            user_msg += "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
         return await self.chat(BRIEFING_SYSTEM_PROMPT, user_msg)
 
+    async def tighten_briefing(
+        self,
+        markdown: str,
+        target_chars: int = 900,
+        hard_max_chars: int = 1000,
+    ) -> str:
+        """Compress briefing text while preserving links and practical meaning."""
+        user_msg = (
+            f"Target length: <= {target_chars} chars (hard max {hard_max_chars}).\n\n"
+            f"Digest:\n{markdown}"
+        )
+        tightened = await self.chat(BRIEFING_TIGHTENER_PROMPT, user_msg)
+        return tightened.strip()
+
+    async def enrich_briefing(
+        self,
+        draft_markdown: str,
+        items: list[dict],
+        *,
+        min_chars: int = 1200,
+        target_chars: int = 1700,
+        hard_max_chars: int = 2300,
+        missing_urls: list[str] | None = None,
+    ) -> str:
+        """Rewrite a draft briefing to improve depth and ensure URL coverage."""
+        entries: list[str] = []
+        for item in items:
+            entries.append(await self._build_briefing_entry(item))
+
+        user_msg = (
+            f"Length goal: {min_chars}-{hard_max_chars} chars (target ~{target_chars}).\n"
+            f"Current draft length: {len(draft_markdown)} chars.\n\n"
+            f"Current draft:\n{draft_markdown}\n\n"
+            f"Candidate items ({len(entries)} total):\n\n"
+            + "\n\n".join(entries)
+        )
+        if missing_urls:
+            missing = "\n".join(f"- {u}" for u in missing_urls)
+            user_msg += "\n\nRequired URLs currently missing and must be included exactly once:\n" + missing
+
+        rewritten = await self.chat(BRIEFING_ENRICHER_PROMPT, user_msg)
+        return rewritten.strip()
+
     async def generate_cover_prompt(self, topics: str) -> str:
-        """Generate a Flux image prompt from today's security topics.
-
-        Args:
-            topics: Bullet-list summary of today's items.
-
-        Returns:
-            A single-line image generation prompt.
-        """
+        """Generate a Flux image prompt from today's security topics."""
         user_msg = f"Topics:\n{topics}"
         raw = await self.chat(COVER_ART_SYSTEM_PROMPT, user_msg)
         return raw.replace("`", "").strip()
+
+    def _build_style_memory(self, recent_briefings: list[dict]) -> str:
+        """Build compact style-memory snippets to reduce repetitive writing."""
+        snippets: list[str] = []
+        for idx, briefing in enumerate(recent_briefings[:8], start=1):
+            body = self._strip_cover_image(briefing.get("content_markdown", ""))
+            lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+            if not lines:
+                continue
+
+            headings = re.findall(r"^\*\*(.+?)\*\*$", body, flags=re.MULTILINE)
+            opening = lines[0][:140]
+            closing = lines[-1][:140]
+            snippets.append(
+                f"{idx}) opening='{opening}' | headings={headings[:4]} | closing='{closing}'"
+            )
+
+        return "\n".join(snippets)
+
+    async def _build_briefing_entry(self, item: dict[str, Any]) -> str:
+        """Build a single item block for briefing generation."""
+        main_url = str(item.get("url") or "").strip()
+        ref_urls = self._extract_reference_urls(item.get("raw_data"), main_url)
+        ref_urls = await self._filter_live_reference_urls(ref_urls)
+
+        entry = (
+            f"- Title: {item.get('title', '')}\n"
+            f"  URL: {main_url}\n"
+            f"  Summary: {item.get('summary', '')}\n"
+            f"  Score: {item.get('relevance_score', 0)}/10\n"
+            f"  Source: {item.get('source_type', '')}"
+        )
+        if ref_urls:
+            entry += "\n  Reference links:\n" + "\n".join(f"    - {u}" for u in ref_urls[:3])
+        else:
+            entry += "\n  Reference links: none"
+        return entry
+
+    def _extract_reference_urls(self, raw_data: Any, main_url: str) -> list[str]:
+        """Extract and de-duplicate candidate reference URLs from raw source payload."""
+        raw: dict[str, Any] = {}
+        if isinstance(raw_data, str):
+            try:
+                raw = json.loads(raw_data)
+            except (json.JSONDecodeError, TypeError):
+                raw = {}
+        elif isinstance(raw_data, dict):
+            raw = raw_data
+
+        refs = raw.get("references", [])
+        seen: set[str] = set()
+        out: list[str] = []
+
+        for ref in refs:
+            url = ref.get("url", "") if isinstance(ref, dict) else str(ref)
+            url = url.strip()
+            if (
+                not url
+                or url in seen
+                or url == main_url
+                or any(domain in url for domain in _SKIP_DOMAINS)
+            ):
+                continue
+            seen.add(url)
+            out.append(url)
+
+        return out
+
+    async def _filter_live_reference_urls(self, urls: list[str]) -> list[str]:
+        """Drop broken links for domains where stale references are common."""
+        kept: list[str] = []
+        for url in urls:
+            if await self._is_reference_url_live(url):
+                kept.append(url)
+            else:
+                logger.info("Dropping dead reference URL: %s", url)
+        return kept
+
+    async def _is_reference_url_live(self, url: str) -> bool:
+        """Check URL liveness for GitHub links to avoid obvious 404 references."""
+        if not url.startswith(("http://", "https://")):
+            return False
+        if "github.com" not in url:
+            return True
+        if url in self._url_status_cache:
+            return self._url_status_cache[url]
+
+        try:
+            resp = await self._client.get(url, follow_redirects=True, timeout=10)
+            alive = resp.status_code in {200, 401, 403, 405, 429}
+        except Exception:
+            alive = False
+
+        self._url_status_cache[url] = alive
+        return alive
+
+    @staticmethod
+    def _strip_cover_image(markdown: str) -> str:
+        """Remove leading markdown image syntax from briefing body text."""
+        return re.sub(r"^!\[[^\]]*]\([^)]+\)\s*\n*", "", markdown.strip())

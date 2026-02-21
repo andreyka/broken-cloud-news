@@ -239,6 +239,21 @@ async def insert_briefing(
     return row["id"]
 
 
+async def get_recent_briefings(limit: int = 5) -> list[asyncpg.Record]:
+    """Return recent distributed briefings for style-memory context."""
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT id, created_at, content_markdown
+        FROM briefings
+        WHERE status = 'DISTRIBUTED'
+        ORDER BY created_at DESC
+        LIMIT $1
+        """,
+        limit,
+    )
+
+
 async def get_latest_briefing() -> Optional[asyncpg.Record]:
     """Return the most recent ``DRAFT`` briefing, or ``None``."""
     pool = await get_pool()
