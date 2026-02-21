@@ -114,6 +114,7 @@ class Settings(BaseSettings):
     analyst_port: int = 9002
     writer_port: int = 9003
     distributor_port: int = 9004
+    critic_port: int = 9005
 
     # Scheduling
     ghsa_interval_hours: int = 4

@@ -23,6 +23,7 @@ flowchart TB
         DB[("PostgreSQL\nnews_items\nbriefings")]
         Analyst["Analyst\n:9002"]
         Writer["Writer\n:9003"]
+        Critic["Critic\n:9005"]
         Distributor["Distributor\n:9004"]
     end
 
@@ -48,6 +49,8 @@ flowchart TB
     Analyst -- "update scores/tags" --> DB
     DB -- "top scored items" --> Writer
     Writer -- "generate briefing" --> Qwen
+    Writer -- "draft" --> Critic
+    Critic -- "quality feedback" --> Writer
     Writer -- "generate cover" --> Flux
     Qwen -- "briefing text" --> Writer
     Flux -- "cover image" --> Writer
@@ -65,6 +68,7 @@ flowchart TB
 | **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA/AWS/Cloudflare), Reddit RSS, Twitter/X via API v2 |
 | **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
 | **Writer** | 9003 | Daily 9:00 | Generates briefing + Flux cover image from top items |
+| **Critic** | 9005 | On-demand | Scores/criticizes briefing quality (LLM + deterministic gate) |
 | **Distributor** | 9004 | After Writer | Sends photo+caption to Telegram channel |
 
 All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The scheduler orchestrates the pipeline automatically in daemon mode.
@@ -104,6 +108,8 @@ bcn collect -s ghsa      # Collect GHSA only
 bcn collect -s reddit    # Collect Reddit RSS only
 bcn analyze              # Analyze new items with LLM
 bcn write                # Generate briefing + cover image
+bcn critique --latest    # Critique latest briefing (quality report JSON)
+bcn critique --file ./draft.md
 bcn distribute           # Send to configured channels
 bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
 ```
@@ -227,7 +233,12 @@ bcn/
     collector.py      Data collection (GHSA, RSS, Reddit, Twitter/X)
     analyst.py        LLM relevance scoring + summarization
     writer.py         Briefing + cover image generation
+    critic.py         Briefing critique and quality assessment
     distributor.py    Multi-channel distribution
+  briefing/
+    selection.py      Ranking + diversity-aware item selection
+    quality.py        Deterministic quality gate checks
+    text.py           Markdown normalization and fallback formatting
   distributors/
     telegram.py       Telegram Bot API (photo + caption)
     email.py          SMTP email

@@ -282,11 +282,30 @@ async def get_recent_briefings(limit: int = 5) -> list[asyncpg.Record]:
     )
 
 
+async def get_latest_any_briefing() -> Optional[asyncpg.Record]:
+    """Return the latest briefing regardless of status."""
+    pool = await get_pool()
+    return await pool.fetchrow(
+        "SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1"
+    )
+
+
 async def get_latest_briefing() -> Optional[asyncpg.Record]:
     """Return the most recent ``DRAFT`` briefing, or ``None``."""
     pool = await get_pool()
     return await pool.fetchrow(
         "SELECT * FROM briefings WHERE status = 'DRAFT' ORDER BY created_at DESC LIMIT 1"
+    )
+
+
+async def get_items_by_ids(item_ids: list[UUID]) -> list[asyncpg.Record]:
+    """Fetch news items by UUID list preserving database ordering."""
+    if not item_ids:
+        return []
+    pool = await get_pool()
+    return await pool.fetch(
+        "SELECT * FROM news_items WHERE id = ANY($1::uuid[])",
+        item_ids,
     )
 
 

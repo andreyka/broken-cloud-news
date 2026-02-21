@@ -1,0 +1,421 @@
+"""Item selection and ranking for daily briefings."""
+
+from __future__ import annotations
+
+import difflib
+import math
+import re
+from collections import Counter
+from datetime import datetime, timezone
+from urllib.parse import urlparse
+
+from bcn.briefing.text import normalize_url, to_dict
+from bcn.config import Settings
+
+_TRUSTED_RSS_DOMAINS = frozenset({
+    "cisa.gov",
+    "aws.amazon.com",
+    "blog.cloudflare.com",
+    "cloud.google.com",
+    "security.googleblog.com",
+    "azure.microsoft.com",
+    "microsoft.com",
+    "github.blog",
+    "kubernetes.io",
+    "ubuntu.com",
+    "unit42.paloaltonetworks.com",
+})
+
+
+class BriefingSelector:
+    """Selects a diverse, actionable set of items for briefing generation."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def select_items(
+        self,
+        items: list[dict],
+        recent_published: list[dict] | None = None,
+        *,
+        quiet_mode: bool = False,
+    ) -> list[dict]:
+        """Select a diverse set of actionable items for the daily briefing."""
+        recent_items = recent_published or []
+        ranked = sorted(
+            items,
+            key=lambda i: (
+                self.priority_score(i, recent_items),
+                int(i.get("relevance_score", 0)),
+                self._parse_timestamp(i.get("published_at")),
+            ),
+            reverse=True,
+        )
+
+        max_items = (
+            min(self.settings.briefing_max_items, self.settings.briefing_quiet_day_max_items)
+            if quiet_mode
+            else self.settings.briefing_max_items
+        )
+        max_ai = self.settings.briefing_max_ai_items
+        max_twitter = self.settings.briefing_max_twitter_items
+        max_rss = self.settings.briefing_max_rss_items
+        max_per_domain = self.settings.briefing_max_items_per_domain
+        mix_targets = self.mix_targets(quiet_mode)
+
+        selected: list[dict] = []
+        selected_ids: set[str] = set()
+        source_counts: Counter[str] = Counter()
+        domain_counts: Counter[str] = Counter()
+        bucket_counts: Counter[str] = Counter()
+        ai_count = 0
+
+        def can_add(item: dict, *, relax_soft_limits: bool = False) -> bool:
+            nonlocal ai_count
+            item_id = str(item.get("id"))
+            if item_id in selected_ids:
+                return False
+
+            if not self.passes_source_floor(item) and not relax_soft_limits:
+                return False
+            source = str(item.get("source_type", "")).lower()
+            if source == "twitter" and source_counts[source] >= max_twitter and not relax_soft_limits:
+                return False
+            if source == "rss" and source_counts[source] >= max_rss:
+                return False
+            domain = self._extract_domain(str(item.get("url", "")))
+            if domain and max_per_domain > 0 and domain_counts[domain] >= max_per_domain:
+                return False
+            if self.is_ai_heavy(item) and ai_count >= max_ai and not relax_soft_limits:
+                return False
+            return True
+
+        def add(item: dict) -> None:
+            nonlocal ai_count
+            item_id = str(item.get("id"))
+            selected.append(item)
+            selected_ids.add(item_id)
+            source = str(item.get("source_type", "")).lower()
+            source_counts[source] += 1
+            domain = self._extract_domain(str(item.get("url", "")))
+            if domain:
+                domain_counts[domain] += 1
+            bucket_counts[self.classify_bucket(item)] += 1
+            if self.is_ai_heavy(item):
+                ai_count += 1
+
+        for bucket, target in mix_targets.items():
+            if target <= 0:
+                continue
+            while bucket_counts[bucket] < target and len(selected) < max_items:
+                candidate = None
+                for item in ranked:
+                    if self.classify_bucket(item) != bucket:
+                        continue
+                    if not can_add(item):
+                        continue
+                    candidate = item
+                    break
+                if not candidate:
+                    break
+                add(candidate)
+
+        for source in ("ghsa", "reddit", "rss", "twitter"):
+            for item in ranked:
+                if len(selected) >= max_items:
+                    break
+                if str(item.get("source_type", "")).lower() != source:
+                    continue
+                if not can_add(item):
+                    continue
+                add(item)
+                break
+
+        for item in ranked:
+            if len(selected) >= max_items:
+                break
+            if not self.is_actionable(item):
+                continue
+            if can_add(item):
+                add(item)
+
+        for item in ranked:
+            if len(selected) >= max_items:
+                break
+            if can_add(item):
+                add(item)
+
+        if len(selected) < max_items:
+            for item in ranked:
+                if len(selected) >= max_items:
+                    break
+                if can_add(item, relax_soft_limits=True):
+                    add(item)
+
+        if len(selected) < min(max_items, 3):
+            for item in ranked:
+                if len(selected) >= max_items:
+                    break
+                item_id = str(item.get("id"))
+                if item_id in selected_ids:
+                    continue
+                add(item)
+
+        return selected
+
+    def priority_score(self, item: dict, recent_published: list[dict] | None = None) -> float:
+        """Composite priority from relevance, exploitability, trust, engagement, novelty."""
+        relevance = float(int(item.get("relevance_score", 0)))
+        score = relevance
+        score += self.engagement_bonus(item)
+        score += self.exploitability_bonus(item)
+        score += self.source_trust_bonus(item)
+        score -= self.novelty_penalty(item, recent_published or [])
+        return score
+
+    def mix_targets(self, quiet_mode: bool) -> dict[str, int]:
+        """Per-digest category mix targets."""
+        if quiet_mode:
+            return {
+                "urgent_threats": 1,
+                "platform_changes": 1,
+                "tooling_use_case": 0,
+                "regulatory_legal": 0,
+            }
+        return {
+            "urgent_threats": self.settings.briefing_mix_min_urgent,
+            "platform_changes": self.settings.briefing_mix_min_platform,
+            "tooling_use_case": self.settings.briefing_mix_min_tooling,
+            "regulatory_legal": self.settings.briefing_mix_min_regulatory,
+        }
+
+    def engagement_bonus(self, item: dict) -> float:
+        """Compute capped source-specific social-proof bonus for ranking."""
+        max_bonus = max(0.0, float(self.settings.briefing_social_proof_max_bonus))
+        weight = max(0.0, float(self.settings.briefing_social_proof_weight))
+        if max_bonus <= 0 or weight <= 0:
+            return 0.0
+
+        raw_score = self.engagement_raw_score(item)
+        if raw_score <= 0:
+            return 0.0
+
+        bonus = math.log1p(raw_score) * weight
+        return min(max_bonus, bonus)
+
+    def engagement_raw_score(self, item: dict) -> float:
+        """Extract source-specific engagement magnitude from raw payload."""
+        source = str(item.get("source_type", "")).lower()
+        raw = to_dict(item.get("raw_data"))
+
+        if source == "twitter":
+            metrics = raw.get("public_metrics", {}) if isinstance(raw, dict) else {}
+            likes = float(metrics.get("like_count") or 0)
+            reposts = float(metrics.get("retweet_count") or 0)
+            replies = float(metrics.get("reply_count") or 0)
+            quotes = float(metrics.get("quote_count") or 0)
+            return likes + (2.0 * reposts) + (1.2 * replies) + (2.0 * quotes)
+
+        if source == "reddit":
+            engagement = raw.get("engagement", {}) if isinstance(raw, dict) else {}
+            upvotes = float(engagement.get("upvotes") or 0)
+            comments = float(engagement.get("comments") or 0)
+            score = upvotes + (2.0 * comments)
+            if score > 0:
+                return score
+
+            summary = str(raw.get("summary", ""))
+            points_m = re.search(r"(\d+)\s+points?", summary, flags=re.IGNORECASE)
+            comments_m = re.search(r"(\d+)\s+comments?", summary, flags=re.IGNORECASE)
+            fallback_points = float(points_m.group(1)) if points_m else 0.0
+            fallback_comments = float(comments_m.group(1)) if comments_m else 0.0
+            return fallback_points + (2.0 * fallback_comments)
+
+        return 0.0
+
+    @staticmethod
+    def exploitability_bonus(item: dict) -> float:
+        """Boost concrete exploit/patch items over generic commentary."""
+        text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+        score = 0.0
+        if re.search(r"(cve-\d{4}-\d+|ghsa-)", text):
+            score += 1.35
+        if re.search(r"(actively exploited|in the wild|zero[-\s]?day|rce|auth bypass|ssrf|privesc|container escape)", text):
+            score += 0.95
+        if re.search(r"(patch|fixed|mitigation|detection|ioc|rule|playbook)", text):
+            score += 0.55
+        return min(2.5, score)
+
+    def source_trust_bonus(self, item: dict) -> float:
+        """Prefer durable primary sources while keeping social discovery."""
+        source = str(item.get("source_type", "")).lower()
+        if source == "ghsa":
+            return 1.5
+        if source == "rss":
+            return 0.8 if self.is_trusted_rss_item(item) else 0.0
+        if source == "reddit":
+            return 0.25
+        if source == "twitter":
+            return 0.2
+        return 0.0
+
+    def novelty_penalty(self, item: dict, recent_published: list[dict]) -> float:
+        """Penalize near-duplicate stories from recent distributed digests."""
+        if not recent_published:
+            return 0.0
+
+        cur_url = normalize_url(str(item.get("url", "")))
+        cur_title = self._normalize_title(str(item.get("title", "")))
+        best_title_similarity = 0.0
+        same_url_seen = False
+
+        for prev in recent_published:
+            prev_url = normalize_url(str(prev.get("url", "")))
+            if cur_url and prev_url and cur_url == prev_url:
+                same_url_seen = True
+                best_title_similarity = 1.0
+                break
+
+            prev_title = self._normalize_title(str(prev.get("title", "")))
+            if not cur_title or not prev_title:
+                continue
+            sim = difflib.SequenceMatcher(None, cur_title, prev_title).ratio()
+            if sim > best_title_similarity:
+                best_title_similarity = sim
+
+        if same_url_seen:
+            return 3.0
+
+        threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
+        if best_title_similarity < threshold:
+            return 0.0
+
+        span = max(0.01, 1.0 - threshold)
+        scaled = (best_title_similarity - threshold) / span
+        return min(2.3, 0.7 + (scaled * 1.6))
+
+    @staticmethod
+    def _normalize_title(title: str) -> str:
+        """Normalize titles before similarity checks."""
+        title = title.lower().strip()
+        title = re.sub(r"https?://\S+", "", title)
+        title = re.sub(r"[^a-z0-9\s\-_/.:]", " ", title)
+        return re.sub(r"\s+", " ", title).strip()
+
+    @staticmethod
+    def classify_bucket(item: dict) -> str:
+        """Map an item into editorial mix buckets."""
+        text = (
+            f"{item.get('title', '')} {item.get('summary', '')} "
+            f"{' '.join(item.get('ai_tags') or [])}"
+        ).lower()
+
+        if re.search(
+            r"(cve-\d{4}-\d+|ghsa-|actively exploited|in the wild|incident|breach|"
+            r"rce|auth bypass|ssrf|container escape|ddos|exploit|malware)",
+            text,
+        ):
+            return "urgent_threats"
+        if re.search(
+            r"(law|regulat|compliance|pci|dora|nis2|sec\b|gdpr|privacy act|order|mandate)",
+            text,
+        ):
+            return "regulatory_legal"
+        if re.search(
+            r"(aws|azure|gcp|cloudflare|kubernetes|k8s|iam|terraform|serverless|"
+            r"envoy|postgres|clickhouse|redis|qemu|kvm|load balancer|control plane)",
+            text,
+        ):
+            return "platform_changes"
+        return "tooling_use_case"
+
+    def passes_source_floor(self, item: dict) -> bool:
+        """Drop weak social/untrusted items unless relevance is very high."""
+        source = str(item.get("source_type", "")).lower()
+        relevance = int(item.get("relevance_score", 0))
+        if relevance >= int(self.settings.briefing_social_floor_exempt_relevance):
+            return True
+
+        if source == "reddit":
+            return self.engagement_raw_score(item) >= float(
+                self.settings.briefing_min_reddit_engagement_score
+            )
+
+        if source == "twitter":
+            return self.engagement_raw_score(item) >= float(
+                self.settings.briefing_min_twitter_engagement_score
+            )
+
+        if source == "rss" and not self.is_trusted_rss_item(item):
+            return relevance >= int(self.settings.briefing_untrusted_rss_min_score)
+
+        return True
+
+    def is_trusted_rss_item(self, item: dict) -> bool:
+        """Determine whether RSS item comes from a trusted source domain."""
+        raw = to_dict(item.get("raw_data"))
+        url_domain = self._extract_domain(str(item.get("url", "")))
+        feed_domain = self._extract_domain(str(raw.get("feed_url", "")))
+        for domain in (url_domain, feed_domain):
+            if not domain:
+                continue
+            if any(domain == d or domain.endswith(f".{d}") for d in _TRUSTED_RSS_DOMAINS):
+                return True
+        return False
+
+    def is_quiet_day(self, items: list[dict]) -> bool:
+        """Detect low-signal days and switch to deeper fewer-item mode."""
+        if not self.settings.briefing_quiet_day_enabled:
+            return False
+
+        threshold = int(self.settings.briefing_quiet_day_high_signal_threshold)
+        min_items = int(self.settings.briefing_quiet_day_min_high_signal_items)
+        high_signal = 0
+        for item in items:
+            relevance = int(item.get("relevance_score", 0))
+            if relevance < threshold:
+                continue
+            if self.is_actionable(item) or str(item.get("source_type", "")).lower() == "ghsa":
+                high_signal += 1
+        return high_signal < min_items
+
+    @staticmethod
+    def is_actionable(item: dict) -> bool:
+        text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+        return bool(re.search(
+            r"(cve-\d{4}-\d+|ghsa-|rce|exploit|bypass|patch|fix|advisory|"
+            r"incident|breach|credential|auth|ssrf|privesc|container escape)",
+            text,
+        ))
+
+    @staticmethod
+    def is_ai_heavy(item: dict) -> bool:
+        text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+        has_ai = bool(re.search(r"\b(ai|llm|agentic|model|prompt)\b", text))
+        has_cloud_security = bool(re.search(
+            r"(cloud|kubern|k8s|container|iam|terraform|aws|azure|gcp|"
+            r"serverless|envoy|postgres|clickhouse|redis|qemu|kvm|cve|ghsa)",
+            text,
+        ))
+        return has_ai and not has_cloud_security
+
+    @staticmethod
+    def _parse_timestamp(value: object) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        if not url:
+            return ""
+        try:
+            netloc = urlparse(url).netloc.lower()
+        except Exception:
+            return ""
+        return netloc[4:] if netloc.startswith("www.") else netloc
