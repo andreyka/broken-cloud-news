@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from unittest.mock import AsyncMock, patch, MagicMock
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -126,6 +129,40 @@ class TestCollectorExecutor:
         assert count == 0
         mock_insert.assert_not_called()
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_collect_reddit(self):
+        from bcn.agents.collector import CollectorExecutor
+
+        settings = _make_settings(
+            reddit_subreddits=["netsec"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        executor = CollectorExecutor(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Kubernetes CVE write-up</title>
+            <link>https://reddit.com/r/netsec/comments/abc123/test/</link>
+            <guid>t3_abc123</guid>
+            <pubDate>Mon, 01 Jan 2026 00:00:00 GMT</pubDate>
+            <description>Cloud-native exploit chain details</description>
+          </item>
+        </channel></rss>
+        """
+        respx.get("https://www.reddit.com/r/netsec/.rss").mock(
+            return_value=httpx.Response(200, text=rss_body)
+        )
+
+        with patch("bcn.agents.collector.insert_news_item", new_callable=AsyncMock) as mock_insert:
+            from uuid import uuid4
+            mock_insert.return_value = uuid4()
+            count = await executor._collect_reddit()
+
+        assert count == 1
+        mock_insert.assert_called_once()
+
 
 # ── Analyst tests ────────────────────────────────────────────────────────
 
@@ -206,7 +243,73 @@ class TestWriterExecutor:
             ctx = _fake_context("generate_briefing")
             await executor.execute(ctx, eq)
 
-        assert any("No items" in str(e) for e in eq.events)
+        assert any("no items" in str(e).lower() for e in eq.events)
+
+    def test_selection_limits_single_domain(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=5,
+            briefing_max_rss_items=5,
+            briefing_max_items_per_domain=2,
+            briefing_max_ai_items=5,
+            briefing_max_twitter_items=5,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": f"Unit42 item {i}",
+                "summary": "Cloud exploit write-up",
+                "relevance_score": 10 - i,
+                "source_type": "rss",
+                "url": f"https://unit42.paloaltonetworks.com/post-{i}/",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for i in range(4)
+        ]
+        items.extend([
+            {
+                "id": str(uuid4()),
+                "title": "Reddit k8s security thread",
+                "summary": "Kubernetes hardening discussion",
+                "relevance_score": 8,
+                "source_type": "reddit",
+                "url": "https://www.reddit.com/r/kubernetes/comments/abc123/thread/",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "GHSA advisory",
+                "summary": "Patch available for cloud service component",
+                "relevance_score": 8,
+                "source_type": "ghsa",
+                "url": "https://github.com/advisories/GHSA-test-1234",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ])
+
+        selected = executor._select_items_for_briefing(items)
+        domains = Counter(urlparse(str(i["url"])).netloc for i in selected)
+        assert domains["unit42.paloaltonetworks.com"] <= 2
+        assert any(i["source_type"] == "reddit" for i in selected)
+        assert any(i["source_type"] == "ghsa" for i in selected)
+
+    def test_detects_missing_urls_in_generated_markdown(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        items = [
+            {"url": "https://example.com/one", "title": "one"},
+            {"url": "https://example.com/two", "title": "two"},
+        ]
+        markdown = "[One](https://example.com/one)\n\nText only."
+
+        missing = executor._missing_items_for_markdown(markdown, items)
+        assert len(missing) == 1
+        assert missing[0]["url"] == "https://example.com/two"
 
 
 # ── Distributor tests ────────────────────────────────────────────────────

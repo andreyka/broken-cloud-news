@@ -1,8 +1,9 @@
-"""Collector agent: fetches news from GHSA, RSS feeds, and Twitter/X."""
+"""Collector agent: fetches news from GHSA, RSS feeds, Reddit, and Twitter/X."""
 
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import re
 from datetime import datetime, timezone
@@ -43,6 +44,13 @@ SKILLS = [
         description="Collect tweets from security researchers via X API",
         tags=["twitter", "x"],
         examples=["collect twitter"],
+    ),
+    AgentSkill(
+        id="collect_reddit",
+        name="Collect Reddit",
+        description="Collect top items from cloud security subreddits via RSS",
+        tags=["reddit", "netsec", "subreddit"],
+        examples=["collect reddit"],
     ),
     AgentSkill(
         id="collect_all",
@@ -106,9 +114,15 @@ class CollectorExecutor(AgentExecutor):
         elif "twitter" in text:
             count = await self._collect_twitter()
             result = f"Twitter: collected {count} items"
+        elif "reddit" in text:
+            count = await self._collect_reddit()
+            result = f"Reddit: collected {count} items"
         else:
             counts = await self._collect_all()
-            result = f"All: GHSA={counts[0]}, RSS={counts[1]}, Twitter={counts[2]}"
+            result = (
+                f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                f"Twitter={counts[2]}, Reddit={counts[3]}"
+            )
 
         logger.info(result)
         event_queue.enqueue_event(new_agent_text_message(result))
@@ -122,15 +136,45 @@ class CollectorExecutor(AgentExecutor):
         """Cancel is not supported."""
         raise NotImplementedError("cancel not supported")
 
-    async def _collect_all(self) -> tuple[int, int, int]:
+    async def _collect_all(self) -> tuple[int, int, int, int]:
         """Run all collectors concurrently and return per-source counts."""
         results = await asyncio.gather(
             self._collect_ghsa(),
             self._collect_rss(),
             self._collect_twitter(),
+            self._collect_reddit(),
             return_exceptions=True,
         )
         return tuple(r if isinstance(r, int) else 0 for r in results)
+
+    def _is_cloud_security_relevant(self, text: str) -> bool:
+        """Heuristic topical filter to keep cloud-security signal high."""
+        normalized = re.sub(r"\s+", " ", text).strip().lower()
+        if not normalized or len(normalized) < 20:
+            return False
+
+        required = self.settings.twitter_required_keywords
+        if required and not any(kw.lower() in normalized for kw in required):
+            return False
+
+        # Drop mostly social/noise posts from handle streams.
+        if "ctf" in normalized and not any(
+            t in normalized for t in ("cloud", "k8s", "container", "cve", "vuln")
+        ):
+            return False
+        if normalized.startswith("rt @"):
+            return False
+
+        return True
+
+    @staticmethod
+    def _clean_summary(value: str) -> str:
+        """Strip basic HTML tags/entities from feed summaries."""
+        if not value:
+            return ""
+        text = re.sub(r"<[^>]+>", " ", value)
+        text = html.unescape(text)
+        return re.sub(r"\s+", " ", text).strip()
 
     # ------------------------------------------------------------------
     # GHSA collection
@@ -288,10 +332,14 @@ class CollectorExecutor(AgentExecutor):
                 source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
+                summary = self._clean_summary(getattr(entry, "summary", ""))
                 published = (
                     getattr(entry, "published", None)
                     or datetime.now(timezone.utc).isoformat()
                 )
+
+                if not self._is_cloud_security_relevant(f"{title} {summary}"):
+                    continue
 
                 full_content = ""
                 if url:
@@ -308,7 +356,7 @@ class CollectorExecutor(AgentExecutor):
                         "title": title,
                         "link": url,
                         "published": published,
-                        "summary": getattr(entry, "summary", ""),
+                        "summary": summary,
                     },
                     full_content=full_content or None,
                 )
@@ -377,6 +425,8 @@ class CollectorExecutor(AgentExecutor):
                     else ""
                 )
                 title = tweet.get("text", "")
+                if not self._is_cloud_security_relevant(title):
+                    continue
                 published = tweet.get(
                     "created_at", datetime.now(timezone.utc).isoformat()
                 )
@@ -398,5 +448,67 @@ class CollectorExecutor(AgentExecutor):
 
             if not next_token or result_count == 0:
                 break
+
+        return count
+
+    # ------------------------------------------------------------------
+    # Reddit collection via subreddit RSS feeds
+    # ------------------------------------------------------------------
+
+    async def _collect_reddit(self) -> int:
+        """Fetch recent posts from configured subreddits via RSS."""
+        count = 0
+        for subreddit in self.settings.reddit_subreddits:
+            feed_url = f"https://www.reddit.com/r/{subreddit}/.rss"
+            try:
+                resp = await self._http.get(
+                    feed_url,
+                    headers={
+                        "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
+                    },
+                )
+                resp.raise_for_status()
+                feed = feedparser.parse(resp.text)
+            except Exception as exc:
+                logger.warning("Failed to fetch Reddit feed %s: %s", feed_url, exc)
+                continue
+
+            per_sub = 0
+            for entry in feed.entries:
+                if per_sub >= self.settings.reddit_max_items_per_subreddit:
+                    break
+
+                source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
+                url = getattr(entry, "link", "")
+                title = getattr(entry, "title", "")
+                summary = self._clean_summary(getattr(entry, "summary", ""))
+                published = (
+                    getattr(entry, "published", None)
+                    or datetime.now(timezone.utc).isoformat()
+                )
+
+                text_for_filter = f"{title} {summary} r/{subreddit}"
+                if not self._is_cloud_security_relevant(text_for_filter):
+                    continue
+
+                inserted = await insert_news_item(
+                    source_type="reddit",
+                    source_id=source_id,
+                    url=url,
+                    title=title,
+                    published_at=published,
+                    raw_data={
+                        "subreddit": subreddit,
+                        "feed_url": feed_url,
+                        "title": title,
+                        "link": url,
+                        "published": published,
+                        "summary": summary,
+                    },
+                    full_content=summary or None,
+                )
+                if inserted:
+                    count += 1
+                    per_sub += 1
 
         return count

@@ -42,7 +42,9 @@ class DistributorExecutor(AgentExecutor):
             self.channels.append((
                 "telegram",
                 TelegramDistributor(
-                    settings.telegram_bot_token, settings.telegram_chat_id
+                    settings.telegram_bot_token,
+                    settings.telegram_chat_id,
+                    overflow_mode=settings.telegram_overflow_mode,
                 ),
             ))
 

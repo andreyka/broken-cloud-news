@@ -22,9 +22,13 @@ class TestSettings:
     def test_empty_string_list_fields(self, monkeypatch):
         """Empty env strings should fall back to default lists, not become ['']."""
         monkeypatch.setenv("BCN_TWITTER_HANDLES", "")
+        monkeypatch.setenv("BCN_TWITTER_REQUIRED_KEYWORDS", "")
         monkeypatch.setenv("BCN_RSS_FEEDS", "")
+        monkeypatch.setenv("BCN_REDDIT_SUBREDDITS", "")
         monkeypatch.setenv("BCN_GHSA_KEYWORDS", "")
         s = Settings()
         assert s.twitter_handles == []
+        assert s.twitter_required_keywords == []
         assert s.rss_feeds == []
+        assert s.reddit_subreddits == []
         assert s.ghsa_keywords == []

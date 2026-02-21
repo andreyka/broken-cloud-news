@@ -141,6 +141,26 @@ class TestGenerateBriefing:
         assert "blog.example.com/writeup" in user_msg
         assert "nvd.nist.gov" not in user_msg
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_includes_style_memory(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response("briefing text")
+        )
+        items = [
+            {"title": "CVE-1", "url": "https://a.com", "summary": "bad",
+             "relevance_score": 9, "source_type": "ghsa", "raw_data": None},
+        ]
+        history = [
+            {
+                "content_markdown": "![Daily Cover](https://img)\n\nOld opener\n\n**Old Theme**\nStuff\n\nOld closer",
+            }
+        ]
+        await llm.generate_briefing(items, recent_briefings=history)
+        body = json.loads(route.calls[0].request.content)
+        user_msg = body["messages"][1]["content"]
+        assert "Recent briefing patterns to avoid repeating" in user_msg
+
 
 class TestGenerateCoverPrompt:
     @respx.mock
