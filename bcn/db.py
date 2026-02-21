@@ -199,6 +199,34 @@ async def mark_items_published(ids: list[UUID]) -> None:
     )
 
 
+async def get_recent_published_items(
+    hours: int = 24 * 14,
+    limit: int = 250,
+) -> list[asyncpg.Record]:
+    """Fetch recently published items for novelty checks.
+
+    Args:
+        hours: Lookback window in hours.
+        limit: Maximum number of items to return.
+
+    Returns:
+        Published item records ordered by ``published_at`` descending.
+    """
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT id, source_type, url, title, summary, ai_tags, relevance_score, published_at, raw_data
+        FROM news_items
+        WHERE status = 'PUBLISHED'
+          AND published_at > NOW() - make_interval(hours => $1)
+        ORDER BY published_at DESC
+        LIMIT $2
+        """,
+        hours,
+        limit,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Briefings
 # ---------------------------------------------------------------------------
