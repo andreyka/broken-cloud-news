@@ -503,7 +503,6 @@ class TestWriterExecutor:
         issue_text = " ".join(gate["issues"])
         assert gate["passed"] is False
         assert "Missing selected URL" in issue_text
-        assert "exactly 3 bullets" in issue_text
 
     def test_quality_gate_balanced_mode_keeps_structure_as_soft_feedback(self):
         from bcn.agents.writer import WriterExecutor
@@ -523,14 +522,17 @@ class TestWriterExecutor:
 
         assert gate["passed"] is True
         soft_text = " ".join(gate["soft_issues"])
-        assert "Missing **Operator Moves (next 24h)** section." in soft_text
+        assert "Too few sections" not in soft_text
 
-    def test_quality_gate_strict_mode_blocks_missing_operator_moves(self):
+    def test_quality_gate_strict_mode_blocks_missing_sections(self):
         from bcn.agents.writer import WriterExecutor
 
         settings = _make_settings(briefing_gate_mode="strict")
         executor = WriterExecutor(settings)
-        selected = [{"url": "https://example.com/one", "source_type": "rss"}]
+        selected = [
+            {"url": "https://example.com/one", "source_type": "rss"},
+            {"url": "https://example.com/two", "source_type": "ghsa"},
+        ]
         markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
 
         gate = executor._quality_gate(
@@ -543,7 +545,7 @@ class TestWriterExecutor:
 
         assert gate["passed"] is False
         hard_text = " ".join(gate["hard_issues"])
-        assert "Missing **Operator Moves (next 24h)** section." in hard_text
+        assert "Too few sections" in hard_text
 
     def test_detemplate_rewrites_detection_and_source_fields(self):
         from bcn.agents.writer import WriterExecutor
@@ -634,6 +636,27 @@ class TestWriterExecutor:
 
         assert executor._is_quiet_day(low_signal_items) is True
         assert executor._is_quiet_day(high_signal_items) is False
+
+    def test_single_item_char_limits_are_relaxed(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_min_chars=1200,
+            briefing_target_chars=1700,
+            briefing_hard_max_chars=2300,
+            briefing_single_item_min_chars=420,
+            briefing_single_item_target_chars=760,
+            briefing_single_item_hard_max_chars=1200,
+        )
+        executor = WriterExecutor(settings)
+
+        min_chars, target_chars, hard_max_chars = executor._char_limits(
+            "standard",
+            selected_count=1,
+        )
+        assert min_chars == 420
+        assert target_chars == 760
+        assert hard_max_chars == 1200
 
 
 # ── Distributor tests ────────────────────────────────────────────────────

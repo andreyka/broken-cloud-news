@@ -112,6 +112,7 @@ bcn critique --latest    # Critique latest briefing (quality report JSON)
 bcn critique --file ./draft.md
 bcn simulate --limit 30 --output simulation_report.json  # Backtest vs historical briefings (no publish)
 bcn simulate --limit 0 --with-critic-rewrites            # Full heavy replay with writer->critic rewrites
+bcn simulate --store-db                                   # Persist run/results in DB and compare with previous run
 bcn distribute           # Send to configured channels
 bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
 ```
@@ -146,8 +147,13 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 Important briefing-quality knobs:
 - `BCN_BRIEFING_MAX_RSS_ITEMS` (default `3`) limits RSS dominance.
 - `BCN_BRIEFING_MAX_ITEMS_PER_DOMAIN` (default `2`) prevents single-domain monoculture.
+- `BCN_BRIEFING_MIN_SELECTED_ITEMS` (default `1`) allows one-item briefings on low-volume days.
 - `BCN_BRIEFING_MIN_CHARS`/`BCN_BRIEFING_TARGET_CHARS`/`BCN_BRIEFING_HARD_MAX_CHARS`
   (defaults `1200`/`1700`/`2300`) increase depth while keeping Telegram-safe output.
+- `BCN_BRIEFING_SINGLE_ITEM_MIN_CHARS`/`BCN_BRIEFING_SINGLE_ITEM_TARGET_CHARS`/
+  `BCN_BRIEFING_SINGLE_ITEM_HARD_MAX_CHARS` relax depth limits for single-item days.
+- `BCN_BRIEFING_SKIP_IF_NO_HIGH_SIGNAL` + `BCN_BRIEFING_MIN_HIGH_SIGNAL_TO_PUBLISH`
+  can skip a day entirely when there is no truly actionable signal.
 - `BCN_BRIEFING_SOCIAL_PROOF_WEIGHT` + `BCN_BRIEFING_SOCIAL_PROOF_MAX_BONUS`
   add bounded engagement influence (likes/retweets/upvotes/comments) to ranking.
 - `BCN_BRIEFING_CRITIQUE_MAX_ROUNDS` (default `5`) sets max writer rewrites in the

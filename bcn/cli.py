@@ -325,6 +325,36 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
 
 
 @cli.command()
+@click.option("--latest", is_flag=True, help="Verify the latest stored briefing")
+@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--text", "text_input", type=str, help="Inline markdown text to verify")
+def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
+    """Run factual verifier against latest briefing or provided markdown text."""
+    settings = Settings()
+
+    async def _run():
+        from bcn.agents.verifier import VerifierExecutor
+
+        skill: str
+        if text_input:
+            skill = f"verify_markdown::{text_input}"
+        elif file_path:
+            body = Path(file_path).read_text(encoding="utf-8")
+            skill = f"verify_markdown::{body}"
+        else:
+            skill = "verify_latest" if latest or (not file_path and not text_input) else ""
+
+        result = await _run_agent_directly(
+            executor_cls=VerifierExecutor,
+            settings=settings,
+            skill=skill,
+        )
+        click.echo(result)
+
+    asyncio.run(_run())
+
+
+@cli.command()
 @click.option(
     "--limit",
     type=int,
@@ -357,21 +387,56 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
     is_flag=True,
     help="Use full writer->critic rewrite loop during simulation (much slower).",
 )
+@click.option(
+    "--store-db/--no-store-db",
+    default=True,
+    show_default=True,
+    help="Persist simulation runs/results in PostgreSQL.",
+)
 def simulate(
     limit: int,
     since_days: int,
     output_path: str,
     include_text: bool,
     with_critic_rewrites: bool,
+    store_db: bool,
 ) -> None:
     """Simulate historical briefings and compare against actual distributed posts."""
     settings = Settings()
 
     async def _run():
-        from bcn.db import get_pool, close_pool
-        from bcn.simulation import simulate_historical_briefings
+        from bcn.db import (
+            close_pool,
+            count_simulation_runs,
+            ensure_simulation_tables,
+            get_latest_simulation_report,
+            get_pool,
+            insert_simulation_report,
+        )
+        from bcn.simulation import compare_simulation_reports, simulate_historical_briefings
 
         await get_pool(settings)
+        out_file = Path(output_path)
+        baseline_report: dict[str, Any] | None = None
+
+        if store_db:
+            await ensure_simulation_tables()
+            existing_runs = await count_simulation_runs()
+            if existing_runs == 0 and out_file.exists():
+                try:
+                    previous_payload = json.loads(out_file.read_text(encoding="utf-8"))
+                    if isinstance(previous_payload, dict) and isinstance(previous_payload.get("results"), list):
+                        imported_id = await insert_simulation_report(
+                            previous_payload,
+                            report_path=str(out_file),
+                            source="imported_file",
+                            notes="Imported from existing simulation output file.",
+                        )
+                        click.echo(f"Imported baseline simulation from {output_path} (run_id={imported_id})")
+                except Exception as exc:
+                    click.echo(f"Skipped baseline import from {output_path}: {exc}", err=True)
+            baseline_report = await get_latest_simulation_report()
+
         report = await simulate_historical_briefings(
             settings=settings,
             limit=max(0, int(limit)),
@@ -379,7 +444,20 @@ def simulate(
             include_text=include_text,
             apply_critic_rewrites=with_critic_rewrites,
         )
-        Path(output_path).write_text(
+
+        if store_db:
+            run_id = await insert_simulation_report(
+                report,
+                report_path=str(out_file),
+                source="cli",
+            )
+            report["db_run_id"] = str(run_id)
+            if baseline_report:
+                comparison = compare_simulation_reports(report, baseline_report)
+                comparison["baseline_db_run_id"] = baseline_report.get("db_run_id")
+                report["comparison_to_previous_run"] = comparison
+
+        out_file.write_text(
             json.dumps(report, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -392,6 +470,19 @@ def simulate(
             f"avg_simulated={summary.get('avg_simulated_score', 0)} "
             f"avg_delta={summary.get('avg_delta', 0)}"
         )
+        if store_db:
+            click.echo(f"DB run id: {report.get('db_run_id')}")
+            comparison = report.get("comparison_to_previous_run")
+            if isinstance(comparison, dict):
+                click.echo(
+                    "Compared with previous run: "
+                    f"overlap={comparison.get('overlap_count', 0)} "
+                    f"avg_sim_score_change={comparison.get('avg_simulated_score_change', 0)} "
+                    f"improved={comparison.get('improved_vs_previous', 0)} "
+                    f"regressed={comparison.get('regressed_vs_previous', 0)}"
+                )
+            else:
+                click.echo("No previous simulation run available for comparison.")
         click.echo(f"Report written to {output_path}")
         click.echo("No distribution action was performed.")
         await close_pool()
@@ -503,6 +594,7 @@ def run() -> None:
         from bcn.agents.writer import WriterExecutor, SKILLS as WRIT_SKILLS
         from bcn.agents.distributor import DistributorExecutor, SKILLS as DIST_SKILLS
         from bcn.agents.critic import CriticExecutor, SKILLS as CRIT_SKILLS
+        from bcn.agents.verifier import VerifierExecutor, SKILLS as VERI_SKILLS
         from bcn.db import get_pool
         from apscheduler import AsyncScheduler
         from apscheduler.triggers.interval import IntervalTrigger
@@ -533,6 +625,10 @@ def run() -> None:
             "BCN Critic", "Critiques briefing quality and provides recommendations",
             f"http://localhost:{settings.critic_port}/", CRIT_SKILLS,
         )
+        verifier_card = build_agent_card(
+            "BCN Verifier", "Verifies briefing facts, links, and top-story quality",
+            f"http://localhost:{settings.verifier_port}/", VERI_SKILLS,
+        )
 
         # Create executors
         collector_exec = CollectorExecutor(settings)
@@ -540,6 +636,7 @@ def run() -> None:
         writer_exec = WriterExecutor(settings)
         distributor_exec = DistributorExecutor(settings)
         critic_exec = CriticExecutor(settings)
+        verifier_exec = VerifierExecutor(settings)
 
         # Launch agent servers
         tasks = [
@@ -548,6 +645,7 @@ def run() -> None:
             asyncio.create_task(serve_agent(writer_card, writer_exec, settings.writer_port)),
             asyncio.create_task(serve_agent(distributor_card, distributor_exec, settings.distributor_port)),
             asyncio.create_task(serve_agent(critic_card, critic_exec, settings.critic_port)),
+            asyncio.create_task(serve_agent(verifier_card, verifier_exec, settings.verifier_port)),
         ]
 
         click.echo(f"  Collector on :{settings.collector_port}")
@@ -555,6 +653,7 @@ def run() -> None:
         click.echo(f"  Writer   on :{settings.writer_port}")
         click.echo(f"  Distributor on :{settings.distributor_port}")
         click.echo(f"  Critic on :{settings.critic_port}")
+        click.echo(f"  Verifier on :{settings.verifier_port}")
 
         # Set up scheduler (job functions are module-level for APScheduler 4.x)
         async with AsyncScheduler() as scheduler:

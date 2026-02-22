@@ -66,13 +66,15 @@ BRIEFING_SYSTEM_PROMPT = (
     "Format rules:\n"
     "1. Markdown only.\n"
     "2. Opening: 1-2 lines with a concrete scene setter (no cliches).\n"
-    "3. 3-4 short themed sections (`**Section Name**`).\n"
+    "3. 1-4 short themed sections (`**Section Name**`) depending on signal volume.\n"
     "4. Cover every candidate item exactly once with its main Markdown link.\n"
     "5. Each item line must include: what happened, why it matters, and the immediate move.\n"
     "6. Keep an organic narrative flow; do not use template labels like `Detection:` or `Source:`.\n"
     "7. Integrate attribution links inline, not as standalone `Source:` fields.\n"
-    "8. Add a section `**Operator Moves (next 24h)**` with exactly 3 bullets.\n"
-    "9. One short closing line.\n\n"
+    "8. Add operator next steps only when useful; use compact bullets if needed, but they are optional.\n"
+    "9. Use concrete section names; do not use placeholders like `Additional High-Signal Items`.\n"
+    "10. Separate major paragraphs/items with blank lines for readability.\n"
+    "11. One short closing line.\n\n"
     "Hard constraints:\n"
     "- Every candidate item URL must appear exactly once in the output.\n"
     "- Use only URLs provided in input.\n"
@@ -81,6 +83,8 @@ BRIEFING_SYSTEM_PROMPT = (
     "- Avoid repetitive cliches and AI-stamp phrasing.\n"
     "- Avoid repeating section title stems across sections.\n"
     "- Never use repeated field scaffolding like `Detection:` / `Source:`.\n"
+    "- Never output truncation artifacts like `...;`.\n"
+    "- Never include fallback filler like `validate exposure and queue patch/detection checks`.\n"
     "- Target 1200-2300 characters.\n\n"
     "Think internally about novelty and phrasing diversity using the provided history, "
     "but do not output reasoning.\n\n"
@@ -91,6 +95,36 @@ BRIEFING_SYSTEM_PROMPT = (
     "Section: **Control Plane Heat**\n"
     "Line: [Ingress auth bypass in K8s](https://example.com/k8s) exposes admin verbs without auth; prioritize cluster edge upgrades and tighten admission policies.\n"
     "Closing: 'Patch first, postmortem later.'"
+)
+
+BRIEFING_STORY_CARD_PROMPT = (
+    "You are preparing story cards for a cloud-security daily digest.\n"
+    "For each input item, output one JSON object with these fields:\n"
+    '- "main_url": exact item URL,\n'
+    '- "what_happened": concrete incident/vulnerability change,\n'
+    '- "why_now": urgency and timing,\n'
+    '- "who_impacted": affected operators/users,\n'
+    '- "offensive_angle": realistic attacker path,\n'
+    '- "defensive_action_24h": immediate defensive step,\n'
+    '- "reference_links": list of up to 3 provided links only.\n'
+    "Rules:\n"
+    "- Use only facts from provided items and links.\n"
+    "- Do not invent claims or URLs.\n"
+    "- Keep language specific and practitioner-oriented.\n"
+    "Return STRICT JSON only:\n"
+    "{\n"
+    '  "cards": [\n'
+    "    {\n"
+    '      "main_url": "https://...",\n'
+    '      "what_happened": "...",\n'
+    '      "why_now": "...",\n'
+    '      "who_impacted": "...",\n'
+    '      "offensive_angle": "...",\n'
+    '      "defensive_action_24h": "...",\n'
+    '      "reference_links": ["https://..."]\n'
+    "    }\n"
+    "  ]\n"
+    "}"
 )
 
 BRIEFING_TIGHTENER_PROMPT = (
@@ -111,6 +145,9 @@ BRIEFING_ENRICHER_PROMPT = (
     "- Keep prose organic; avoid template fields (`Detection:`, `Source:`) and rigid label repetition.\n"
     "- Attribution links should be woven into sentence flow, not separate source lines.\n"
     "- Avoid generic AI hype language and stale newsletter cliches.\n"
+    "- Avoid placeholder section names (e.g., `Additional High-Signal Items`).\n"
+    "- Remove truncation artifacts like `...;` and legacy fallback filler phrases.\n"
+    "- Keep clear spacing between major items/paragraphs.\n"
     "- Stay within requested length bounds.\n"
     "Output only the rewritten digest."
 )
@@ -133,6 +170,13 @@ BRIEFING_CRITIC_PROMPT = (
     "{\n"
     '  "passed": true|false,\n'
     '  "score": 0-100,\n'
+    '  "dimension_scores": {\n'
+    '    "actionability": 0-100,\n'
+    '    "source_diversity": 0-100,\n'
+    '    "link_hygiene": 0-100,\n'
+    '    "clarity": 0-100,\n'
+    '    "style": 0-100\n'
+    "  },\n"
     '  "issues": ["short concrete issue 1", "issue 2"],\n'
     '  "recommendations": ["short concrete fix 1", "fix 2"]\n'
     "}\n"
@@ -148,8 +192,26 @@ BRIEFING_REWRITE_PROMPT = (
     "- Remove template field patterns (`Detection:`, `Source:`) and repetitive heading formulas.\n"
     "- Keep references inline in natural prose.\n"
     "- Remove repetitive/boilerplate phrasing.\n"
+    "- Replace placeholder section names with concrete topical titles.\n"
+    "- Remove truncation artifacts like `...;` and fallback filler phrases.\n"
+    "- Ensure readable spacing between major items.\n"
     "- Stay inside requested length bounds.\n"
     "Output only revised digest."
+)
+
+BRIEFING_FACT_VERIFIER_PROMPT = (
+    "You are a factual verifier for a cloud-security briefing.\n"
+    "Validate factual grounding against provided source item summaries and links.\n"
+    "Flag ungrounded claims, factual overreach, and top-story prioritization mistakes.\n"
+    "Treat event/CTF announcements as top story as a hard failure.\n"
+    "Return STRICT JSON only:\n"
+    "{\n"
+    '  "passed": true|false,\n'
+    '  "score": 0-100,\n'
+    '  "hard_issues": ["blocking issue"],\n'
+    '  "soft_issues": ["non-blocking issue"],\n'
+    '  "recommendations": ["fix action"]\n'
+    "}\n"
 )
 
 _SKIP_DOMAINS = frozenset({
@@ -233,11 +295,13 @@ class LLMClient:
         recent_briefings: list[dict] | None = None,
         mode: str = "standard",
     ) -> str:
-        """Generate an editorial briefing from analyzed items."""
+        """Generate an editorial briefing from story cards derived from items."""
         entries: list[str] = []
         for item in items:
             entries.append(await self._build_briefing_entry(item))
 
+        story_cards = await self._build_story_cards(entries, items)
+        cards_json = json.dumps({"cards": story_cards}, ensure_ascii=False, indent=2)
         style_memory = self._build_style_memory(recent_briefings or [])
         mode_block = (
             "Mode: quiet_day.\n"
@@ -248,9 +312,9 @@ class LLMClient:
             else "Mode: standard daily briefing."
         )
         user_msg = (
-            f"{mode_block}\n\nToday's candidate items ({len(entries)} total). "
-            "Use every main URL exactly once.\n\n"
-            + "\n\n".join(entries)
+            f"{mode_block}\n\nStory cards ({len(story_cards)} total). "
+            "Use every `main_url` exactly once in the final briefing.\n\n"
+            + cards_json
         )
         if style_memory:
             user_msg += "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
@@ -285,6 +349,8 @@ class LLMClient:
         entries: list[str] = []
         for item in items:
             entries.append(await self._build_briefing_entry(item))
+        story_cards = await self._build_story_cards(entries, items)
+        cards_json = json.dumps({"cards": story_cards}, ensure_ascii=False, indent=2)
 
         mode_hint = (
             "quiet_day: deepen practical guidance per item and include concrete playbook flavor."
@@ -296,8 +362,8 @@ class LLMClient:
             f"Mode: {mode_hint}\n"
             f"Current draft length: {len(draft_markdown)} chars.\n\n"
             f"Current draft:\n{draft_markdown}\n\n"
-            f"Candidate items ({len(entries)} total):\n\n"
-            + "\n\n".join(entries)
+            f"Story cards ({len(story_cards)} total):\n\n"
+            + cards_json
         )
         if missing_urls:
             missing = "\n".join(f"- {u}" for u in missing_urls)
@@ -341,6 +407,16 @@ class LLMClient:
             parsed = json.loads(cleaned)
             passed = bool(parsed.get("passed", False))
             score = max(0, min(100, int(parsed.get("score", 0))))
+            dimension_scores = parsed.get("dimension_scores", {}) or {}
+            if not isinstance(dimension_scores, dict):
+                dimension_scores = {}
+            dims = {
+                "actionability": max(0, min(100, int(dimension_scores.get("actionability", score)))),
+                "source_diversity": max(0, min(100, int(dimension_scores.get("source_diversity", score)))),
+                "link_hygiene": max(0, min(100, int(dimension_scores.get("link_hygiene", score)))),
+                "clarity": max(0, min(100, int(dimension_scores.get("clarity", score)))),
+                "style": max(0, min(100, int(dimension_scores.get("style", score)))),
+            }
             issues = parsed.get("issues", [])
             recommendations = parsed.get("recommendations", [])
             if not isinstance(issues, list):
@@ -350,6 +426,7 @@ class LLMClient:
             return {
                 "passed": passed,
                 "score": score,
+                "dimension_scores": dims,
                 "issues": [str(i) for i in issues[:12]],
                 "recommendations": [str(r) for r in recommendations[:12]],
             }
@@ -358,8 +435,74 @@ class LLMClient:
             return {
                 "passed": False,
                 "score": 0,
+                "dimension_scores": {
+                    "actionability": 0,
+                    "source_diversity": 0,
+                    "link_hygiene": 0,
+                    "clarity": 0,
+                    "style": 0,
+                },
                 "issues": ["Critic response parsing failed"],
                 "recommendations": ["Regenerate briefing with stricter structure and actionable guidance"],
+            }
+
+    async def verify_briefing_facts(
+        self,
+        draft_markdown: str,
+        items: list[dict],
+        *,
+        mode: str = "standard",
+        deterministic_issues: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Verify factual grounding of a draft against provided items."""
+        item_lines = [
+            (
+                f"- [{item.get('source_type', '')}] {item.get('title', '')}\n"
+                f"  URL: {item.get('url', '')}\n"
+                f"  Summary: {item.get('summary', '')}"
+            )
+            for item in items
+        ]
+        mode_text = "quiet_day" if mode == "quiet_day" else "standard"
+        det = "\n".join(f"- {line}" for line in (deterministic_issues or [])) or "- none"
+        user_msg = (
+            f"Mode: {mode_text}\n\n"
+            f"Selected items ({len(items)}):\n"
+            + "\n".join(item_lines)
+            + "\n\nDeterministic verifier findings:\n"
+            + det
+            + "\n\nDraft:\n"
+            + draft_markdown
+        )
+        raw = await self.chat(BRIEFING_FACT_VERIFIER_PROMPT, user_msg)
+        try:
+            cleaned = re.sub(r"```json\s*", "", raw)
+            cleaned = re.sub(r"```\s*", "", cleaned)
+            parsed = json.loads(cleaned)
+            hard = parsed.get("hard_issues", [])
+            soft = parsed.get("soft_issues", [])
+            recs = parsed.get("recommendations", [])
+            if not isinstance(hard, list):
+                hard = [str(hard)]
+            if not isinstance(soft, list):
+                soft = [str(soft)]
+            if not isinstance(recs, list):
+                recs = [str(recs)]
+            return {
+                "passed": bool(parsed.get("passed", False)),
+                "score": max(0, min(100, int(parsed.get("score", 0)))),
+                "hard_issues": [str(i) for i in hard[:12]],
+                "soft_issues": [str(i) for i in soft[:12]],
+                "recommendations": [str(i) for i in recs[:12]],
+            }
+        except Exception:
+            logger.warning("Failed to parse verifier JSON, using fallback")
+            return {
+                "passed": False,
+                "score": 0,
+                "hard_issues": ["Verifier response parsing failed"],
+                "soft_issues": [],
+                "recommendations": ["Re-run factual verification and tighten claims to source evidence."],
             }
 
     async def revise_briefing(
@@ -377,6 +520,8 @@ class LLMClient:
         entries: list[str] = []
         for item in items:
             entries.append(await self._build_briefing_entry(item))
+        story_cards = await self._build_story_cards(entries, items)
+        cards_json = json.dumps({"cards": story_cards}, ensure_ascii=False, indent=2)
 
         fb = "\n".join(f"- {line}" for line in feedback[:20]) or "- improve overall quality"
         mode_text = (
@@ -391,8 +536,8 @@ class LLMClient:
             f"{fb}\n\n"
             "Current draft:\n"
             f"{draft_markdown}\n\n"
-            "Selected items:\n\n"
-            + "\n\n".join(entries)
+            "Story cards:\n\n"
+            + cards_json
         )
         revised = await self.chat(BRIEFING_REWRITE_PROMPT, user_msg)
         return revised.strip()
@@ -420,6 +565,79 @@ class LLMClient:
             )
 
         return "\n".join(snippets)
+
+    async def _build_story_cards(self, entries: list[str], items: list[dict]) -> list[dict[str, Any]]:
+        """Generate structured story cards before prose generation."""
+        user_msg = (
+            f"Candidate items ({len(entries)} total):\n\n"
+            + "\n\n".join(entries)
+        )
+        raw = await self.chat(BRIEFING_STORY_CARD_PROMPT, user_msg)
+        try:
+            cleaned = re.sub(r"```json\s*", "", raw)
+            cleaned = re.sub(r"```\s*", "", cleaned)
+            parsed = json.loads(cleaned)
+            cards = parsed.get("cards", [])
+            if not isinstance(cards, list) or not cards:
+                raise ValueError("cards missing")
+            by_url = {str(item.get("url") or "").strip(): item for item in items}
+            normalized: list[dict[str, Any]] = []
+            for card in cards:
+                if not isinstance(card, dict):
+                    continue
+                main_url = str(card.get("main_url") or "").strip()
+                item = by_url.get(main_url)
+                if not item:
+                    continue
+                refs = card.get("reference_links", [])
+                if not isinstance(refs, list):
+                    refs = []
+                cleaned_refs: list[str] = []
+                for ref in refs:
+                    ref_s = str(ref).strip()
+                    if not ref_s:
+                        continue
+                    if ref_s.startswith(("http://", "https://")):
+                        cleaned_refs.append(ref_s)
+                normalized.append(
+                    {
+                        "main_url": main_url,
+                        "what_happened": str(card.get("what_happened") or item.get("summary") or ""),
+                        "why_now": str(card.get("why_now") or ""),
+                        "who_impacted": str(card.get("who_impacted") or ""),
+                        "offensive_angle": str(card.get("offensive_angle") or ""),
+                        "defensive_action_24h": str(card.get("defensive_action_24h") or ""),
+                        "reference_links": cleaned_refs[:3],
+                    }
+                )
+            if normalized:
+                return normalized
+        except Exception:
+            logger.warning("Failed to parse story cards; using deterministic fallback cards")
+
+        return self._fallback_story_cards(items)
+
+    @staticmethod
+    def _fallback_story_cards(items: list[dict]) -> list[dict[str, Any]]:
+        """Create deterministic baseline cards if LLM carding fails."""
+        out: list[dict[str, Any]] = []
+        for item in items:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            summary = str(item.get("summary") or "").strip()
+            out.append(
+                {
+                    "main_url": url,
+                    "what_happened": summary or str(item.get("title") or ""),
+                    "why_now": "Emerging cloud-security signal with near-term operational impact.",
+                    "who_impacted": "Cloud operators and teams running production workloads.",
+                    "offensive_angle": "Adversaries can abuse the weakness to gain access or evade controls.",
+                    "defensive_action_24h": "Patch exposed systems and enable targeted detection immediately.",
+                    "reference_links": [],
+                }
+            )
+        return out
 
     async def _build_briefing_entry(self, item: dict[str, Any]) -> str:
         """Build a single item block for briefing generation."""

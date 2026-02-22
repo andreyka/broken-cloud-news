@@ -90,12 +90,21 @@ class CriticExecutor(AgentExecutor):
             gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
             gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
         )
+        threshold_passed = self._passes_thresholds(critique)
 
         response = {
             "source": source,
             "gate_passed": bool(gate.get("passed", False)),
             "critic_passed": bool(critique.get("passed", False)),
             "critic_score": int(critique.get("score", 0) or 0),
+            "critic_dimension_scores": critique.get("dimension_scores", {}),
+            "threshold_passed": threshold_passed,
+            "thresholds": {
+                "min_score": int(self.settings.briefing_critic_min_score),
+                "min_actionability": int(self.settings.briefing_critic_min_actionability),
+                "min_source_diversity": int(self.settings.briefing_critic_min_source_diversity),
+                "min_link_hygiene": int(self.settings.briefing_critic_min_link_hygiene),
+            },
             "gate_issues": [str(i) for i in gate.get("issues", [])],
             "critic_issues": [str(i) for i in critique.get("issues", [])],
             "recommendations": [str(i) for i in critique.get("recommendations", [])],
@@ -119,3 +128,20 @@ class CriticExecutor(AgentExecutor):
     ) -> None:
         """Cancel is not supported."""
         raise NotImplementedError("cancel not supported")
+
+    def _passes_thresholds(self, critique: dict[str, object]) -> bool:
+        if not bool(critique.get("passed", False)):
+            return False
+        score = int(critique.get("score", 0) or 0)
+        dims = critique.get("dimension_scores", {}) or {}
+        if not isinstance(dims, dict):
+            dims = {}
+        actionability = int(dims.get("actionability", 0) or 0)
+        source_diversity = int(dims.get("source_diversity", 0) or 0)
+        link_hygiene = int(dims.get("link_hygiene", 0) or 0)
+        return (
+            score >= int(self.settings.briefing_critic_min_score)
+            and actionability >= int(self.settings.briefing_critic_min_actionability)
+            and source_diversity >= int(self.settings.briefing_critic_min_source_diversity)
+            and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
+        )

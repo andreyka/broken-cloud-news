@@ -41,3 +41,37 @@ CREATE TABLE IF NOT EXISTS briefings (
     distribution_channels JSONB,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS simulation_runs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    generated_at TIMESTAMP WITH TIME ZONE,
+    source VARCHAR(64) NOT NULL DEFAULT 'cli',
+    report_path TEXT,
+    params JSONB NOT NULL DEFAULT '{}'::jsonb,
+    summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+    count INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_simulation_runs_created_at
+    ON simulation_runs (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS simulation_results (
+    id BIGSERIAL PRIMARY KEY,
+    run_id UUID NOT NULL REFERENCES simulation_runs(id) ON DELETE CASCADE,
+    briefing_id TEXT,
+    briefing_created_at TIMESTAMP WITH TIME ZONE,
+    actual_score INTEGER NOT NULL,
+    simulated_score INTEGER NOT NULL,
+    delta INTEGER NOT NULL,
+    result JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (run_id, briefing_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_simulation_results_run_id
+    ON simulation_results (run_id);
+CREATE INDEX IF NOT EXISTS idx_simulation_results_briefing_id
+    ON simulation_results (briefing_id);

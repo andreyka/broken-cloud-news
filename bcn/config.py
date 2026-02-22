@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     writer_port: int = 9003
     distributor_port: int = 9004
     critic_port: int = 9005
+    verifier_port: int = 9006
 
     # Scheduling
     ghsa_interval_hours: int = 4
@@ -141,6 +142,7 @@ class Settings(BaseSettings):
     relevance_threshold: int = 7
     briefing_lookback_hours: int = 24
     briefing_max_items: int = 5
+    briefing_min_selected_items: int = 1
     briefing_max_ai_items: int = 2
     briefing_max_twitter_items: int = 2
     briefing_max_rss_items: int = 3
@@ -169,9 +171,25 @@ class Settings(BaseSettings):
     briefing_quiet_day_min_chars: int = 900
     briefing_quiet_day_target_chars: int = 1300
     briefing_quiet_day_hard_max_chars: int = 1800
+    briefing_skip_if_no_high_signal: bool = True
+    briefing_min_high_signal_to_publish: int = 1
+    briefing_single_item_min_chars: int = 450
+    briefing_single_item_target_chars: int = 850
+    briefing_single_item_hard_max_chars: int = 1400
     briefing_social_proof_weight: float = 0.35
     briefing_social_proof_max_bonus: float = 2.5
     briefing_gate_mode: str = "balanced"  # strict, balanced, minimal
+    briefing_selection_require_reddit: bool = True
+    briefing_selection_require_csp: bool = True
+    briefing_max_source_share: float = 0.5
+    briefing_min_items_after_coverage_drop: int = 1
+    briefing_missing_coverage_max_drops: int = 2
+    briefing_verifier_enabled: bool = True
+    briefing_verifier_max_links: int = 12
+    briefing_critic_min_score: int = 80
+    briefing_critic_min_actionability: int = 70
+    briefing_critic_min_source_diversity: int = 65
+    briefing_critic_min_link_hygiene: int = 80
 
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never
