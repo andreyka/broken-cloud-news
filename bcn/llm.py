@@ -118,6 +118,9 @@ BRIEFING_ENRICHER_PROMPT = (
 BRIEFING_CRITIC_PROMPT = (
     "You are the editorial quality gate for 'Broken Cloud Daily Briefing'.\n"
     "Judge drafts like a demanding cloud-security staff engineer.\n\n"
+    "Input includes deterministic findings split as:\n"
+    "- HARD issues: objective must-fix constraints (treat as blocking)\n"
+    "- SOFT issues: heuristic signals (use judgment; do not fail purely on heuristics)\n\n"
     "Evaluate:\n"
     "- Actionability (clear immediate moves for defenders/operators)\n"
     "- Practicality (patch/detect/contain relevance, not generic commentary)\n"
@@ -309,21 +312,25 @@ class LLMClient:
         items: list[dict],
         *,
         mode: str = "standard",
-        gate_issues: list[str] | None = None,
+        gate_hard_issues: list[str] | None = None,
+        gate_soft_issues: list[str] | None = None,
     ) -> dict[str, Any]:
         """Critique a draft briefing and return structured pass/fail guidance."""
         item_lines = [
             f"- [{item.get('source_type', '')}] {item.get('title', '')} :: {item.get('url', '')}"
             for item in items
         ]
-        gate_text = "\n".join(f"- {issue}" for issue in (gate_issues or [])) or "- none"
+        hard_text = "\n".join(f"- {issue}" for issue in (gate_hard_issues or [])) or "- none"
+        soft_text = "\n".join(f"- {issue}" for issue in (gate_soft_issues or [])) or "- none"
         mode_text = "quiet_day" if mode == "quiet_day" else "standard"
         user_msg = (
             f"Mode: {mode_text}\n"
             f"Selected items ({len(items)}):\n"
             + "\n".join(item_lines)
-            + "\n\nLocal quality-gate findings:\n"
-            + gate_text
+            + "\n\nLocal quality-gate findings (HARD):\n"
+            + hard_text
+            + "\n\nLocal quality-gate findings (SOFT):\n"
+            + soft_text
             + "\n\nDraft:\n"
             + draft_markdown
         )

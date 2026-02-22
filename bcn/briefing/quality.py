@@ -46,6 +46,10 @@ class BriefingQualityGate:
         """Run deterministic checks before critic/model feedback."""
         hard_issues: list[str] = []
         soft_issues: list[str] = []
+        gate_mode = str(getattr(self.settings, "briefing_gate_mode", "balanced")).strip().lower()
+        gate_mode = gate_mode if gate_mode in {"strict", "balanced", "minimal"} else "balanced"
+        strict_structure = gate_mode == "strict"
+        check_structure = gate_mode != "minimal"
         body = (markdown or "").strip()
         length = len(body)
 
@@ -54,27 +58,38 @@ class BriefingQualityGate:
         if length > hard_max_chars:
             hard_issues.append(f"Digest too long ({length} chars, hard max {hard_max_chars}).")
 
-        heading_count = len(re.findall(r"^\*\*.+\*\*$", body, flags=re.MULTILINE))
-        min_sections = 2 if mode == "quiet_day" else 3
-        if heading_count < min_sections:
-            hard_issues.append(
-                f"Too few sections ({heading_count}); expected at least {min_sections}."
-            )
+        if check_structure:
+            heading_count = len(re.findall(r"^\*\*.+\*\*$", body, flags=re.MULTILINE))
+            min_sections = 2 if mode == "quiet_day" else 3
+            if heading_count < min_sections:
+                issue = f"Too few sections ({heading_count}); expected at least {min_sections}."
+                if strict_structure:
+                    hard_issues.append(issue)
+                else:
+                    soft_issues.append(issue)
 
-        op_match = re.search(
-            r"\*\*Operator Moves \(next 24h\)\*\*\s*(.*?)(?:\n\*\*|\Z)",
-            body,
-            flags=re.DOTALL,
-        )
-        if not op_match:
-            hard_issues.append("Missing **Operator Moves (next 24h)** section.")
-        else:
-            op_bullets = [
-                ln for ln in (line.strip() for line in op_match.group(1).splitlines())
-                if ln.startswith("- ")
-            ]
-            if len(op_bullets) != 3:
-                hard_issues.append("Operator Moves section must contain exactly 3 bullets.")
+            op_match = re.search(
+                r"\*\*Operator Moves \(next 24h\)\*\*\s*(.*?)(?:\n\*\*|\Z)",
+                body,
+                flags=re.DOTALL,
+            )
+            if not op_match:
+                issue = "Missing **Operator Moves (next 24h)** section."
+                if strict_structure:
+                    hard_issues.append(issue)
+                else:
+                    soft_issues.append(issue)
+            else:
+                op_bullets = [
+                    ln for ln in (line.strip() for line in op_match.group(1).splitlines())
+                    if ln.startswith("- ")
+                ]
+                if len(op_bullets) != 3:
+                    issue = "Operator Moves section must contain exactly 3 bullets."
+                    if strict_structure:
+                        hard_issues.append(issue)
+                    else:
+                        soft_issues.append(issue)
 
         url_counts: Counter[str] = Counter()
         for raw_url in re.findall(r"https?://[^\s)\]>]+", body):

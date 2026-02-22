@@ -87,7 +87,8 @@ class CriticExecutor(AgentExecutor):
             draft_markdown=draft_markdown,
             items=items,
             mode=mode,
-            gate_issues=[str(i) for i in gate.get("issues", [])],
+            gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
+            gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
         )
 
         response = {

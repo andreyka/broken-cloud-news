@@ -32,6 +32,12 @@ class Settings(BaseSettings):
         mode = (v or "").strip().lower()
         return mode if mode in {"smart", "always", "never"} else "smart"
 
+    @field_validator("briefing_gate_mode")
+    @classmethod
+    def _validate_briefing_gate_mode(cls, v: str) -> str:
+        mode = (v or "").strip().lower()
+        return mode if mode in {"strict", "balanced", "minimal"} else "balanced"
+
     # Database
     database_url: str = "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
 
@@ -144,7 +150,7 @@ class Settings(BaseSettings):
     briefing_target_chars: int = 1700
     briefing_hard_max_chars: int = 2300
     briefing_critique_enabled: bool = True
-    briefing_critique_max_rounds: int = 3
+    briefing_critique_max_rounds: int = 5
     briefing_novelty_lookback_hours: int = 24 * 14
     briefing_novelty_max_items: int = 250
     briefing_novelty_title_similarity_threshold: float = 0.86
@@ -165,6 +171,7 @@ class Settings(BaseSettings):
     briefing_quiet_day_hard_max_chars: int = 1800
     briefing_social_proof_weight: float = 0.35
     briefing_social_proof_max_bonus: float = 2.5
+    briefing_gate_mode: str = "balanced"  # strict, balanced, minimal
 
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never
