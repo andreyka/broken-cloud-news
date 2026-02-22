@@ -110,6 +110,8 @@ bcn analyze              # Analyze new items with LLM
 bcn write                # Generate briefing + cover image
 bcn critique --latest    # Critique latest briefing (quality report JSON)
 bcn critique --file ./draft.md
+bcn simulate --limit 30 --output simulation_report.json  # Backtest vs historical briefings (no publish)
+bcn simulate --limit 0 --with-critic-rewrites            # Full heavy replay with writer->critic rewrites
 bcn distribute           # Send to configured channels
 bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
 ```
@@ -148,6 +150,11 @@ Important briefing-quality knobs:
   (defaults `1200`/`1700`/`2300`) increase depth while keeping Telegram-safe output.
 - `BCN_BRIEFING_SOCIAL_PROOF_WEIGHT` + `BCN_BRIEFING_SOCIAL_PROOF_MAX_BONUS`
   add bounded engagement influence (likes/retweets/upvotes/comments) to ranking.
+- `BCN_BRIEFING_CRITIQUE_MAX_ROUNDS` (default `5`) sets max writer rewrites in the
+  writer->critic loop before publishing the best available draft.
+- `BCN_BRIEFING_GATE_MODE` (default `balanced`) controls deterministic strictness:
+  `strict` (structure rules are blocking), `balanced` (structure/style are advisory),
+  `minimal` (only hard correctness checks block).
 - `BCN_SCRAPE_PLAYWRIGHT_FETCH_FALLBACK` (default `true`) uses Playwright request
   fallback when direct HTTP fetches of feeds/Reddit endpoints fail.
 
@@ -226,6 +233,7 @@ bcn/
   db.py               asyncpg database layer
   models.py           Pydantic data models
   llm.py              Qwen LLM client (analysis + briefing)
+  simulation.py       Historical briefing replay + comparison scoring
   comfyui.py          ComfyUI Flux client (cover images)
   scraper.py          Playwright headless Chromium scraper
   agents/

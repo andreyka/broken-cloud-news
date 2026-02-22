@@ -116,8 +116,9 @@ class WriterExecutor(AgentExecutor):
         )
 
         if self.settings.briefing_critique_enabled:
-            rounds = max(1, self.settings.briefing_critique_max_rounds)
-            for round_idx in range(1, rounds + 1):
+            max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
+            rewrites = 0
+            while True:
                 gate = self._quality_gate(
                     markdown=briefing_body,
                     selected_items=selected_items,
@@ -129,14 +130,26 @@ class WriterExecutor(AgentExecutor):
                     draft_markdown=briefing_body,
                     items=selected_items,
                     mode=mode,
-                    gate_issues=gate["issues"],
+                    gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
+                    gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
                 )
                 gate_passed = bool(gate.get("passed", False))
                 critic_passed = bool(critique.get("passed", False))
                 if gate_passed and critic_passed:
                     logger.info(
-                        "Briefing critique passed at round %d (score=%s)",
-                        round_idx,
+                        "Briefing critique approved after %d rewrite(s) (score=%s)",
+                        rewrites,
+                        critique.get("score"),
+                    )
+                    break
+
+                if rewrites >= max_rewrites:
+                    logger.warning(
+                        "Briefing critique not approved after %d rewrite(s); proceeding with best draft "
+                        "(gate=%s critic=%s score=%s)",
+                        rewrites,
+                        gate_passed,
+                        critic_passed,
                         critique.get("score"),
                     )
                     break
@@ -145,9 +158,12 @@ class WriterExecutor(AgentExecutor):
                 feedback.extend(gate.get("issues", []))
                 feedback.extend([str(i) for i in critique.get("issues", [])])
                 feedback.extend([str(r) for r in critique.get("recommendations", [])])
+
+                rewrites += 1
                 logger.info(
-                    "Briefing critique round %d failed (gate=%s critic=%s score=%s), regenerating",
-                    round_idx,
+                    "Briefing critique failed; rewrite %d/%d (gate=%s critic=%s score=%s)",
+                    rewrites,
+                    max_rewrites,
                     gate_passed,
                     critic_passed,
                     critique.get("score"),

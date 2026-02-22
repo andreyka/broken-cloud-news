@@ -21,8 +21,6 @@ def _make_settings(**overrides) -> Settings:
         llm_model="test-model",
         comfyui_url="http://fake-comfy:8188",
         github_token="ghp_fake",
-        apify_token="apify_fake",
-        browserless_url="http://fake-browserless:3000",
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -267,6 +265,64 @@ class TestWriterExecutor:
 
         assert any("no items" in str(e).lower() for e in eq.events)
 
+    @pytest.mark.asyncio
+    async def test_critique_loop_honors_max_rewrites(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_critique_enabled=True,
+            briefing_critique_max_rounds=5,
+        )
+        executor = WriterExecutor(settings)
+
+        selected = [
+            {
+                "id": str(uuid4()),
+                "title": "Cloud issue",
+                "summary": "Patch guidance",
+                "relevance_score": 9,
+                "source_type": "rss",
+                "url": "https://example.com/advisory",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+
+        with (
+            patch("bcn.agents.writer.get_analyzed_items", new_callable=AsyncMock, return_value=selected),
+            patch("bcn.agents.writer.get_recent_published_items", new_callable=AsyncMock, return_value=[]),
+            patch("bcn.agents.writer.get_recent_briefings", new_callable=AsyncMock, return_value=[]),
+            patch("bcn.agents.writer.insert_briefing", new_callable=AsyncMock, return_value=uuid4()),
+            patch.object(executor, "_select_items_for_briefing", return_value=selected),
+            patch.object(executor, "_postprocess_briefing", new_callable=AsyncMock, side_effect=lambda **kw: kw["briefing_body"]),
+            patch.object(
+                executor,
+                "_quality_gate",
+                return_value={"passed": True, "hard_issues": [], "soft_issues": [], "issues": []},
+            ),
+            patch.object(executor.llm, "generate_briefing", new_callable=AsyncMock, return_value="Initial draft"),
+            patch.object(
+                executor.llm,
+                "critique_briefing",
+                new_callable=AsyncMock,
+                return_value={
+                    "passed": False,
+                    "score": 40,
+                    "issues": ["Needs improvements"],
+                    "recommendations": ["Make it stronger"],
+                },
+            ) as mock_critique,
+            patch.object(executor.llm, "revise_briefing", new_callable=AsyncMock, return_value="Rewritten draft") as mock_revise,
+            patch.object(executor.llm, "generate_cover_prompt", new_callable=AsyncMock, return_value="cover prompt"),
+            patch.object(executor.comfyui, "generate_image", new_callable=AsyncMock, return_value=""),
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("generate_briefing")
+            await executor.execute(ctx, eq)
+
+        # initial critique + one critique after each rewrite
+        assert mock_critique.await_count == 6
+        assert mock_revise.await_count == 5
+
     def test_selection_limits_single_domain(self):
         from bcn.agents.writer import WriterExecutor
 
@@ -448,6 +504,46 @@ class TestWriterExecutor:
         assert gate["passed"] is False
         assert "Missing selected URL" in issue_text
         assert "exactly 3 bullets" in issue_text
+
+    def test_quality_gate_balanced_mode_keeps_structure_as_soft_feedback(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(briefing_gate_mode="balanced")
+        executor = WriterExecutor(settings)
+        selected = [{"url": "https://example.com/one", "source_type": "rss"}]
+        markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
+
+        gate = executor._quality_gate(
+            markdown=markdown,
+            selected_items=selected,
+            mode="standard",
+            min_chars=10,
+            hard_max_chars=2000,
+        )
+
+        assert gate["passed"] is True
+        soft_text = " ".join(gate["soft_issues"])
+        assert "Missing **Operator Moves (next 24h)** section." in soft_text
+
+    def test_quality_gate_strict_mode_blocks_missing_operator_moves(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(briefing_gate_mode="strict")
+        executor = WriterExecutor(settings)
+        selected = [{"url": "https://example.com/one", "source_type": "rss"}]
+        markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
+
+        gate = executor._quality_gate(
+            markdown=markdown,
+            selected_items=selected,
+            mode="standard",
+            min_chars=10,
+            hard_max_chars=2000,
+        )
+
+        assert gate["passed"] is False
+        hard_text = " ".join(gate["hard_issues"])
+        assert "Missing **Operator Moves (next 24h)** section." in hard_text
 
     def test_detemplate_rewrites_detection_and_source_fields(self):
         from bcn.agents.writer import WriterExecutor

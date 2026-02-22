@@ -282,6 +282,39 @@ async def get_recent_briefings(limit: int = 5) -> list[asyncpg.Record]:
     )
 
 
+async def get_distributed_briefings(
+    *,
+    limit: int = 30,
+    since_days: int = 0,
+) -> list[asyncpg.Record]:
+    """Return distributed briefings for simulation/backtest workflows.
+
+    Args:
+        limit: Maximum rows to return. Use ``0`` for no explicit limit.
+        since_days: Optional lookback window in days. Use ``0`` for all time.
+    """
+    pool = await get_pool()
+
+    where = ["status = 'DISTRIBUTED'"]
+    params: list[object] = []
+
+    if since_days > 0:
+        params.append(int(since_days))
+        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
+
+    sql = (
+        "SELECT id, created_at, distributed_at, content_markdown, item_ids "
+        "FROM briefings "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
+    if limit > 0:
+        params.append(int(limit))
+        sql += f" LIMIT ${len(params)}"
+
+    return await pool.fetch(sql, *params)
+
+
 async def get_latest_any_briefing() -> Optional[asyncpg.Record]:
     """Return the latest briefing regardless of status."""
     pool = await get_pool()

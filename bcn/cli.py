@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -319,6 +320,81 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
             skill=skill,
         )
         click.echo(result)
+
+    asyncio.run(_run())
+
+
+@cli.command()
+@click.option(
+    "--limit",
+    type=int,
+    default=0,
+    show_default=True,
+    help="How many distributed briefings to simulate (0 = all).",
+)
+@click.option(
+    "--since-days",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Only simulate briefings from the last N days (0 = all time).",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="simulation_report.json",
+    show_default=True,
+    help="Where to write the simulation comparison report (JSON).",
+)
+@click.option(
+    "--include-text",
+    is_flag=True,
+    help="Include full actual/simulated markdown in the JSON report.",
+)
+@click.option(
+    "--with-critic-rewrites",
+    is_flag=True,
+    help="Use full writer->critic rewrite loop during simulation (much slower).",
+)
+def simulate(
+    limit: int,
+    since_days: int,
+    output_path: str,
+    include_text: bool,
+    with_critic_rewrites: bool,
+) -> None:
+    """Simulate historical briefings and compare against actual distributed posts."""
+    settings = Settings()
+
+    async def _run():
+        from bcn.db import get_pool, close_pool
+        from bcn.simulation import simulate_historical_briefings
+
+        await get_pool(settings)
+        report = await simulate_historical_briefings(
+            settings=settings,
+            limit=max(0, int(limit)),
+            since_days=max(0, int(since_days)),
+            include_text=include_text,
+            apply_critic_rewrites=with_critic_rewrites,
+        )
+        Path(output_path).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        click.echo(
+            "Simulation complete: "
+            f"count={report.get('count', 0)} "
+            f"avg_actual={summary.get('avg_actual_score', 0)} "
+            f"avg_simulated={summary.get('avg_simulated_score', 0)} "
+            f"avg_delta={summary.get('avg_delta', 0)}"
+        )
+        click.echo(f"Report written to {output_path}")
+        click.echo("No distribution action was performed.")
+        await close_pool()
 
     asyncio.run(_run())
 
