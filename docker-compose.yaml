@@ -28,6 +28,7 @@ services:
       - "9003:9003"
       - "9004:9004"
       - "9005:9005"
+      - "9006:9006"
     depends_on:
       postgres:
         condition: service_healthy

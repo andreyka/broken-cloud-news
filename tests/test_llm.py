@@ -157,9 +157,12 @@ class TestGenerateBriefing:
             }
         ]
         await llm.generate_briefing(items, recent_briefings=history)
-        body = json.loads(route.calls[0].request.content)
-        user_msg = body["messages"][1]["content"]
-        assert "Recent briefing patterns to avoid repeating" in user_msg
+        assert route.call_count >= 1
+        msgs = []
+        for call in route.calls:
+            body = json.loads(call.request.content)
+            msgs.append(body["messages"][1]["content"])
+        assert any("Recent briefing patterns to avoid repeating" in m for m in msgs)
 
 
 class TestGenerateCoverPrompt:

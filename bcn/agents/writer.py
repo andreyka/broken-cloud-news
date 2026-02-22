@@ -13,7 +13,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
-from bcn.briefing import BriefingQualityGate, BriefingSelector
+from bcn.briefing import BriefingFactVerifier, BriefingQualityGate, BriefingSelector
 from bcn.briefing import text as briefing_text
 from bcn.comfyui import ComfyUIClient
 from bcn.config import Settings
@@ -55,6 +55,7 @@ class WriterExecutor(AgentExecutor):
         )
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
+        self.verifier = BriefingFactVerifier(settings, llm=self.llm)
 
     @override
     async def execute(
@@ -79,13 +80,24 @@ class WriterExecutor(AgentExecutor):
             return
 
         item_dicts = [dict(i) for i in items]
+        if bool(self.settings.briefing_skip_if_no_high_signal):
+            high_signal = self.selector.high_signal_count(item_dicts)
+            min_high_signal = max(1, int(self.settings.briefing_min_high_signal_to_publish))
+            if high_signal < min_high_signal:
+                msg = (
+                    "Quiet day — not enough high-signal items "
+                    f"({high_signal} < {min_high_signal}). Skipping briefing."
+                )
+                logger.info(msg)
+                event_queue.enqueue_event(new_agent_text_message(msg))
+                return
+
         recent_published = await get_recent_published_items(
             hours=self.settings.briefing_novelty_lookback_hours,
             limit=self.settings.briefing_novelty_max_items,
         )
         quiet_mode = self._is_quiet_day(item_dicts)
         mode = "quiet_day" if quiet_mode else "standard"
-        min_chars, target_chars, hard_max_chars = self._char_limits(mode)
 
         selected_items = self._select_items_for_briefing(
             item_dicts,
@@ -97,6 +109,10 @@ class WriterExecutor(AgentExecutor):
             logger.info(msg)
             event_queue.enqueue_event(new_agent_text_message(msg))
             return
+        min_chars, target_chars, hard_max_chars = self._char_limits(
+            mode,
+            selected_count=len(selected_items),
+        )
 
         history = await get_recent_briefings(limit=self.settings.briefing_history_items)
         history_items = [dict(r) for r in history]
@@ -115,87 +131,121 @@ class WriterExecutor(AgentExecutor):
             hard_max_chars=hard_max_chars,
         )
 
-        if self.settings.briefing_critique_enabled:
-            max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
-            rewrites = 0
-            while True:
-                gate = self._quality_gate(
-                    markdown=briefing_body,
-                    selected_items=selected_items,
-                    mode=mode,
-                    min_chars=min_chars,
-                    hard_max_chars=hard_max_chars,
-                )
-                critique = await self.llm.critique_briefing(
+        max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
+        rewrites = 0
+        release_passed = False
+        last_gate: dict[str, object] = {}
+        last_critique: dict[str, object] = {}
+        last_verification: dict[str, object] = {
+            "passed": True,
+            "score": 100,
+            "issues": [],
+            "recommendations": [],
+        }
+        while True:
+            last_gate = self._quality_gate(
+                markdown=briefing_body,
+                selected_items=selected_items,
+                mode=mode,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
+            )
+            if self.settings.briefing_critique_enabled:
+                last_critique = await self.llm.critique_briefing(
                     draft_markdown=briefing_body,
                     items=selected_items,
                     mode=mode,
-                    gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
-                    gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
+                    gate_hard_issues=[str(i) for i in last_gate.get("hard_issues", [])],
+                    gate_soft_issues=[str(i) for i in last_gate.get("soft_issues", [])],
                 )
-                gate_passed = bool(gate.get("passed", False))
-                critic_passed = bool(critique.get("passed", False))
-                if gate_passed and critic_passed:
-                    logger.info(
-                        "Briefing critique approved after %d rewrite(s) (score=%s)",
-                        rewrites,
-                        critique.get("score"),
-                    )
-                    break
+            else:
+                last_critique = {
+                    "passed": True,
+                    "score": 100,
+                    "dimension_scores": {
+                        "actionability": 100,
+                        "source_diversity": 100,
+                        "link_hygiene": 100,
+                        "clarity": 100,
+                        "style": 100,
+                    },
+                    "issues": [],
+                    "recommendations": [],
+                }
 
-                if rewrites >= max_rewrites:
-                    logger.warning(
-                        "Briefing critique not approved after %d rewrite(s); proceeding with best draft "
-                        "(gate=%s critic=%s score=%s)",
-                        rewrites,
-                        gate_passed,
-                        critic_passed,
-                        critique.get("score"),
-                    )
-                    break
+            if self.settings.briefing_verifier_enabled:
+                last_verification = await self.verifier.evaluate(
+                    briefing_body,
+                    selected_items,
+                    mode=mode,
+                )
 
-                feedback: list[str] = []
-                feedback.extend(gate.get("issues", []))
-                feedback.extend([str(i) for i in critique.get("issues", [])])
-                feedback.extend([str(r) for r in critique.get("recommendations", [])])
-
-                rewrites += 1
+            gate_passed = bool(last_gate.get("passed", False))
+            critique_passed = self._passes_critic_thresholds(last_critique)
+            verification_passed = bool(last_verification.get("passed", True))
+            release_passed = gate_passed and critique_passed and verification_passed
+            if release_passed:
                 logger.info(
-                    "Briefing critique failed; rewrite %d/%d (gate=%s critic=%s score=%s)",
+                    "Briefing approved after %d rewrite(s) (critic_score=%s verifier_score=%s)",
                     rewrites,
-                    max_rewrites,
-                    gate_passed,
-                    critic_passed,
-                    critique.get("score"),
+                    last_critique.get("score"),
+                    last_verification.get("score"),
                 )
-                briefing_body = await self.llm.revise_briefing(
-                    draft_markdown=briefing_body,
-                    items=selected_items,
-                    feedback=feedback,
-                    mode=mode,
-                    min_chars=min_chars,
-                    target_chars=target_chars,
-                    hard_max_chars=hard_max_chars,
-                )
-                briefing_body = await self._postprocess_briefing(
-                    briefing_body=briefing_body,
-                    selected_items=selected_items,
-                    mode=mode,
-                    min_chars=min_chars,
-                    target_chars=target_chars,
-                    hard_max_chars=hard_max_chars,
-                )
+                break
+
+            if rewrites >= max_rewrites:
+                break
+
+            feedback: list[str] = []
+            feedback.extend([str(i) for i in last_gate.get("issues", [])])
+            feedback.extend([str(i) for i in last_critique.get("issues", [])])
+            feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
+            feedback.extend([str(i) for i in last_verification.get("issues", [])])
+            feedback.extend([str(i) for i in last_verification.get("recommendations", [])])
+
+            rewrites += 1
+            logger.info(
+                "Briefing failed release checks; rewrite %d/%d "
+                "(gate=%s critique=%s verifier=%s score=%s verifier_score=%s)",
+                rewrites,
+                max_rewrites,
+                gate_passed,
+                critique_passed,
+                verification_passed,
+                last_critique.get("score"),
+                last_verification.get("score"),
+            )
+            briefing_body = await self.llm.revise_briefing(
+                draft_markdown=briefing_body,
+                items=selected_items,
+                feedback=feedback,
+                mode=mode,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+            )
+            briefing_body = await self._postprocess_briefing(
+                briefing_body=briefing_body,
+                selected_items=selected_items,
+                mode=mode,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+            )
+
+        if not release_passed:
+            msg = (
+                "Blocking publish: briefing did not meet release thresholds after "
+                f"{rewrites} rewrite(s). gate={bool(last_gate.get('passed', False))} "
+                f"critic={self._passes_critic_thresholds(last_critique)} "
+                f"verifier={bool(last_verification.get('passed', True))}"
+            )
+            logger.warning(msg)
+            event_queue.enqueue_event(new_agent_text_message(msg))
+            return
 
         briefing_body = self._normalize_section_headings(briefing_body)
         briefing_body = self._de_template_fields(briefing_body)
-
-        final_missing = self._missing_items_for_markdown(briefing_body, selected_items)
-        if final_missing:
-            logger.warning(
-                "Final guard: appending %d missing selected URLs before publishing",
-                len(final_missing),
-            )
-            briefing_body = self._append_missing_items_section(briefing_body, final_missing)
 
         logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
@@ -254,8 +304,18 @@ class WriterExecutor(AgentExecutor):
     def _is_quiet_day(self, items: list[dict]) -> bool:
         return self.selector.is_quiet_day(items)
 
-    def _char_limits(self, mode: str) -> tuple[int, int, int]:
-        return self.quality.char_limits(mode)
+    def _char_limits(self, mode: str, selected_count: int | None = None) -> tuple[int, int, int]:
+        min_chars, target_chars, hard_max_chars = self.quality.char_limits(mode)
+        if selected_count is not None and selected_count <= 1:
+            min_chars = min(min_chars, int(self.settings.briefing_single_item_min_chars))
+            target_chars = min(target_chars, int(self.settings.briefing_single_item_target_chars))
+            hard_max_chars = min(
+                hard_max_chars,
+                int(self.settings.briefing_single_item_hard_max_chars),
+            )
+            target_chars = max(min_chars, target_chars)
+            hard_max_chars = max(target_chars, hard_max_chars)
+        return min_chars, target_chars, hard_max_chars
 
     def _quality_gate(
         self,
@@ -271,6 +331,28 @@ class WriterExecutor(AgentExecutor):
             mode=mode,
             min_chars=min_chars,
             hard_max_chars=hard_max_chars,
+        )
+
+    def _passes_critic_thresholds(self, critique: dict[str, object]) -> bool:
+        """Apply blocking thresholds for critic score and key dimensions."""
+        if not critique:
+            return False
+        if not bool(critique.get("passed", False)):
+            return False
+
+        score = int(critique.get("score", 0) or 0)
+        dims = critique.get("dimension_scores", {}) or {}
+        if not isinstance(dims, dict):
+            dims = {}
+        actionability = int(dims.get("actionability", 0) or 0)
+        source_diversity = int(dims.get("source_diversity", 0) or 0)
+        link_hygiene = int(dims.get("link_hygiene", 0) or 0)
+
+        return (
+            score >= int(self.settings.briefing_critic_min_score)
+            and actionability >= int(self.settings.briefing_critic_min_actionability)
+            and source_diversity >= int(self.settings.briefing_critic_min_source_diversity)
+            and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
         )
 
     async def _postprocess_briefing(
@@ -310,8 +392,39 @@ class WriterExecutor(AgentExecutor):
             markdown = self._de_template_fields(markdown)
 
         missing_items = self._missing_items_for_markdown(markdown, selected_items)
-        if missing_items:
-            markdown = self._append_missing_items_section(markdown, missing_items)
+        max_drops = max(0, int(self.settings.briefing_missing_coverage_max_drops))
+        min_items_after_drop = max(1, int(self.settings.briefing_min_items_after_coverage_drop))
+        drops = 0
+        while missing_items and drops < max_drops and len(selected_items) > min_items_after_drop:
+            weakest = min(
+                missing_items,
+                key=lambda item: self._priority_score(item),
+            )
+            selected_items[:] = [
+                item for item in selected_items
+                if str(item.get("id")) != str(weakest.get("id"))
+            ]
+            drops += 1
+            logger.warning(
+                "Dropping uncovered low-priority item after rewrite retries: %s (%s)",
+                weakest.get("title"),
+                weakest.get("url"),
+            )
+
+            markdown = await self.llm.enrich_briefing(
+                draft_markdown=markdown,
+                items=selected_items,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+                missing_urls=[str(i.get("url", "")) for i in missing_items if i.get("url")] or None,
+                mode=mode,
+            )
+            markdown = self._normalize_section_headings(
+                self._dedupe_markdown_links(markdown.strip())
+            )
+            markdown = self._de_template_fields(markdown)
+            missing_items = self._missing_items_for_markdown(markdown, selected_items)
 
         if len(markdown) > hard_max_chars:
             markdown = await self.llm.tighten_briefing(
@@ -323,16 +436,9 @@ class WriterExecutor(AgentExecutor):
                 self._dedupe_markdown_links(markdown.strip())
             )
             markdown = self._de_template_fields(markdown)
-            missing_items = self._missing_items_for_markdown(markdown, selected_items)
-            if missing_items:
-                markdown = self._append_missing_items_section(markdown, missing_items)
 
         if len(markdown) > hard_max_chars:
             markdown = self._clip_markdown(markdown, hard_max_chars)
-
-        missing_items = self._missing_items_for_markdown(markdown, selected_items)
-        if missing_items:
-            markdown = self._append_missing_items_section(markdown, missing_items)
 
         return markdown.strip()
 

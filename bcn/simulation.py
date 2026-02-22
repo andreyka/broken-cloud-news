@@ -176,7 +176,10 @@ async def _simulate_briefing_body(
 ) -> tuple[str, dict[str, object]]:
     quiet_mode = writer._is_quiet_day(items)
     mode = "quiet_day" if quiet_mode else "standard"
-    min_chars, target_chars, hard_max_chars = writer._char_limits(mode)
+    min_chars, target_chars, hard_max_chars = writer._char_limits(
+        mode,
+        selected_count=len(items),
+    )
 
     briefing_body = await writer.llm.generate_briefing(
         items,
@@ -243,9 +246,6 @@ async def _simulate_briefing_body(
 
     briefing_body = writer._normalize_section_headings(briefing_body)
     briefing_body = writer._de_template_fields(briefing_body)
-    missing = writer._missing_items_for_markdown(briefing_body, items)
-    if missing:
-        briefing_body = writer._append_missing_items_section(briefing_body, missing)
 
     meta = {
         "mode": mode,
@@ -403,4 +403,83 @@ async def simulate_historical_briefings(
         "apply_critic_rewrites": bool(apply_critic_rewrites),
         "results": results,
         "summary": summary,
+    }
+
+
+def compare_simulation_reports(
+    current_report: dict[str, object],
+    previous_report: dict[str, object],
+) -> dict[str, object]:
+    """Compare two simulation reports and return run-over-run quality deltas."""
+
+    def _result_map(report: dict[str, object]) -> dict[str, dict[str, object]]:
+        mapped: dict[str, dict[str, object]] = {}
+        rows = report.get("results")
+        if not isinstance(rows, list):
+            return mapped
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            briefing_id = str(row.get("briefing_id") or "").strip()
+            if not briefing_id:
+                continue
+            mapped[briefing_id] = row
+        return mapped
+
+    current_summary = current_report.get("summary")
+    if not isinstance(current_summary, dict):
+        current_summary = {}
+    previous_summary = previous_report.get("summary")
+    if not isinstance(previous_summary, dict):
+        previous_summary = {}
+
+    current_results = _result_map(current_report)
+    previous_results = _result_map(previous_report)
+    current_ids = set(current_results.keys())
+    previous_ids = set(previous_results.keys())
+    overlap = sorted(current_ids & previous_ids)
+
+    score_changes: list[tuple[str, int, int, int]] = []
+    for briefing_id in overlap:
+        current_score = int(current_results[briefing_id].get("simulated_score", 0))
+        previous_score = int(previous_results[briefing_id].get("simulated_score", 0))
+        score_changes.append((briefing_id, current_score - previous_score, current_score, previous_score))
+
+    gains = [row for row in score_changes if row[1] > 0]
+    losses = [row for row in score_changes if row[1] < 0]
+    equals = [row for row in score_changes if row[1] == 0]
+    score_delta_values = [row[1] for row in score_changes]
+
+    top_gains = sorted(gains, key=lambda row: row[1], reverse=True)[:5]
+    top_losses = sorted(losses, key=lambda row: row[1])[:5]
+
+    def _fmt(rows: list[tuple[str, int, int, int]]) -> list[dict[str, object]]:
+        return [
+            {
+                "briefing_id": briefing_id,
+                "score_change": change,
+                "current_simulated_score": current_score,
+                "previous_simulated_score": previous_score,
+            }
+            for briefing_id, change, current_score, previous_score in rows
+        ]
+
+    return {
+        "baseline_generated_at": previous_report.get("generated_at"),
+        "current_generated_at": current_report.get("generated_at"),
+        "baseline_count": int(previous_report.get("count", 0) or 0),
+        "current_count": int(current_report.get("count", 0) or 0),
+        "overlap_count": len(overlap),
+        "new_briefings_in_current": len(current_ids - previous_ids),
+        "missing_briefings_from_previous": len(previous_ids - current_ids),
+        "avg_simulated_score_change": round(mean(score_delta_values), 2) if score_delta_values else 0.0,
+        "avg_delta_change": round(
+            float(current_summary.get("avg_delta", 0) or 0) - float(previous_summary.get("avg_delta", 0) or 0),
+            2,
+        ),
+        "improved_vs_previous": len(gains),
+        "regressed_vs_previous": len(losses),
+        "unchanged_vs_previous": len(equals),
+        "top_gains": _fmt(top_gains),
+        "top_losses": _fmt(top_losses),
     }

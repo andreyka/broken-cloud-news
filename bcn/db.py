@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID
 
 import asyncpg
@@ -362,3 +362,292 @@ async def mark_briefing_distributed(
         json.dumps(channels),
         briefing_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Simulation Runs
+# ---------------------------------------------------------------------------
+
+
+def _coerce_iso_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def ensure_simulation_tables() -> None:
+    """Create simulation persistence tables if they do not already exist."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS simulation_runs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            generated_at TIMESTAMP WITH TIME ZONE,
+            source VARCHAR(64) NOT NULL DEFAULT 'cli',
+            report_path TEXT,
+            params JSONB NOT NULL DEFAULT '{}'::jsonb,
+            summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+            count INTEGER NOT NULL DEFAULT 0,
+            notes TEXT,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_simulation_runs_created_at ON simulation_runs (created_at DESC)"
+    )
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS simulation_results (
+            id BIGSERIAL PRIMARY KEY,
+            run_id UUID NOT NULL REFERENCES simulation_runs(id) ON DELETE CASCADE,
+            briefing_id TEXT,
+            briefing_created_at TIMESTAMP WITH TIME ZONE,
+            actual_score INTEGER NOT NULL,
+            simulated_score INTEGER NOT NULL,
+            delta INTEGER NOT NULL,
+            result JSONB NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE (run_id, briefing_id)
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_simulation_results_run_id ON simulation_results (run_id)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_simulation_results_briefing_id ON simulation_results (briefing_id)"
+    )
+
+
+async def count_simulation_runs() -> int:
+    """Return the number of stored simulation runs."""
+    await ensure_simulation_tables()
+    pool = await get_pool()
+    row = await pool.fetchrow("SELECT COUNT(*)::int AS count FROM simulation_runs")
+    return int(row["count"]) if row else 0
+
+
+async def insert_simulation_report(
+    report: dict[str, Any],
+    *,
+    report_path: str | None = None,
+    source: str = "cli",
+    notes: str | None = None,
+) -> UUID:
+    """Persist a simulation report and per-briefing results."""
+    await ensure_simulation_tables()
+    pool = await get_pool()
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    params = {
+        "limit": _coerce_int(report.get("limit"), 0),
+        "since_days": _coerce_int(report.get("since_days"), 0),
+        "include_text": bool(report.get("include_text", False)),
+        "apply_critic_rewrites": bool(report.get("apply_critic_rewrites", False)),
+    }
+    generated_at = _coerce_iso_datetime(report.get("generated_at"))
+    run_count = _coerce_int(report.get("count"), 0)
+
+    run = await pool.fetchrow(
+        """
+        INSERT INTO simulation_runs (
+            generated_at, source, report_path, params, summary, count, notes
+        )
+        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+        RETURNING id
+        """,
+        generated_at,
+        source,
+        report_path,
+        json.dumps(params),
+        json.dumps(summary),
+        run_count,
+        notes,
+    )
+    run_id = run["id"]
+
+    raw_results = report.get("results")
+    results = raw_results if isinstance(raw_results, list) else []
+    if results:
+        payloads: list[tuple[UUID, str | None, datetime | None, int, int, int, str]] = []
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            briefing_id_raw = row.get("briefing_id")
+            briefing_id = str(briefing_id_raw).strip() if briefing_id_raw else None
+            payloads.append(
+                (
+                    run_id,
+                    briefing_id if briefing_id else None,
+                    _coerce_iso_datetime(row.get("created_at")),
+                    _coerce_int(row.get("actual_score"), 0),
+                    _coerce_int(row.get("simulated_score"), 0),
+                    _coerce_int(row.get("delta"), 0),
+                    json.dumps(row, ensure_ascii=False),
+                )
+            )
+
+        if payloads:
+            await pool.executemany(
+                """
+                INSERT INTO simulation_results (
+                    run_id,
+                    briefing_id,
+                    briefing_created_at,
+                    actual_score,
+                    simulated_score,
+                    delta,
+                    result
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                ON CONFLICT (run_id, briefing_id) DO UPDATE
+                SET
+                    briefing_created_at = EXCLUDED.briefing_created_at,
+                    actual_score = EXCLUDED.actual_score,
+                    simulated_score = EXCLUDED.simulated_score,
+                    delta = EXCLUDED.delta,
+                    result = EXCLUDED.result
+                """,
+                payloads,
+            )
+
+    return run_id
+
+
+async def get_latest_simulation_run(
+    *,
+    exclude_run_id: UUID | None = None,
+) -> Optional[asyncpg.Record]:
+    """Fetch the latest simulation run metadata."""
+    await ensure_simulation_tables()
+    pool = await get_pool()
+    if exclude_run_id:
+        return await pool.fetchrow(
+            """
+            SELECT *
+            FROM simulation_runs
+            WHERE id <> $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            exclude_run_id,
+        )
+    return await pool.fetchrow(
+        """
+        SELECT *
+        FROM simulation_runs
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+
+
+async def get_simulation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
+    """Load a full simulation report object by run id."""
+    await ensure_simulation_tables()
+    pool = await get_pool()
+    run = await pool.fetchrow(
+        """
+        SELECT id, created_at, generated_at, source, report_path, params, summary, count, notes
+        FROM simulation_runs
+        WHERE id = $1
+        """,
+        run_id,
+    )
+    if not run:
+        return None
+
+    rows = await pool.fetch(
+        """
+        SELECT result
+        FROM simulation_results
+        WHERE run_id = $1
+        ORDER BY briefing_created_at NULLS LAST, created_at ASC
+        """,
+        run_id,
+    )
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        payload = row["result"]
+        if isinstance(payload, dict):
+            results.append(payload)
+            continue
+        if isinstance(payload, str):
+            try:
+                parsed = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                results.append(parsed)
+
+    params_raw = run["params"]
+    if isinstance(params_raw, dict):
+        params = params_raw
+    elif isinstance(params_raw, str):
+        try:
+            parsed_params = json.loads(params_raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_params = {}
+        params = parsed_params if isinstance(parsed_params, dict) else {}
+    else:
+        params = {}
+
+    summary_raw = run["summary"]
+    if isinstance(summary_raw, dict):
+        summary = summary_raw
+    elif isinstance(summary_raw, str):
+        try:
+            parsed_summary = json.loads(summary_raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed_summary = {}
+        summary = parsed_summary if isinstance(parsed_summary, dict) else {}
+    else:
+        summary = {}
+    generated_at = run["generated_at"] or run["created_at"]
+
+    report: dict[str, Any] = {
+        "generated_at": generated_at.isoformat() if isinstance(generated_at, datetime) else None,
+        "count": int(run["count"]),
+        "limit": _coerce_int(params.get("limit"), 0),
+        "since_days": _coerce_int(params.get("since_days"), 0),
+        "include_text": bool(params.get("include_text", False)),
+        "apply_critic_rewrites": bool(params.get("apply_critic_rewrites", False)),
+        "summary": summary,
+        "results": results,
+        "db_run_id": str(run["id"]),
+        "db_created_at": run["created_at"].isoformat(),
+        "db_source": str(run["source"]),
+    }
+    if run["report_path"]:
+        report["report_path"] = str(run["report_path"])
+    if run["notes"]:
+        report["notes"] = str(run["notes"])
+    return report
+
+
+async def get_latest_simulation_report(
+    *,
+    exclude_run_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    """Load latest simulation report object from DB."""
+    run = await get_latest_simulation_run(exclude_run_id=exclude_run_id)
+    if not run:
+        return None
+    return await get_simulation_report_by_id(run["id"])

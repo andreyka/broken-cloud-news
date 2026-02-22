@@ -78,13 +78,9 @@ def append_missing_items_section(markdown: str, missing_items: list[dict]) -> st
             continue
 
         if summary:
-            entries.append(
-                f"[{title}]({url}) — {summary}; validate exposure and queue patch/detection checks."
-            )
+            entries.append(f"[{title}]({url}) — {summary}")
         else:
-            entries.append(
-                f"[{title}]({url}) — validate exposure and queue patch/detection checks."
-            )
+            entries.append(f"[{title}]({url})")
 
     if not entries:
         return markdown

@@ -13,6 +13,17 @@ _AI_STAMP_PATTERNS = (
     re.compile(r"\b(in\s+today'?s\s+(?:fast|rapidly)\s+evolving)\b", re.IGNORECASE),
     re.compile(r"\bever[-\s]evolving\b", re.IGNORECASE),
 )
+_RAW_MARKDOWN_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+_BANNED_SECTION_TITLE = re.compile(
+    r"(?im)^\*{0,2}\s*additional\s+high[-\s]signal\s+items\s*\*{0,2}\s*$"
+)
+_TRUNCATION_ARTIFACT = re.compile(r"\.\.\.\s*;")
+_FALLBACK_PHRASE = re.compile(
+    r"validate exposure and queue patch/detection checks\.?",
+    re.IGNORECASE,
+)
+_DENSE_LINK_BLOCK = re.compile(r"(?m)\)\s*—[^\n]*\n\[[^\]]+\]\(https?://")
+_ADJACENT_BOLD_HEADINGS = re.compile(r"(?m)^\*\*[^\n]+\*\*\n\*\*[^\n]+\*\*$")
 
 
 class BriefingQualityGate:
@@ -59,37 +70,17 @@ class BriefingQualityGate:
             hard_issues.append(f"Digest too long ({length} chars, hard max {hard_max_chars}).")
 
         if check_structure:
-            heading_count = len(re.findall(r"^\*\*.+\*\*$", body, flags=re.MULTILINE))
-            min_sections = 2 if mode == "quiet_day" else 3
+            heading_count = len(re.findall(r"^\*\*.+\*\*\s*$", body, flags=re.MULTILINE))
+            if len(selected_items) <= 1:
+                min_sections = 1
+            else:
+                min_sections = 1 if mode == "quiet_day" else 2
             if heading_count < min_sections:
                 issue = f"Too few sections ({heading_count}); expected at least {min_sections}."
                 if strict_structure:
                     hard_issues.append(issue)
                 else:
                     soft_issues.append(issue)
-
-            op_match = re.search(
-                r"\*\*Operator Moves \(next 24h\)\*\*\s*(.*?)(?:\n\*\*|\Z)",
-                body,
-                flags=re.DOTALL,
-            )
-            if not op_match:
-                issue = "Missing **Operator Moves (next 24h)** section."
-                if strict_structure:
-                    hard_issues.append(issue)
-                else:
-                    soft_issues.append(issue)
-            else:
-                op_bullets = [
-                    ln for ln in (line.strip() for line in op_match.group(1).splitlines())
-                    if ln.startswith("- ")
-                ]
-                if len(op_bullets) != 3:
-                    issue = "Operator Moves section must contain exactly 3 bullets."
-                    if strict_structure:
-                        hard_issues.append(issue)
-                    else:
-                        soft_issues.append(issue)
 
         url_counts: Counter[str] = Counter()
         for raw_url in re.findall(r"https?://[^\s)\]>]+", body):
@@ -128,6 +119,32 @@ class BriefingQualityGate:
         source_fields = re.findall(r"(?im)^\*?\s*source\s*:", body)
         if source_fields:
             soft_issues.append("Standalone 'Source:' field lines detected; references should be inline.")
+
+        if _RAW_MARKDOWN_HEADING.search(body):
+            soft_issues.append("Raw markdown heading markers (`#`) detected; normalize heading styling.")
+
+        if _ADJACENT_BOLD_HEADINGS.search(body):
+            soft_issues.append("Adjacent section headings detected without body text between them.")
+
+        if _DENSE_LINK_BLOCK.search(body):
+            soft_issues.append("Consecutive link items detected without blank-line spacing.")
+
+        if _BANNED_SECTION_TITLE.search(body):
+            soft_issues.append(
+                "Generic section title detected (`Additional High-Signal Items`); use topical headings."
+            )
+
+        if _TRUNCATION_ARTIFACT.search(body):
+            hard_issues.append("Truncation artifact detected (`...;`) in briefing text.")
+
+        if _FALLBACK_PHRASE.search(body):
+            hard_issues.append("Fallback phrase artifact detected in briefing text.")
+
+        headings = re.findall(r"(?m)^\*\*(.+?)\*\*\s*$", body)
+        stems = [h.strip().split()[0].lower() for h in headings if h.strip()]
+        repeated_stems = [stem for stem, count in Counter(stems).items() if count > 1]
+        if repeated_stems:
+            soft_issues.append("Section headings repeat the same stem; diversify title phrasing.")
 
         source_counts = Counter(str(i.get("source_type", "")).lower() for i in selected_items)
         if source_counts:
