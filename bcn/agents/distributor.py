@@ -13,7 +13,12 @@ from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
 from bcn.config import Settings
-from bcn.db import get_latest_briefing, mark_briefing_distributed, mark_items_published
+from bcn.db import (
+    get_latest_briefing,
+    mark_briefing_distributed,
+    mark_items_published,
+    upsert_distribution_outcome,
+)
 from bcn.distributors.email import EmailDistributor
 from bcn.distributors.slack import SlackDistributor
 from bcn.distributors.telegram import TelegramDistributor
@@ -91,12 +96,19 @@ class DistributorExecutor(AgentExecutor):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for name, channel in self.channels:
+            status = "failed"
+            metadata: dict[str, object] = {}
+            external_message_id: str | None = None
             try:
                 if isinstance(channel, TelegramDistributor):
                     ok = await channel.send(
                         markdown=briefing["content_markdown"],
                         cover_image_url=briefing["cover_image_url"],
                     )
+                    metadata = dict(channel.last_result) if isinstance(channel.last_result, dict) else {}
+                    msg_id = metadata.get("primary_message_id")
+                    if msg_id is not None:
+                        external_message_id = str(msg_id)
                 elif isinstance(channel, EmailDistributor):
                     ok = await channel.send(
                         subject=f"Broken Cloud News - {today}",
@@ -105,18 +117,38 @@ class DistributorExecutor(AgentExecutor):
                             or briefing["content_markdown"]
                         ),
                     )
+                    metadata = {"recipient_count": len(channel.recipients)}
                 elif isinstance(channel, SlackDistributor):
                     ok = await channel.send(
                         markdown=briefing["content_markdown"],
                         cover_image_url=briefing["cover_image_url"],
                     )
+                    metadata = {
+                        "cover_image": bool(briefing["cover_image_url"]),
+                        "markdown_chars": len(str(briefing["content_markdown"] or "")),
+                    }
                 else:
                     ok = False
 
-                results[name] = "ok" if ok else "failed"
+                status = "ok" if ok else "failed"
+                results[name] = status
             except Exception:
                 logger.exception("Distribution to %s failed", name)
-                results[name] = "error"
+                status = "error"
+                results[name] = status
+                metadata = {"error": "exception_during_send"}
+
+            try:
+                await upsert_distribution_outcome(
+                    briefing_id=briefing["id"],
+                    channel=name,
+                    status=status,
+                    external_message_id=external_message_id,
+                    metrics={},
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.exception("Failed to persist distribution outcome for %s", name)
 
         await mark_briefing_distributed(briefing["id"], results)
         item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []

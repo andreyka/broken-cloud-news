@@ -6,12 +6,19 @@ import httpx
 import pytest
 import respx
 
-from bcn.llm import LLMClient
+from bcn.llm import LLMClient, build_prompt_versions
 
 
 @pytest.fixture
 def llm():
     return LLMClient(base_url="http://fake-llm:8000/v1", model="test-model", timeout=5)
+
+
+def test_build_prompt_versions_has_expected_keys():
+    versions = build_prompt_versions()
+    assert "briefing_system" in versions
+    assert "briefing_critic" in versions
+    assert "sha256" in versions["briefing_system"]
 
 
 def _chat_response(content: str) -> httpx.Response:

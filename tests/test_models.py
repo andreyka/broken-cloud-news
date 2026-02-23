@@ -4,7 +4,15 @@ import pytest
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from bcn.models import AnalysisResult, NewsItem, Briefing
+from bcn.models import (
+    AnalysisResult,
+    Briefing,
+    DistributionOutcome,
+    GenerationRoundArtifact,
+    GenerationRunTrace,
+    HumanReview,
+    NewsItem,
+)
 
 
 class TestAnalysisResult:
@@ -75,3 +83,47 @@ class TestBriefing:
         assert b.status == "DRAFT"
         assert b.item_ids == []
         assert b.cover_image_url is None
+
+
+class TestGenerationRoundArtifact:
+    def test_defaults(self):
+        row = GenerationRoundArtifact(round_index=0, draft_input="draft")
+        assert row.phase == "initial"
+        assert row.feedback == []
+        assert row.passed is False
+
+
+class TestGenerationRunTrace:
+    def test_defaults(self):
+        run = GenerationRunTrace(
+            id=uuid4(),
+            created_at=datetime.now(timezone.utc),
+        )
+        assert run.decision == "PENDING"
+        assert run.selected_item_ids == []
+        assert run.prompts == {}
+
+
+class TestHumanReview:
+    def test_defaults(self):
+        review = HumanReview(
+            id=uuid4(),
+            briefing_id=uuid4(),
+            created_at=datetime.now(timezone.utc),
+            decision="accept",
+        )
+        assert review.reviewer == "cli"
+        assert review.issue_tags == []
+
+
+class TestDistributionOutcome:
+    def test_defaults(self):
+        outcome = DistributionOutcome(
+            id=1,
+            briefing_id=uuid4(),
+            channel="telegram",
+            status="ok",
+            sent_at=datetime.now(timezone.utc),
+        )
+        assert outcome.metrics == {}
+        assert outcome.metadata == {}

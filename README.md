@@ -113,6 +113,10 @@ bcn critique --file ./draft.md
 bcn simulate --limit 30 --output simulation_report.json  # Backtest vs historical briefings (no publish)
 bcn simulate --limit 0 --with-critic-rewrites            # Full heavy replay with writer->critic rewrites
 bcn simulate --store-db                                   # Persist run/results in DB and compare with previous run
+bcn review --decision accept --issue-tag style            # Store human review labels for latest briefing
+bcn review-queue --only-unreviewed                        # List briefings needing manual review
+bcn record-outcome --briefing-id <uuid> --channel telegram --views 1200 --clicks 74
+bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets
 bcn distribute           # Send to configured channels
 bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
 ```

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import time
+from typing import Any
+from uuid import UUID
 
 from typing_extensions import override
 
@@ -18,7 +21,11 @@ from bcn.briefing import text as briefing_text
 from bcn.comfyui import ComfyUIClient
 from bcn.config import Settings
 from bcn.db import (
+    append_generation_round,
+    create_generation_run,
+    finalize_generation_run,
     get_analyzed_items,
+    insert_generation_preference_pair,
     get_recent_briefings,
     get_recent_published_items,
     insert_briefing,
@@ -131,8 +138,15 @@ class WriterExecutor(AgentExecutor):
             hard_max_chars=hard_max_chars,
         )
 
+        trace_run_id = await self._trace_start_run(
+            mode=mode,
+            selected_items=selected_items,
+            initial_draft=briefing_body,
+        )
+
         max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
         rewrites = 0
+        trace_round_index = 0
         release_passed = False
         last_gate: dict[str, object] = {}
         last_critique: dict[str, object] = {}
@@ -143,6 +157,7 @@ class WriterExecutor(AgentExecutor):
             "recommendations": [],
         }
         while True:
+            round_input = briefing_body
             last_gate = self._quality_gate(
                 markdown=briefing_body,
                 selected_items=selected_items,
@@ -184,6 +199,10 @@ class WriterExecutor(AgentExecutor):
             critique_passed = self._passes_critic_thresholds(last_critique)
             verification_passed = bool(last_verification.get("passed", True))
             release_passed = gate_passed and critique_passed and verification_passed
+
+            feedback: list[str] = []
+            rewritten_output: str | None = None
+
             if release_passed:
                 logger.info(
                     "Briefing approved after %d rewrite(s) (critic_score=%s verifier_score=%s)",
@@ -191,12 +210,35 @@ class WriterExecutor(AgentExecutor):
                     last_critique.get("score"),
                     last_verification.get("score"),
                 )
+                await self._trace_round(
+                    run_id=trace_run_id,
+                    round_index=trace_round_index,
+                    phase="initial" if trace_round_index == 0 else "rewrite",
+                    draft_input=round_input,
+                    gate_result=last_gate,
+                    critique_result=last_critique,
+                    verifier_result=last_verification,
+                    feedback=feedback,
+                    rewrite_output=rewritten_output,
+                    passed=True,
+                )
                 break
 
             if rewrites >= max_rewrites:
+                await self._trace_round(
+                    run_id=trace_run_id,
+                    round_index=trace_round_index,
+                    phase="initial" if trace_round_index == 0 else "rewrite",
+                    draft_input=round_input,
+                    gate_result=last_gate,
+                    critique_result=last_critique,
+                    verifier_result=last_verification,
+                    feedback=feedback,
+                    rewrite_output=rewritten_output,
+                    passed=False,
+                )
                 break
 
-            feedback: list[str] = []
             feedback.extend([str(i) for i in last_gate.get("issues", [])])
             feedback.extend([str(i) for i in last_critique.get("issues", [])])
             feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
@@ -215,7 +257,7 @@ class WriterExecutor(AgentExecutor):
                 last_critique.get("score"),
                 last_verification.get("score"),
             )
-            briefing_body = await self.llm.revise_briefing(
+            rewritten_output = await self.llm.revise_briefing(
                 draft_markdown=briefing_body,
                 items=selected_items,
                 feedback=feedback,
@@ -224,14 +266,35 @@ class WriterExecutor(AgentExecutor):
                 target_chars=target_chars,
                 hard_max_chars=hard_max_chars,
             )
-            briefing_body = await self._postprocess_briefing(
-                briefing_body=briefing_body,
+            rewritten_output = await self._postprocess_briefing(
+                briefing_body=rewritten_output,
                 selected_items=selected_items,
                 mode=mode,
                 min_chars=min_chars,
                 target_chars=target_chars,
                 hard_max_chars=hard_max_chars,
             )
+            await self._trace_round(
+                run_id=trace_run_id,
+                round_index=trace_round_index,
+                phase="initial" if trace_round_index == 0 else "rewrite",
+                draft_input=round_input,
+                gate_result=last_gate,
+                critique_result=last_critique,
+                verifier_result=last_verification,
+                feedback=feedback,
+                rewrite_output=rewritten_output,
+                passed=False,
+            )
+            await self._trace_preference_pair(
+                run_id=trace_run_id,
+                round_index=trace_round_index + 1,
+                chosen_text=rewritten_output,
+                rejected_text=round_input,
+                rationale=self._build_rationale(feedback),
+            )
+            briefing_body = rewritten_output
+            trace_round_index += 1
 
         if not release_passed:
             msg = (
@@ -241,6 +304,17 @@ class WriterExecutor(AgentExecutor):
                 f"verifier={bool(last_verification.get('passed', True))}"
             )
             logger.warning(msg)
+            await self._trace_finalize_run(
+                run_id=trace_run_id,
+                decision="BLOCKED",
+                decision_reason=msg,
+                rewrite_count=rewrites,
+                final_draft=briefing_body,
+                final_gate=last_gate,
+                final_critique=last_critique,
+                final_verifier=last_verification,
+                briefing_id=None,
+            )
             event_queue.enqueue_event(new_agent_text_message(msg))
             return
 
@@ -272,6 +346,17 @@ class WriterExecutor(AgentExecutor):
             cover_image_url=cover_url,
             cover_image_prompt=cover_prompt,
             item_ids=item_ids,
+        )
+        await self._trace_finalize_run(
+            run_id=trace_run_id,
+            decision="PUBLISHED",
+            decision_reason="release_checks_passed",
+            rewrite_count=rewrites,
+            final_draft=briefing_body,
+            final_gate=last_gate,
+            final_critique=last_critique,
+            final_verifier=last_verification,
+            briefing_id=briefing_id,
         )
 
         msg = f"Briefing {briefing_id} created with {len(selected_items)} items"
@@ -465,6 +550,226 @@ class WriterExecutor(AgentExecutor):
     @staticmethod
     def _clip_markdown(markdown: str, limit: int) -> str:
         return briefing_text.clip_markdown(markdown, limit)
+
+    async def _trace_start_run(
+        self,
+        *,
+        mode: str,
+        selected_items: list[dict[str, Any]],
+        initial_draft: str,
+    ) -> UUID | None:
+        ids: list[UUID] = []
+        for item in selected_items:
+            item_id = self._coerce_uuid(item.get("id"))
+            if item_id:
+                ids.append(item_id)
+
+        try:
+            return await create_generation_run(
+                trigger_source="writer",
+                mode=mode,
+                selected_item_ids=ids,
+                selected_items=selected_items,
+                llm_model=self.settings.llm_model,
+                llm_model_version=self._model_version(),
+                prompts=self.llm.prompt_versions(),
+                config_snapshot=self._component_config_snapshot(),
+                git_sha=self._git_sha(),
+                initial_draft=initial_draft,
+            )
+        except Exception:
+            logger.exception("Failed to persist generation trace start")
+            return None
+
+    async def _trace_round(
+        self,
+        *,
+        run_id: UUID | None,
+        round_index: int,
+        phase: str,
+        draft_input: str,
+        gate_result: dict[str, object] | None,
+        critique_result: dict[str, object] | None,
+        verifier_result: dict[str, object] | None,
+        feedback: list[str] | None,
+        rewrite_output: str | None,
+        passed: bool,
+    ) -> None:
+        if not run_id:
+            return
+        try:
+            await append_generation_round(
+                run_id=run_id,
+                round_index=round_index,
+                phase=phase,
+                draft_input=draft_input,
+                gate_result=self._to_dict(gate_result),
+                critique_result=self._to_dict(critique_result),
+                verifier_result=self._to_dict(verifier_result),
+                feedback=[str(item) for item in (feedback or [])],
+                rewrite_output=rewrite_output,
+                passed=passed,
+            )
+        except Exception:
+            logger.exception("Failed to persist generation trace round")
+
+    async def _trace_preference_pair(
+        self,
+        *,
+        run_id: UUID | None,
+        round_index: int,
+        chosen_text: str,
+        rejected_text: str,
+        rationale: str | None,
+    ) -> None:
+        if not run_id:
+            return
+        try:
+            await insert_generation_preference_pair(
+                run_id=run_id,
+                round_index=round_index,
+                chosen_text=chosen_text,
+                rejected_text=rejected_text,
+                rationale=rationale,
+                source="auto_writer_loop",
+            )
+        except Exception:
+            logger.exception("Failed to persist generation preference pair")
+
+    async def _trace_finalize_run(
+        self,
+        *,
+        run_id: UUID | None,
+        decision: str,
+        decision_reason: str | None,
+        rewrite_count: int,
+        final_draft: str | None,
+        final_gate: dict[str, object] | None,
+        final_critique: dict[str, object] | None,
+        final_verifier: dict[str, object] | None,
+        briefing_id: UUID | None,
+    ) -> None:
+        if not run_id:
+            return
+        try:
+            await finalize_generation_run(
+                run_id=run_id,
+                decision=decision,
+                decision_reason=decision_reason,
+                rewrite_count=rewrite_count,
+                final_draft=final_draft,
+                final_gate=self._to_dict(final_gate),
+                final_critique=self._to_dict(final_critique),
+                final_verifier=self._to_dict(final_verifier),
+                briefing_id=briefing_id,
+            )
+        except Exception:
+            logger.exception("Failed to finalize generation trace")
+
+    @staticmethod
+    def _coerce_uuid(value: object) -> UUID | None:
+        if isinstance(value, UUID):
+            return value
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _to_dict(value: dict[str, object] | None) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return {str(k): v for k, v in value.items()}
+        return {}
+
+    @staticmethod
+    def _build_rationale(feedback: list[str]) -> str:
+        points = [str(item).strip() for item in feedback if str(item).strip()]
+        return " | ".join(points[:6])[:2000]
+
+    def _model_version(self) -> str:
+        model = (self.settings.llm_model or "").strip()
+        if ":" in model:
+            return model.rsplit(":", 1)[-1].strip() or "unknown"
+        if "@" in model:
+            return model.rsplit("@", 1)[-1].strip() or "unknown"
+        return "unknown"
+
+    def _component_config_snapshot(self) -> dict[str, Any]:
+        raw = self.settings.model_dump()
+        filtered: dict[str, Any] = {}
+        for key, value in raw.items():
+            lowered = key.lower()
+            if (
+                any(secret in lowered for secret in ("token", "password", "webhook"))
+                or lowered == "database_url"
+                or lowered.startswith("smtp_")
+            ):
+                continue
+            filtered[key] = value
+
+        collector_keys = tuple(prefix for prefix in ("ghsa_", "rss_", "reddit_", "twitter_", "scrape_"))
+        writer_keys = tuple(prefix for prefix in ("briefing_", "telegram_overflow_mode"))
+        collector = {
+            key: filtered[key]
+            for key in filtered
+            if key.startswith(collector_keys)
+        }
+        analyzer = {
+            key: filtered[key]
+            for key in filtered
+            if key.startswith("scrape_")
+            or key in {"relevance_threshold", "llm_model", "llm_timeout", "llm_base_url"}
+        }
+        writer = {
+            key: filtered[key]
+            for key in filtered
+            if key.startswith(writer_keys)
+            or key in {
+                "relevance_threshold",
+                "briefing_lookback_hours",
+                "llm_model",
+                "llm_timeout",
+                "llm_base_url",
+                "comfyui_url",
+                "comfyui_timeout",
+                "comfyui_poll_interval",
+            }
+        }
+        critic = {
+            key: filtered[key]
+            for key in filtered
+            if key.startswith("briefing_critic_") or key in {"briefing_gate_mode"}
+        }
+        verifier = {
+            key: filtered[key]
+            for key in filtered
+            if key.startswith("briefing_verifier_")
+        }
+
+        return {
+            "collector": collector,
+            "analyzer": analyzer,
+            "writer": writer,
+            "critic": critic,
+            "verifier": verifier,
+        }
+
+    @staticmethod
+    def _git_sha() -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            sha = (result.stdout or "").strip()
+            return sha or None
+        except Exception:
+            return None
 
     @override
     async def cancel(

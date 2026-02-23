@@ -64,11 +64,13 @@ class TestTelegramDistributor:
     async def test_send_text_only(self):
         dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
         respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
-            return_value=httpx.Response(200, json={"ok": True})
+            return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})
         )
 
         ok = await dist.send("*Title*\n\nBody text here")
         assert ok is True
+        assert dist.last_result["ok"] is True
+        assert dist.last_result["primary_message_id"] == 42
 
     @respx.mock
     @pytest.mark.asyncio
@@ -78,10 +80,10 @@ class TestTelegramDistributor:
             return_value=httpx.Response(200, content=b"\x89PNG\r\n")
         )
         respx.post("https://api.telegram.org/bot123:FAKE/sendPhoto").mock(
-            return_value=httpx.Response(200, json={"ok": True})
+            return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 101}})
         )
         respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
-            return_value=httpx.Response(200, json={"ok": True})
+            return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 102}})
         )
 
         ok = await dist.send(
@@ -89,6 +91,8 @@ class TestTelegramDistributor:
             cover_image_url="http://comfy:8188/view?filename=cover.png",
         )
         assert ok is True
+        assert dist.last_result["ok"] is True
+        assert dist.last_result["used_cover_image"] is True
 
 
 class TestSlackDistributor:

@@ -292,6 +292,10 @@ class TestWriterExecutor:
             patch("bcn.agents.writer.get_recent_published_items", new_callable=AsyncMock, return_value=[]),
             patch("bcn.agents.writer.get_recent_briefings", new_callable=AsyncMock, return_value=[]),
             patch("bcn.agents.writer.insert_briefing", new_callable=AsyncMock, return_value=uuid4()),
+            patch("bcn.agents.writer.create_generation_run", new_callable=AsyncMock, return_value=uuid4()),
+            patch("bcn.agents.writer.append_generation_round", new_callable=AsyncMock),
+            patch("bcn.agents.writer.insert_generation_preference_pair", new_callable=AsyncMock),
+            patch("bcn.agents.writer.finalize_generation_run", new_callable=AsyncMock),
             patch.object(executor, "_select_items_for_briefing", return_value=selected),
             patch.object(executor, "_postprocess_briefing", new_callable=AsyncMock, side_effect=lambda **kw: kw["briefing_body"]),
             patch.object(
