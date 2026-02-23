@@ -651,3 +651,598 @@ async def get_latest_simulation_report(
     if not run:
         return None
     return await get_simulation_report_by_id(run["id"])
+
+
+# ---------------------------------------------------------------------------
+# Fine-Tuning Data: Traces, Preferences, Reviews, Outcomes
+# ---------------------------------------------------------------------------
+
+
+async def ensure_training_tables() -> None:
+    """Create trace/review/outcome tables used for fine-tuning datasets."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_runs (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            trigger_source VARCHAR(64) NOT NULL DEFAULT 'writer',
+            mode VARCHAR(32) NOT NULL DEFAULT 'standard',
+            decision VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+            decision_reason TEXT,
+            rewrite_count INTEGER NOT NULL DEFAULT 0,
+            briefing_id UUID REFERENCES briefings(id) ON DELETE SET NULL,
+            selected_item_ids UUID[] NOT NULL DEFAULT '{}'::uuid[],
+            selected_items JSONB NOT NULL DEFAULT '[]'::jsonb,
+            llm_model TEXT,
+            llm_model_version TEXT,
+            prompts JSONB NOT NULL DEFAULT '{}'::jsonb,
+            config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+            git_sha VARCHAR(128),
+            initial_draft TEXT,
+            final_draft TEXT,
+            final_gate JSONB NOT NULL DEFAULT '{}'::jsonb,
+            final_critique JSONB NOT NULL DEFAULT '{}'::jsonb,
+            final_verifier JSONB NOT NULL DEFAULT '{}'::jsonb
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_runs_created_at ON generation_runs (created_at DESC)"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_runs_briefing_id ON generation_runs (briefing_id)"
+    )
+
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_rounds (
+            id BIGSERIAL PRIMARY KEY,
+            run_id UUID NOT NULL REFERENCES generation_runs(id) ON DELETE CASCADE,
+            round_index INTEGER NOT NULL,
+            phase VARCHAR(32) NOT NULL DEFAULT 'initial',
+            draft_input TEXT,
+            gate_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+            critique_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+            verifier_result JSONB NOT NULL DEFAULT '{}'::jsonb,
+            feedback JSONB NOT NULL DEFAULT '[]'::jsonb,
+            rewrite_output TEXT,
+            passed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE (run_id, round_index)
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_rounds_run_id ON generation_rounds (run_id)"
+    )
+
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS generation_preference_pairs (
+            id BIGSERIAL PRIMARY KEY,
+            run_id UUID NOT NULL REFERENCES generation_runs(id) ON DELETE CASCADE,
+            round_index INTEGER NOT NULL DEFAULT 0,
+            source VARCHAR(64) NOT NULL DEFAULT 'auto_writer_loop',
+            chosen_text TEXT NOT NULL,
+            rejected_text TEXT NOT NULL,
+            rationale TEXT,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_generation_preference_pairs_run_id "
+        "ON generation_preference_pairs (run_id)"
+    )
+
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS briefing_human_reviews (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+            run_id UUID REFERENCES generation_runs(id) ON DELETE SET NULL,
+            reviewer VARCHAR(128) NOT NULL DEFAULT 'cli',
+            decision VARCHAR(16) NOT NULL,
+            issue_tags TEXT[] NOT NULL DEFAULT '{}'::text[],
+            edited_markdown TEXT,
+            notes TEXT,
+            CHECK (decision IN ('accept', 'reject', 'edit', 'needs_work'))
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_briefing_human_reviews_briefing_id "
+        "ON briefing_human_reviews (briefing_id, created_at DESC)"
+    )
+
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS briefing_distribution_outcomes (
+            id BIGSERIAL PRIMARY KEY,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+            channel VARCHAR(32) NOT NULL,
+            status VARCHAR(32) NOT NULL,
+            external_message_id TEXT,
+            external_post_url TEXT,
+            metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+            UNIQUE (briefing_id, channel)
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_distribution_outcomes_briefing_id "
+        "ON briefing_distribution_outcomes (briefing_id)"
+    )
+
+
+async def create_generation_run(
+    *,
+    trigger_source: str,
+    mode: str,
+    selected_item_ids: list[UUID],
+    selected_items: list[dict[str, Any]],
+    llm_model: str,
+    llm_model_version: str | None = None,
+    prompts: dict[str, Any] | None = None,
+    config_snapshot: dict[str, Any] | None = None,
+    git_sha: str | None = None,
+    initial_draft: str | None = None,
+) -> UUID:
+    """Create a generation run entry for full writer trace persistence."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO generation_runs (
+            trigger_source,
+            mode,
+            selected_item_ids,
+            selected_items,
+            llm_model,
+            llm_model_version,
+            prompts,
+            config_snapshot,
+            git_sha,
+            initial_draft
+        )
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
+        RETURNING id
+        """,
+        trigger_source,
+        mode,
+        selected_item_ids,
+        json.dumps(selected_items, ensure_ascii=False, default=str),
+        llm_model,
+        llm_model_version,
+        json.dumps(prompts or {}, ensure_ascii=False, default=str),
+        json.dumps(config_snapshot or {}, ensure_ascii=False, default=str),
+        git_sha,
+        initial_draft,
+    )
+    return row["id"]
+
+
+async def append_generation_round(
+    *,
+    run_id: UUID,
+    round_index: int,
+    phase: str,
+    draft_input: str,
+    gate_result: dict[str, Any] | None,
+    critique_result: dict[str, Any] | None,
+    verifier_result: dict[str, Any] | None,
+    feedback: list[str] | None,
+    rewrite_output: str | None,
+    passed: bool,
+) -> None:
+    """Persist one evaluate/rewrite round artifact for a generation run."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO generation_rounds (
+            run_id,
+            round_index,
+            phase,
+            draft_input,
+            gate_result,
+            critique_result,
+            verifier_result,
+            feedback,
+            rewrite_output,
+            passed
+        )
+        VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5::jsonb,
+            $6::jsonb,
+            $7::jsonb,
+            $8::jsonb,
+            $9,
+            $10
+        )
+        ON CONFLICT (run_id, round_index) DO UPDATE
+        SET
+            phase = EXCLUDED.phase,
+            draft_input = EXCLUDED.draft_input,
+            gate_result = EXCLUDED.gate_result,
+            critique_result = EXCLUDED.critique_result,
+            verifier_result = EXCLUDED.verifier_result,
+            feedback = EXCLUDED.feedback,
+            rewrite_output = EXCLUDED.rewrite_output,
+            passed = EXCLUDED.passed
+        """,
+        run_id,
+        int(round_index),
+        phase,
+        draft_input,
+        json.dumps(gate_result or {}, ensure_ascii=False, default=str),
+        json.dumps(critique_result or {}, ensure_ascii=False, default=str),
+        json.dumps(verifier_result or {}, ensure_ascii=False, default=str),
+        json.dumps(feedback or [], ensure_ascii=False, default=str),
+        rewrite_output,
+        bool(passed),
+    )
+
+
+async def insert_generation_preference_pair(
+    *,
+    run_id: UUID,
+    round_index: int,
+    chosen_text: str,
+    rejected_text: str,
+    rationale: str | None = None,
+    source: str = "auto_writer_loop",
+) -> None:
+    """Store chosen/rejected pair data for preference ranking/DPO."""
+    chosen = (chosen_text or "").strip()
+    rejected = (rejected_text or "").strip()
+    if not chosen or not rejected:
+        return
+    if chosen == rejected:
+        return
+    await ensure_training_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO generation_preference_pairs (
+            run_id,
+            round_index,
+            source,
+            chosen_text,
+            rejected_text,
+            rationale
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        run_id,
+        int(round_index),
+        source,
+        chosen,
+        rejected,
+        rationale,
+    )
+
+
+async def finalize_generation_run(
+    *,
+    run_id: UUID,
+    decision: str,
+    decision_reason: str | None,
+    rewrite_count: int,
+    final_draft: str | None,
+    final_gate: dict[str, Any] | None,
+    final_critique: dict[str, Any] | None,
+    final_verifier: dict[str, Any] | None,
+    briefing_id: UUID | None = None,
+) -> None:
+    """Finalize run metadata once writer publishes or blocks a draft."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE generation_runs
+        SET
+            updated_at = NOW(),
+            decision = $1,
+            decision_reason = $2,
+            rewrite_count = $3,
+            final_draft = $4,
+            final_gate = $5::jsonb,
+            final_critique = $6::jsonb,
+            final_verifier = $7::jsonb,
+            briefing_id = COALESCE($8, briefing_id)
+        WHERE id = $9
+        """,
+        (decision or "PENDING").strip().upper(),
+        decision_reason,
+        int(rewrite_count),
+        final_draft,
+        json.dumps(final_gate or {}, ensure_ascii=False, default=str),
+        json.dumps(final_critique or {}, ensure_ascii=False, default=str),
+        json.dumps(final_verifier or {}, ensure_ascii=False, default=str),
+        briefing_id,
+        run_id,
+    )
+
+
+async def get_latest_generation_run_for_briefing(
+    briefing_id: UUID,
+) -> Optional[asyncpg.Record]:
+    """Return latest trace run linked to a given briefing."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        SELECT *
+        FROM generation_runs
+        WHERE briefing_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        briefing_id,
+    )
+
+
+async def get_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
+    """Fetch one briefing by UUID."""
+    pool = await get_pool()
+    return await pool.fetchrow(
+        "SELECT * FROM briefings WHERE id = $1 LIMIT 1",
+        briefing_id,
+    )
+
+
+async def insert_human_review(
+    *,
+    briefing_id: UUID,
+    decision: str,
+    issue_tags: list[str] | None = None,
+    reviewer: str = "cli",
+    edited_markdown: str | None = None,
+    notes: str | None = None,
+    run_id: UUID | None = None,
+) -> UUID:
+    """Store manual review labels/edits for a briefing."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    tags = [str(tag).strip() for tag in (issue_tags or []) if str(tag).strip()]
+    row = await pool.fetchrow(
+        """
+        INSERT INTO briefing_human_reviews (
+            briefing_id,
+            run_id,
+            reviewer,
+            decision,
+            issue_tags,
+            edited_markdown,
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5::text[], $6, $7)
+        RETURNING id
+        """,
+        briefing_id,
+        run_id,
+        reviewer or "cli",
+        (decision or "").strip().lower(),
+        tags,
+        edited_markdown,
+        notes,
+    )
+    return row["id"]
+
+
+async def get_review_queue(
+    *,
+    limit: int = 20,
+    only_unreviewed: bool = False,
+) -> list[asyncpg.Record]:
+    """List recent briefings with review summary information."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    if only_unreviewed:
+        where.append("COALESCE(rv.review_count, 0) = 0")
+    return await pool.fetch(
+        f"""
+        SELECT
+            b.id,
+            b.created_at,
+            b.status,
+            b.item_ids,
+            LEFT(b.content_markdown, 220) AS preview,
+            COALESCE(rv.review_count, 0)::int AS review_count,
+            rv.last_decision,
+            rv.last_review_at
+        FROM briefings b
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*)::int AS review_count,
+                MAX(created_at) AS last_review_at,
+                (ARRAY_AGG(decision ORDER BY created_at DESC))[1] AS last_decision
+            FROM briefing_human_reviews hr
+            WHERE hr.briefing_id = b.id
+        ) rv ON TRUE
+        WHERE {' AND '.join(where)}
+        ORDER BY b.created_at DESC
+        LIMIT $1
+        """,
+        max(1, int(limit)),
+    )
+
+
+async def get_human_reviews(
+    *,
+    briefing_ids: list[UUID] | None = None,
+    run_ids: list[UUID] | None = None,
+    limit: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch human review rows for export/reporting."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    params: list[object] = []
+    if briefing_ids:
+        params.append(briefing_ids)
+        where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
+    if run_ids:
+        params.append(run_ids)
+        where.append(f"run_id = ANY(${len(params)}::uuid[])")
+
+    sql = (
+        "SELECT * FROM briefing_human_reviews "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def upsert_distribution_outcome(
+    *,
+    briefing_id: UUID,
+    channel: str,
+    status: str,
+    external_message_id: str | None = None,
+    external_post_url: str | None = None,
+    sent_at: datetime | None = None,
+    metrics: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Upsert per-channel distribution outcome and engagement metrics."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO briefing_distribution_outcomes (
+            briefing_id,
+            channel,
+            status,
+            external_message_id,
+            external_post_url,
+            sent_at,
+            metrics,
+            metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+        ON CONFLICT (briefing_id, channel) DO UPDATE
+        SET
+            status = EXCLUDED.status,
+            external_message_id = COALESCE(EXCLUDED.external_message_id, briefing_distribution_outcomes.external_message_id),
+            external_post_url = COALESCE(EXCLUDED.external_post_url, briefing_distribution_outcomes.external_post_url),
+            sent_at = EXCLUDED.sent_at,
+            metrics = COALESCE(NULLIF(EXCLUDED.metrics, '{}'::jsonb), briefing_distribution_outcomes.metrics),
+            metadata = briefing_distribution_outcomes.metadata || EXCLUDED.metadata,
+            updated_at = NOW()
+        """,
+        briefing_id,
+        (channel or "").strip().lower(),
+        (status or "").strip().lower(),
+        external_message_id,
+        external_post_url,
+        sent_at or datetime.now(timezone.utc),
+        json.dumps(metrics or {}, ensure_ascii=False, default=str),
+        json.dumps(metadata or {}, ensure_ascii=False, default=str),
+    )
+
+
+async def get_distribution_outcomes(
+    *,
+    briefing_ids: list[UUID] | None = None,
+    limit: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch stored distribution outcome rows."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    params: list[object] = []
+    if briefing_ids:
+        params.append(briefing_ids)
+        where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
+
+    sql = (
+        "SELECT * FROM briefing_distribution_outcomes "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY sent_at DESC, created_at DESC"
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def get_generation_runs_for_export(
+    *,
+    limit: int = 0,
+    since_days: int = 0,
+    include_blocked: bool = False,
+) -> list[asyncpg.Record]:
+    """Fetch generation runs for dataset export."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    params: list[object] = []
+    if not include_blocked:
+        where.append("decision = 'PUBLISHED'")
+    if since_days > 0:
+        params.append(int(since_days))
+        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
+
+    sql = (
+        "SELECT * FROM generation_runs "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def get_generation_rounds_for_runs(run_ids: list[UUID]) -> list[asyncpg.Record]:
+    """Fetch per-round artifacts for a set of generation runs."""
+    if not run_ids:
+        return []
+    await ensure_training_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT *
+        FROM generation_rounds
+        WHERE run_id = ANY($1::uuid[])
+        ORDER BY run_id, round_index ASC
+        """,
+        run_ids,
+    )
+
+
+async def get_generation_preference_pairs_for_runs(
+    run_ids: list[UUID],
+) -> list[asyncpg.Record]:
+    """Fetch preference pairs linked to generation runs."""
+    if not run_ids:
+        return []
+    await ensure_training_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT *
+        FROM generation_preference_pairs
+        WHERE run_id = ANY($1::uuid[])
+        ORDER BY created_at ASC
+        """,
+        run_ids,
+    )

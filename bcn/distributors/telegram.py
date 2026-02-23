@@ -36,6 +36,7 @@ class TelegramDistributor:
         self.api: str = f"https://api.telegram.org/bot{bot_token}"
         self.overflow_mode: str = overflow_mode
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
+        self.last_result: dict[str, object] = {}
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
@@ -62,6 +63,13 @@ class TelegramDistributor:
 
         # Strip markdown image tags — Telegram doesn't render them
         clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown)
+        result: dict[str, object] = {
+            "ok": False,
+            "chat_id": self.chat_id,
+            "message_ids": [],
+            "used_cover_image": False,
+            "overflow_sent": False,
+        }
 
         try:
             photo_msg_id: int | None = None
@@ -82,16 +90,22 @@ class TelegramDistributor:
                         files={"photo": ("cover.png", img_bytes, "image/png")},
                     )
                     resp.raise_for_status()
-                    photo_msg_id = resp.json().get("result", {}).get("message_id")
+                    payload = resp.json()
+                    photo_msg_id = payload.get("result", {}).get("message_id")
+                    if photo_msg_id is not None:
+                        result["used_cover_image"] = True
+                        result["message_ids"] = [photo_msg_id]
                 except Exception as exc:
                     logger.warning("Failed to send cover photo: %s", exc)
+                    result["cover_image_error"] = str(exc)
 
             if photo_msg_id is not None:
                 # Send overflow text (beyond caption limit) as a reply
                 overflow = clean_text[len(self._truncate_caption(clean_text)):].lstrip("\n")
                 if overflow and self._should_send_overflow(overflow):
+                    result["overflow_sent"] = True
                     for chunk in self._split_message(overflow):
-                        await self._client.post(
+                        resp = await self._client.post(
                             f"{self.api}/sendMessage",
                             json={
                                 "chat_id": self.chat_id,
@@ -101,15 +115,22 @@ class TelegramDistributor:
                                 "reply_to_message_id": photo_msg_id,
                             },
                         )
+                        resp.raise_for_status()
+                        payload = resp.json()
+                        msg_id = payload.get("result", {}).get("message_id")
+                        if msg_id is not None and isinstance(result["message_ids"], list):
+                            result["message_ids"].append(msg_id)
                 elif overflow:
                     logger.info(
                         "Telegram overflow omitted by '%s' mode (%d chars)",
                         self.overflow_mode, len(overflow),
                     )
+                    result["overflow_omitted"] = True
             else:
                 # Fallback: no photo, send as plain text message(s)
+                sent_ids: list[int] = []
                 for chunk in self._split_message(clean_text):
-                    await self._client.post(
+                    resp = await self._client.post(
                         f"{self.api}/sendMessage",
                         json={
                             "chat_id": self.chat_id,
@@ -118,10 +139,23 @@ class TelegramDistributor:
                             "disable_web_page_preview": True,
                         },
                     )
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    msg_id = payload.get("result", {}).get("message_id")
+                    if msg_id is not None:
+                        sent_ids.append(msg_id)
+                result["message_ids"] = sent_ids
 
+            ids = result.get("message_ids")
+            if isinstance(ids, list) and ids:
+                result["primary_message_id"] = ids[0]
+            result["ok"] = True
+            self.last_result = result
             return True
         except Exception:
             logger.exception("Telegram send failed")
+            result["ok"] = False
+            self.last_result = result
             return False
 
     @staticmethod

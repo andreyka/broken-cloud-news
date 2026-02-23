@@ -50,3 +50,68 @@ class Briefing(BaseModel):
     status: str = "DRAFT"
     distributed_at: Optional[datetime] = None
     distribution_channels: Optional[dict] = None
+
+
+class GenerationRoundArtifact(BaseModel):
+    """Artifacts captured for one writer evaluate/rewrite round."""
+
+    round_index: int
+    phase: str = "initial"
+    draft_input: str
+    gate_result: dict = Field(default_factory=dict)
+    critique_result: dict = Field(default_factory=dict)
+    verifier_result: dict = Field(default_factory=dict)
+    feedback: list[str] = Field(default_factory=list)
+    rewrite_output: Optional[str] = None
+    passed: bool = False
+
+
+class GenerationRunTrace(BaseModel):
+    """Full generation trace for one writer attempt."""
+
+    id: UUID
+    created_at: datetime
+    mode: str = "standard"
+    decision: str = "PENDING"
+    rewrite_count: int = 0
+    briefing_id: Optional[UUID] = None
+    selected_item_ids: list[UUID] = Field(default_factory=list)
+    selected_items: list[dict] = Field(default_factory=list)
+    llm_model: Optional[str] = None
+    llm_model_version: Optional[str] = None
+    prompts: dict = Field(default_factory=dict)
+    config_snapshot: dict = Field(default_factory=dict)
+    git_sha: Optional[str] = None
+    initial_draft: Optional[str] = None
+    final_draft: Optional[str] = None
+    final_gate: dict = Field(default_factory=dict)
+    final_critique: dict = Field(default_factory=dict)
+    final_verifier: dict = Field(default_factory=dict)
+
+
+class HumanReview(BaseModel):
+    """Human review feedback tied to a briefing/run."""
+
+    id: UUID
+    briefing_id: UUID
+    run_id: Optional[UUID] = None
+    created_at: datetime
+    reviewer: str = "cli"
+    decision: str
+    issue_tags: list[str] = Field(default_factory=list)
+    edited_markdown: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DistributionOutcome(BaseModel):
+    """Channel-level distribution status and engagement signals."""
+
+    id: int
+    briefing_id: UUID
+    channel: str
+    status: str
+    sent_at: datetime
+    external_message_id: Optional[str] = None
+    external_post_url: Optional[str] = None
+    metrics: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)

@@ -496,7 +496,14 @@ def distribute() -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.db import get_pool, close_pool, get_latest_briefing, mark_briefing_distributed, mark_items_published
+        from bcn.db import (
+            close_pool,
+            get_latest_briefing,
+            get_pool,
+            mark_briefing_distributed,
+            mark_items_published,
+            upsert_distribution_outcome,
+        )
         from bcn.distributors.telegram import TelegramDistributor
         from bcn.distributors.email import EmailDistributor
         from bcn.distributors.slack import SlackDistributor
@@ -536,28 +543,553 @@ def distribute() -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for name, channel in channels:
+            status = "failed"
+            metadata: dict[str, Any] = {}
+            external_message_id: str | None = None
             try:
                 if name == "telegram":
                     ok = await channel.send(briefing["content_markdown"], briefing["cover_image_url"])
+                    if hasattr(channel, "last_result") and isinstance(channel.last_result, dict):
+                        metadata = dict(channel.last_result)
+                        msg_id = metadata.get("primary_message_id")
+                        if msg_id is not None:
+                            external_message_id = str(msg_id)
                 elif name == "email":
                     ok = await channel.send(
                         f"Broken Cloud News - {today}",
                         briefing["content_html"] or briefing["content_markdown"],
                     )
+                    metadata = {"recipient_count": len(getattr(channel, "recipients", []))}
                 elif name == "slack":
                     ok = await channel.send(briefing["content_markdown"], briefing["cover_image_url"])
+                    metadata = {
+                        "cover_image": bool(briefing["cover_image_url"]),
+                        "markdown_chars": len(str(briefing["content_markdown"] or "")),
+                    }
                 else:
                     ok = False
-                results[name] = "ok" if ok else "failed"
-                click.echo(f"  {name}: {'ok' if ok else 'failed'}")
+                status = "ok" if ok else "failed"
+                results[name] = status
+                click.echo(f"  {name}: {status}")
             except Exception as exc:
+                status = "error"
                 results[name] = f"error: {exc}"
+                metadata = {"error": str(exc)}
                 click.echo(f"  {name}: error - {exc}", err=True)
+
+            try:
+                await upsert_distribution_outcome(
+                    briefing_id=briefing["id"],
+                    channel=name,
+                    status=status,
+                    external_message_id=external_message_id,
+                    metrics={},
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                click.echo(
+                    f"  {name}: warning - failed to persist distribution outcome: {exc}",
+                    err=True,
+                )
 
         await mark_briefing_distributed(briefing["id"], results)
         item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
         await mark_items_published(item_ids)
         click.echo("Distribution complete")
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("review")
+@click.option("--briefing-id", type=str, help="Briefing UUID to review (defaults to latest).")
+@click.option(
+    "--decision",
+    type=click.Choice(["accept", "reject", "edit", "needs_work"]),
+    required=True,
+    help="Human review decision label.",
+)
+@click.option("--issue-tag", "issue_tags", multiple=True, help="Issue tag (repeatable).")
+@click.option("--edited-file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--edited-text", type=str, help="Edited markdown text.")
+@click.option("--notes", type=str, help="Free-form reviewer notes.")
+@click.option("--reviewer", type=str, default="cli", show_default=True)
+def review(
+    briefing_id: str | None,
+    decision: str,
+    issue_tags: tuple[str, ...],
+    edited_file: str | None,
+    edited_text: str | None,
+    notes: str | None,
+    reviewer: str,
+) -> None:
+    """Store human feedback labels/edits for one briefing."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from uuid import UUID
+
+        from bcn.db import (
+            close_pool,
+            get_briefing_by_id,
+            get_latest_any_briefing,
+            get_latest_generation_run_for_briefing,
+            get_pool,
+            insert_human_review,
+        )
+
+        if edited_file and edited_text:
+            raise click.ClickException("Use either --edited-file or --edited-text, not both.")
+
+        parsed_id = None
+        if briefing_id:
+            try:
+                parsed_id = UUID(briefing_id)
+            except ValueError as exc:
+                raise click.ClickException(f"Invalid briefing UUID: {briefing_id}") from exc
+
+        await get_pool(settings)
+        briefing = None
+        if parsed_id:
+            briefing = await get_briefing_by_id(parsed_id)
+        else:
+            briefing = await get_latest_any_briefing()
+
+        if not briefing:
+            click.echo("No briefing found to review")
+            await close_pool()
+            return
+
+        edited_markdown = edited_text
+        if edited_file:
+            edited_markdown = Path(edited_file).read_text(encoding="utf-8")
+
+        run = await get_latest_generation_run_for_briefing(briefing["id"])
+        run_id = run["id"] if run else None
+        review_id = await insert_human_review(
+            briefing_id=briefing["id"],
+            run_id=run_id,
+            decision=decision,
+            issue_tags=list(issue_tags),
+            reviewer=reviewer,
+            edited_markdown=edited_markdown,
+            notes=notes,
+        )
+        click.echo(
+            f"Stored review {review_id} for briefing {briefing['id']} "
+            f"(decision={decision}, tags={len(issue_tags)})"
+        )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("review-queue")
+@click.option("--limit", type=int, default=20, show_default=True)
+@click.option("--only-unreviewed", is_flag=True, help="Show only briefings without reviews.")
+def review_queue(limit: int, only_unreviewed: bool) -> None:
+    """List recent briefings and review status."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.db import close_pool, get_pool, get_review_queue
+
+        await get_pool(settings)
+        rows = await get_review_queue(limit=max(1, int(limit)), only_unreviewed=only_unreviewed)
+        if not rows:
+            click.echo("No briefings in review queue")
+            await close_pool()
+            return
+
+        for row in rows:
+            payload = dict(row)
+            click.echo(
+                f"{payload['id']} | status={payload['status']} | reviews={payload['review_count']} "
+                f"| last_decision={payload['last_decision'] or '-'} | created_at={payload['created_at'].isoformat()}"
+            )
+            preview = str(payload.get("preview") or "").replace("\n", " ")
+            if preview:
+                click.echo(f"  preview: {preview[:160]}")
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("record-outcome")
+@click.option("--briefing-id", required=True, help="Briefing UUID.")
+@click.option("--channel", required=True, help="Channel name (telegram/email/slack/etc).")
+@click.option("--status", default="ok", show_default=True)
+@click.option("--message-id", type=str, help="External message/post id.")
+@click.option("--post-url", type=str, help="External post URL.")
+@click.option("--views", type=int, help="View count metric.")
+@click.option("--reactions", type=int, help="Reaction count metric.")
+@click.option("--clicks", type=int, help="Click count metric.")
+@click.option("--link-clicks", type=str, help="JSON object with per-link clicks.")
+@click.option("--metadata", type=str, help="JSON object with extra metadata.")
+def record_outcome(
+    briefing_id: str,
+    channel: str,
+    status: str,
+    message_id: str | None,
+    post_url: str | None,
+    views: int | None,
+    reactions: int | None,
+    clicks: int | None,
+    link_clicks: str | None,
+    metadata: str | None,
+) -> None:
+    """Upsert distribution outcome metrics linked to a briefing."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from uuid import UUID
+
+        from bcn.db import close_pool, get_pool, upsert_distribution_outcome
+
+        try:
+            parsed_id = UUID(briefing_id)
+        except ValueError as exc:
+            raise click.ClickException(f"Invalid briefing UUID: {briefing_id}") from exc
+
+        link_clicks_payload: dict[str, Any] = {}
+        if link_clicks:
+            try:
+                parsed_clicks = json.loads(link_clicks)
+            except json.JSONDecodeError as exc:
+                raise click.ClickException(f"--link-clicks must be valid JSON: {exc}") from exc
+            if isinstance(parsed_clicks, dict):
+                link_clicks_payload = parsed_clicks
+
+        metadata_payload: dict[str, Any] = {}
+        if metadata:
+            try:
+                parsed_meta = json.loads(metadata)
+            except json.JSONDecodeError as exc:
+                raise click.ClickException(f"--metadata must be valid JSON: {exc}") from exc
+            if isinstance(parsed_meta, dict):
+                metadata_payload = parsed_meta
+
+        metrics: dict[str, Any] = {}
+        if views is not None:
+            metrics["views"] = int(views)
+        if reactions is not None:
+            metrics["reactions"] = int(reactions)
+        if clicks is not None:
+            metrics["clicks"] = int(clicks)
+        if link_clicks_payload:
+            metrics["link_clicks"] = link_clicks_payload
+
+        await get_pool(settings)
+        await upsert_distribution_outcome(
+            briefing_id=parsed_id,
+            channel=channel,
+            status=status,
+            external_message_id=message_id,
+            external_post_url=post_url,
+            metrics=metrics,
+            metadata=metadata_payload,
+        )
+        click.echo(
+            f"Stored distribution outcome for briefing {parsed_id} channel={channel} status={status}"
+        )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("export-training")
+@click.option("--output-dir", default="training_export", show_default=True)
+@click.option("--limit", type=int, default=0, show_default=True, help="Max runs to export (0=all).")
+@click.option("--since-days", type=int, default=0, show_default=True, help="Only runs from last N days.")
+@click.option(
+    "--include-blocked/--published-only",
+    default=False,
+    show_default=True,
+    help="Include blocked generations in exports.",
+)
+def export_training(
+    output_dir: str,
+    limit: int,
+    since_days: int,
+    include_blocked: bool,
+) -> None:
+    """Export SFT + preference JSONL datasets from stored traces."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from datetime import datetime
+        from uuid import UUID
+
+        from bcn.db import (
+            close_pool,
+            get_distribution_outcomes,
+            get_generation_preference_pairs_for_runs,
+            get_generation_rounds_for_runs,
+            get_generation_runs_for_export,
+            get_human_reviews,
+            get_pool,
+        )
+
+        def _iso(value: Any) -> str | None:
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            return str(value) if value is not None else None
+
+        def _normalize_json(value: Any, default: Any) -> Any:
+            if isinstance(value, type(default)):
+                return value
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    return default
+                if isinstance(parsed, type(default)):
+                    return parsed
+            return default
+
+        await get_pool(settings)
+        runs = await get_generation_runs_for_export(
+            limit=max(0, int(limit)),
+            since_days=max(0, int(since_days)),
+            include_blocked=include_blocked,
+        )
+        if not runs:
+            click.echo("No generation runs found for export")
+            await close_pool()
+            return
+
+        run_ids: list[UUID] = [row["id"] for row in runs]
+        briefing_ids: list[UUID] = [row["briefing_id"] for row in runs if row["briefing_id"]]
+        rounds = await get_generation_rounds_for_runs(run_ids)
+        prefs = await get_generation_preference_pairs_for_runs(run_ids)
+        reviews = await get_human_reviews(run_ids=run_ids)
+        outcomes = await get_distribution_outcomes(briefing_ids=briefing_ids) if briefing_ids else []
+
+        rounds_by_run: dict[str, list[dict[str, Any]]] = {}
+        for row in rounds:
+            run_key = str(row["run_id"])
+            rounds_by_run.setdefault(run_key, []).append(dict(row))
+
+        reviews_by_run: dict[str, list[dict[str, Any]]] = {}
+        reviews_by_briefing: dict[str, list[dict[str, Any]]] = {}
+        for row in reviews:
+            payload = dict(row)
+            run_key = str(payload["run_id"]) if payload.get("run_id") else ""
+            briefing_key = str(payload["briefing_id"]) if payload.get("briefing_id") else ""
+            if run_key:
+                reviews_by_run.setdefault(run_key, []).append(payload)
+            if briefing_key:
+                reviews_by_briefing.setdefault(briefing_key, []).append(payload)
+
+        outcomes_by_briefing: dict[str, list[dict[str, Any]]] = {}
+        for row in outcomes:
+            raw_payload = dict(row)
+            payload: dict[str, Any] = {}
+            for key, value in raw_payload.items():
+                payload[key] = _iso(value) if hasattr(value, "isoformat") else value
+            briefing_key = str(payload["briefing_id"]) if payload.get("briefing_id") else ""
+            if briefing_key:
+                outcomes_by_briefing.setdefault(briefing_key, []).append(payload)
+
+        for payloads in reviews_by_run.values():
+            payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
+        for payloads in reviews_by_briefing.values():
+            payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
+
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        sft_path = out_dir / "sft.jsonl"
+        pref_path = out_dir / "preference.jsonl"
+        trace_path = out_dir / "trace_runs.jsonl"
+        manifest_path = out_dir / "manifest.json"
+
+        sft_rows: list[dict[str, Any]] = []
+        trace_rows: list[dict[str, Any]] = []
+        for run in runs:
+            run_dict = dict(run)
+            run_key = str(run_dict["id"])
+            briefing_key = str(run_dict["briefing_id"]) if run_dict.get("briefing_id") else ""
+            selected_items = _normalize_json(run_dict.get("selected_items"), [])
+            prompts = _normalize_json(run_dict.get("prompts"), {})
+            config_snapshot = _normalize_json(run_dict.get("config_snapshot"), {})
+            run_reviews = reviews_by_run.get(run_key, [])
+            briefing_reviews = reviews_by_briefing.get(briefing_key, [])
+            latest_review = (run_reviews or briefing_reviews or [None])[0]
+
+            target_markdown = str(run_dict.get("final_draft") or "").strip()
+            if latest_review and latest_review.get("edited_markdown"):
+                decision = str(latest_review.get("decision") or "").lower()
+                if decision in {"edit", "accept"}:
+                    target_markdown = str(latest_review["edited_markdown"]).strip() or target_markdown
+
+            if target_markdown:
+                sft_rows.append(
+                    {
+                        "id": run_key,
+                        "briefing_id": briefing_key or None,
+                        "decision": str(run_dict.get("decision") or ""),
+                        "mode": str(run_dict.get("mode") or "standard"),
+                        "input": {
+                            "selected_items": selected_items,
+                            "prompt_versions": prompts,
+                        },
+                        "output_markdown": target_markdown,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    {
+                                        "mode": str(run_dict.get("mode") or "standard"),
+                                        "selected_items": selected_items,
+                                        "prompt_versions": prompts,
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                            {"role": "assistant", "content": target_markdown},
+                        ],
+                        "metadata": {
+                            "created_at": _iso(run_dict.get("created_at")),
+                            "rewrite_count": int(run_dict.get("rewrite_count") or 0),
+                            "llm_model": run_dict.get("llm_model"),
+                            "llm_model_version": run_dict.get("llm_model_version"),
+                            "git_sha": run_dict.get("git_sha"),
+                            "review_decision": latest_review.get("decision") if latest_review else None,
+                            "distribution_outcomes": outcomes_by_briefing.get(briefing_key, []),
+                            "config_snapshot": config_snapshot,
+                        },
+                    }
+                )
+
+            trace_rows.append(
+                {
+                    "run_id": run_key,
+                    "briefing_id": briefing_key or None,
+                    "created_at": _iso(run_dict.get("created_at")),
+                    "decision": run_dict.get("decision"),
+                    "decision_reason": run_dict.get("decision_reason"),
+                    "rewrite_count": int(run_dict.get("rewrite_count") or 0),
+                    "llm_model": run_dict.get("llm_model"),
+                    "llm_model_version": run_dict.get("llm_model_version"),
+                    "git_sha": run_dict.get("git_sha"),
+                    "selected_items": selected_items,
+                    "prompt_versions": prompts,
+                    "config_snapshot": config_snapshot,
+                    "initial_draft": run_dict.get("initial_draft"),
+                    "final_draft": run_dict.get("final_draft"),
+                    "final_gate": _normalize_json(run_dict.get("final_gate"), {}),
+                    "final_critique": _normalize_json(run_dict.get("final_critique"), {}),
+                    "final_verifier": _normalize_json(run_dict.get("final_verifier"), {}),
+                    "rounds": rounds_by_run.get(run_key, []),
+                    "human_reviews": run_reviews or briefing_reviews,
+                    "distribution_outcomes": outcomes_by_briefing.get(briefing_key, []),
+                }
+            )
+
+        pref_rows: list[dict[str, Any]] = []
+        run_lookup = {str(dict(run)["id"]): dict(run) for run in runs}
+        for row in prefs:
+            payload = dict(row)
+            run_key = str(payload["run_id"])
+            run_context = run_lookup.get(run_key, {})
+            pref_rows.append(
+                {
+                    "id": int(payload["id"]),
+                    "run_id": run_key,
+                    "source": str(payload.get("source") or "auto_writer_loop"),
+                    "round_index": int(payload.get("round_index") or 0),
+                    "chosen": str(payload.get("chosen_text") or ""),
+                    "rejected": str(payload.get("rejected_text") or ""),
+                    "rationale": str(payload.get("rationale") or ""),
+                    "context": {
+                        "mode": str(run_context.get("mode") or "standard"),
+                        "selected_items": _normalize_json(run_context.get("selected_items"), []),
+                        "prompt_versions": _normalize_json(run_context.get("prompts"), {}),
+                    },
+                    "metadata": {
+                        "created_at": _iso(payload.get("created_at")),
+                        "briefing_id": (
+                            str(run_context.get("briefing_id"))
+                            if run_context.get("briefing_id")
+                            else None
+                        ),
+                    },
+                }
+            )
+
+        # Add human-edited preference pairs where edits differ from final output.
+        for review_list in reviews_by_run.values():
+            for review_row in review_list:
+                run_id_raw = review_row.get("run_id")
+                if not run_id_raw:
+                    continue
+                run_key = str(run_id_raw)
+                run_context = run_lookup.get(run_key, {})
+                edited = str(review_row.get("edited_markdown") or "").strip()
+                final = str(run_context.get("final_draft") or "").strip()
+                if not edited or not final or edited == final:
+                    continue
+                decision = str(review_row.get("decision") or "").lower()
+                if decision not in {"edit", "accept"}:
+                    continue
+                pref_rows.append(
+                    {
+                        "id": f"human-{review_row.get('id')}",
+                        "run_id": run_key,
+                        "source": "human_review",
+                        "round_index": -1,
+                        "chosen": edited,
+                        "rejected": final,
+                        "rationale": str(review_row.get("notes") or "human edited preferred variant"),
+                        "context": {
+                            "mode": str(run_context.get("mode") or "standard"),
+                            "selected_items": _normalize_json(run_context.get("selected_items"), []),
+                            "prompt_versions": _normalize_json(run_context.get("prompts"), {}),
+                        },
+                        "metadata": {
+                            "review_id": str(review_row.get("id")),
+                            "created_at": _iso(review_row.get("created_at")),
+                        },
+                    }
+                )
+
+        with sft_path.open("w", encoding="utf-8") as handle:
+            for row in sft_rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        with pref_path.open("w", encoding="utf-8") as handle:
+            for row in pref_rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        with trace_path.open("w", encoding="utf-8") as handle:
+            for row in trace_rows:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+
+        manifest = {
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "run_count": len(runs),
+            "sft_rows": len(sft_rows),
+            "preference_rows": len(pref_rows),
+            "trace_rows": len(trace_rows),
+            "filters": {
+                "limit": int(limit),
+                "since_days": int(since_days),
+                "include_blocked": bool(include_blocked),
+            },
+            "files": {
+                "sft_jsonl": str(sft_path),
+                "preference_jsonl": str(pref_path),
+                "trace_jsonl": str(trace_path),
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        click.echo(
+            f"Export complete: runs={len(runs)} sft_rows={len(sft_rows)} "
+            f"preference_rows={len(pref_rows)}"
+        )
+        click.echo(f"  SFT: {sft_path}")
+        click.echo(f"  Preference: {pref_path}")
+        click.echo(f"  Traces: {trace_path}")
+        click.echo(f"  Manifest: {manifest_path}")
         await close_pool()
 
     asyncio.run(_run())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -218,6 +219,30 @@ _SKIP_DOMAINS = frozenset({
     "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
 })
 
+PROMPT_REGISTRY: dict[str, str] = {
+    "analyzer_system": ANALYZER_SYSTEM_PROMPT,
+    "cover_art_system": COVER_ART_SYSTEM_PROMPT,
+    "briefing_system": BRIEFING_SYSTEM_PROMPT,
+    "briefing_story_card": BRIEFING_STORY_CARD_PROMPT,
+    "briefing_tightener": BRIEFING_TIGHTENER_PROMPT,
+    "briefing_enricher": BRIEFING_ENRICHER_PROMPT,
+    "briefing_critic": BRIEFING_CRITIC_PROMPT,
+    "briefing_rewrite": BRIEFING_REWRITE_PROMPT,
+    "briefing_fact_verifier": BRIEFING_FACT_VERIFIER_PROMPT,
+}
+
+
+def build_prompt_versions() -> dict[str, dict[str, str | int]]:
+    """Return stable prompt fingerprints for trace reproducibility."""
+    out: dict[str, dict[str, str | int]] = {}
+    for name, prompt in PROMPT_REGISTRY.items():
+        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        out[name] = {
+            "sha256": digest,
+            "chars": len(prompt),
+        }
+    return out
+
 
 class LLMClient:
     """OpenAI-compatible chat client for the Qwen LLM on DGX Spark."""
@@ -227,6 +252,10 @@ class LLMClient:
         self.model = model
         self._client = httpx.AsyncClient(timeout=timeout)
         self._url_status_cache: dict[str, bool] = {}
+
+    def prompt_versions(self) -> dict[str, dict[str, str | int]]:
+        """Expose prompt fingerprints for trace persistence."""
+        return build_prompt_versions()
 
     async def close(self) -> None:
         """Release the underlying HTTP connection pool."""
