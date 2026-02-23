@@ -183,6 +183,49 @@ class TestCollectorExecutor:
         assert raw["engagement"]["upvotes"] == 120
         assert raw["engagement"]["comments"] == 42
 
+    def test_extract_tweet_reference_urls_keeps_external_sources(self):
+        from bcn.agents.collector import CollectorExecutor
+
+        tweet = {
+            "entities": {
+                "urls": [
+                    {
+                        "url": "https://t.co/abc",
+                        "expanded_url": "https://x.com/someone/status/123",
+                    },
+                    {
+                        "url": "https://t.co/def",
+                        "expanded_url": "https://github.com/org/repo/security/advisories/GHSA-ab12-cd34-ef56",
+                    },
+                    {
+                        "url": "https://t.co/ghi",
+                        "unwound_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                    },
+                ]
+            }
+        }
+
+        refs = CollectorExecutor._extract_tweet_reference_urls(tweet)
+        assert "https://x.com/someone/status/123" not in refs
+        assert "https://github.com/org/repo/security/advisories/GHSA-ab12-cd34-ef56" in refs
+        assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in refs
+
+    def test_build_tweet_full_content_appends_reference_links(self):
+        from bcn.agents.collector import CollectorExecutor
+
+        content = CollectorExecutor._build_tweet_full_content(
+            "Cloud vuln write-up",
+            [
+                "https://github.com/org/repo",
+                "https://www.youtube.com/watch?v=abc123",
+            ],
+        )
+        assert content is not None
+        assert "Cloud vuln write-up" in content
+        assert "Reference links:" in content
+        assert "- https://github.com/org/repo" in content
+        assert "- https://www.youtube.com/watch?v=abc123" in content
+
 
 # ── Analyst tests ────────────────────────────────────────────────────────
 

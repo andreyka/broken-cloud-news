@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -446,7 +447,7 @@ class CollectorExecutor(AgentExecutor):
             params: dict[str, str | int] = {
                 "query": query,
                 "max_results": max(10, min(remaining, 100)),
-                "tweet.fields": "id,text,created_at,author_id,public_metrics",
+                "tweet.fields": "id,text,created_at,author_id,public_metrics,entities",
                 "expansions": "author_id",
                 "user.fields": "username",
             }
@@ -482,6 +483,8 @@ class CollectorExecutor(AgentExecutor):
                 published = tweet.get(
                     "created_at", datetime.now(timezone.utc).isoformat()
                 )
+                references = self._extract_tweet_reference_urls(tweet)
+                full_content = self._build_tweet_full_content(title, references)
 
                 inserted = await insert_news_item(
                     source_type="twitter",
@@ -492,7 +495,9 @@ class CollectorExecutor(AgentExecutor):
                     raw_data={
                         **tweet,
                         "username": username,
+                        "references": [{"url": ref} for ref in references],
                     },
+                    full_content=full_content,
                 )
                 if inserted:
                     count += 1
@@ -612,3 +617,58 @@ class CollectorExecutor(AgentExecutor):
         if match:
             return match.group(1).lower()
         return ""
+
+    @staticmethod
+    def _extract_tweet_reference_urls(tweet: dict) -> list[str]:
+        """Extract external reference URLs from tweet entities."""
+        entities = tweet.get("entities", {}) if isinstance(tweet, dict) else {}
+        urls = entities.get("urls", []) if isinstance(entities, dict) else []
+        seen: set[str] = set()
+        out: list[str] = []
+
+        for item in urls:
+            if isinstance(item, dict):
+                candidates = [
+                    item.get("unwound_url", ""),
+                    item.get("expanded_url", ""),
+                    item.get("url", ""),
+                ]
+            else:
+                candidates = [str(item)]
+
+            for candidate in candidates:
+                url = str(candidate or "").strip()
+                if not url.startswith(("http://", "https://")):
+                    continue
+                if CollectorExecutor._is_internal_twitter_url(url):
+                    continue
+                if url in seen:
+                    continue
+                seen.add(url)
+                out.append(url)
+                break
+
+        return out
+
+    @staticmethod
+    def _is_internal_twitter_url(url: str) -> bool:
+        """Return whether URL points back to X/Twitter itself."""
+        try:
+            host = urlparse(url).netloc.lower()
+        except Exception:
+            return False
+        if host.startswith("www."):
+            host = host[4:]
+        return host in {"x.com", "twitter.com", "mobile.twitter.com", "t.co"}
+
+    @staticmethod
+    def _build_tweet_full_content(tweet_text: str, references: list[str]) -> str | None:
+        """Compose analysis-friendly tweet content with extracted references."""
+        text = (tweet_text or "").strip()
+        if not references:
+            return text or None
+
+        refs_block = "\n".join(f"- {ref}" for ref in references[:6])
+        if not text:
+            return f"Reference links:\n{refs_block}"
+        return f"{text}\n\nReference links:\n{refs_block}"
