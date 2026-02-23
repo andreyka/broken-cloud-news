@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 _TEMPLATE_HEADING_PREFIX = re.compile(
     r"^\*\*(detection|source|threat|response|mitigation|intel)\s*:\s*(.+?)\*\*$",
     flags=re.IGNORECASE,
 )
 _SOURCE_FIELD_LINE = re.compile(r"^\*?\s*source\s*:\s*(.+?)\s*\*?$", flags=re.IGNORECASE)
+_TRACKING_PARAM_NAMES = frozenset({
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "msclkid",
+    "rb_clickid",
+    "s_cid",
+    "vero_conv",
+    "vero_id",
+    "yclid",
+})
 
 
 def normalize_url(url: str) -> str:
@@ -42,12 +56,43 @@ def dedupe_markdown_links(markdown: str) -> str:
     def repl(match: re.Match[str]) -> str:
         label = match.group(1)
         url = match.group(2)
-        if url in seen:
+        key = canonical_url_key(url)
+        if key in seen:
             return label
-        seen.add(url)
+        seen.add(key)
         return match.group(0)
 
     return re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", repl, markdown)
+
+
+def canonical_url_key(url: str) -> str:
+    """Build canonical URL key for dedupe by stripping tracking variants."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return ""
+    try:
+        parsed = urlparse(normalized)
+    except Exception:
+        return normalized
+
+    scheme = parsed.scheme.lower() or "https"
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/")
+
+    query_params: list[tuple[str, str]] = []
+    for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
+        key = raw_key.lower()
+        if key.startswith("utm_") or key.startswith("mc_") or key in _TRACKING_PARAM_NAMES:
+            continue
+        query_params.append((key, raw_value))
+    query_params.sort()
+
+    query = urlencode(query_params, doseq=True)
+    if query:
+        return f"{scheme}://{netloc}{path}?{query}"
+    return f"{scheme}://{netloc}{path}"
 
 
 def missing_items_for_markdown(markdown: str, items: list[dict]) -> list[dict]:

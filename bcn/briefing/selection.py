@@ -38,6 +38,16 @@ _CSP_SIDE_DOMAINS = frozenset({
     "kubernetes.io",
 })
 
+_ISSUE_ID_RE = re.compile(r"\b(?:cve-\d{4}-\d+|ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b")
+_TOPIC_STOPWORDS = frozenset({
+    "the", "and", "for", "from", "with", "into", "over", "after", "before", "about", "this",
+    "that", "onto", "cloud", "security", "vulnerability", "vulnerabilities", "issue",
+    "issues", "patch", "patches", "advisory", "advisories", "exploit", "exploits", "fix", "fixes",
+    "update", "updates", "attack", "attacks", "remote", "code", "execution", "allow", "allows",
+    "new", "latest", "reported", "report", "today", "guide", "analysis", "risk", "risks", "zero",
+    "wild", "active", "actively", "campaign", "campaigns", "threat", "threats",
+})
+
 
 class BriefingSelector:
     """Selects a diverse, actionable set of items for briefing generation."""
@@ -468,7 +478,9 @@ class BriefingSelector:
 
         cur_url = normalize_url(str(item.get("url", "")))
         cur_title = self._normalize_title(str(item.get("title", "")))
+        cur_issue_keys = self._issue_keys(item)
         best_title_similarity = 0.0
+        best_issue_overlap = 0.0
         same_url_seen = False
 
         for prev in recent_published:
@@ -477,6 +489,14 @@ class BriefingSelector:
                 same_url_seen = True
                 best_title_similarity = 1.0
                 break
+
+            if cur_issue_keys:
+                prev_issue_keys = self._issue_keys(prev)
+                if prev_issue_keys:
+                    overlap = len(cur_issue_keys & prev_issue_keys)
+                    if overlap > 0:
+                        norm = max(1, min(len(cur_issue_keys), len(prev_issue_keys)))
+                        best_issue_overlap = max(best_issue_overlap, overlap / norm)
 
             prev_title = self._normalize_title(str(prev.get("title", "")))
             if not cur_title or not prev_title:
@@ -489,12 +509,17 @@ class BriefingSelector:
             return 3.0
 
         threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
-        if best_title_similarity < threshold:
-            return 0.0
+        similarity_penalty = 0.0
+        if best_title_similarity >= threshold:
+            span = max(0.01, 1.0 - threshold)
+            scaled = (best_title_similarity - threshold) / span
+            similarity_penalty = min(2.3, 0.7 + (scaled * 1.6))
 
-        span = max(0.01, 1.0 - threshold)
-        scaled = (best_title_similarity - threshold) / span
-        return min(2.3, 0.7 + (scaled * 1.6))
+        recurrence_penalty = 0.0
+        if best_issue_overlap > 0.0:
+            recurrence_penalty = min(0.75, 0.35 + (best_issue_overlap * 0.4))
+
+        return min(3.0, similarity_penalty + recurrence_penalty)
 
     @staticmethod
     def _normalize_title(title: str) -> str:
@@ -503,6 +528,35 @@ class BriefingSelector:
         title = re.sub(r"https?://\S+", "", title)
         title = re.sub(r"[^a-z0-9\s\-_/.:]", " ", title)
         return re.sub(r"\s+", " ", title).strip()
+
+    def _issue_keys(self, item: dict) -> set[str]:
+        """Extract recurrence keys for duplicate-topic suppression."""
+        text = self._normalize_title(f"{item.get('title', '')} {item.get('summary', '')}")
+        if not text:
+            return set()
+
+        keys = {m.group(0).lower() for m in _ISSUE_ID_RE.finditer(text)}
+        signature = self._topic_signature(text)
+        if signature:
+            keys.add(signature)
+        return keys
+
+    @staticmethod
+    def _topic_signature(normalized_text: str) -> str:
+        tokens = re.findall(r"[a-z0-9]{3,}", normalized_text)
+        filtered = [
+            tok for tok in tokens
+            if tok not in _TOPIC_STOPWORDS and not tok.isdigit()
+        ]
+        if len(filtered) < 2:
+            return ""
+
+        counts = Counter(filtered)
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        top_tokens = sorted(tok for tok, _ in ranked[:3])
+        if len(top_tokens) < 2:
+            return ""
+        return "topic:" + "+".join(top_tokens)
 
     @staticmethod
     def classify_bucket(item: dict) -> str:
