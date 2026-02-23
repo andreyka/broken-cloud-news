@@ -11,6 +11,9 @@ class TestSettings:
         assert s.llm_timeout == 120
         assert s.ghsa_severities == ["CRITICAL", "HIGH"]
         assert s.collector_port == 9001
+        assert s.briefing_history_items == 10
+        assert s.briefing_novelty_lookback_hours == 24 * 21
+        assert s.briefing_novelty_title_similarity_threshold == 0.78
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")

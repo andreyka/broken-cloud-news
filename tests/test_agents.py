@@ -393,6 +393,56 @@ class TestWriterExecutor:
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/two"
 
+    def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
+        executor = WriterExecutor(settings)
+        item = {
+            "id": str(uuid4()),
+            "title": "Vertex AI notebook chain enables privilege escalation",
+            "summary": "GHSA-ab12-cd34-ef56 affects managed pipelines",
+            "relevance_score": 8,
+            "source_type": "rss",
+            "url": "https://example.com/vertex-issue",
+        }
+        recent_same_issue = [
+            {
+                "title": "Google advisory for GHSA-ab12-cd34-ef56 in Vertex workflows",
+                "summary": "Mitigation guidance for enterprise teams",
+                "url": "https://security.example.com/google-vertex-advisory",
+            }
+        ]
+        recent_other_issue = [
+            {
+                "title": "AWS GuardDuty release improves findings triage",
+                "summary": "Platform update with operational notes",
+                "url": "https://aws.amazon.com/security/new-feature",
+            }
+        ]
+
+        overlap_penalty = executor.selector.novelty_penalty(item, recent_same_issue)
+        other_penalty = executor.selector.novelty_penalty(item, recent_other_issue)
+        assert overlap_penalty > 0.0
+        assert overlap_penalty > other_penalty
+
+    def test_dedupe_markdown_links_uses_canonical_url_key(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        markdown = (
+            "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)\n"
+            "[Duplicate](https://example.com/path?b=1)\n"
+            "[Other](https://example.com/path?b=2)"
+        )
+
+        deduped = executor._dedupe_markdown_links(markdown)
+        assert "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)" in deduped
+        assert "[Duplicate](" not in deduped
+        assert "Duplicate" in deduped
+        assert "[Other](https://example.com/path?b=2)" in deduped
+
     def test_social_proof_bonus_prioritizes_high_engagement_tweet(self):
         from bcn.agents.writer import WriterExecutor
 
