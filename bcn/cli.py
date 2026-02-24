@@ -470,6 +470,50 @@ def simulate(
             f"avg_simulated={summary.get('avg_simulated_score', 0)} "
             f"avg_delta={summary.get('avg_delta', 0)}"
         )
+        click.echo(
+            "Outcome split: "
+            f"improved={summary.get('improved', 0)} "
+            f"regressed={summary.get('regressed', 0)} "
+            f"equal={summary.get('equal', 0)}"
+        )
+        gate_quality = summary.get("gate_quality", {}) if isinstance(summary, dict) else {}
+        if isinstance(gate_quality, dict):
+            click.echo(
+                "Hard-gate pass rate: "
+                f"actual={gate_quality.get('actual_hard_pass_rate', 0)} "
+                f"simulated={gate_quality.get('simulated_hard_pass_rate', 0)} "
+                f"change={gate_quality.get('hard_pass_rate_change', 0)}"
+            )
+        focus_metrics = summary.get("focus_metrics", {}) if isinstance(summary, dict) else {}
+        if isinstance(focus_metrics, dict):
+            click.echo(
+                "Human-writer pass rate: "
+                f"actual={focus_metrics.get('human_writer_pass_rate_actual', 0)} "
+                f"simulated={focus_metrics.get('human_writer_pass_rate_simulated', 0)} "
+                f"change={focus_metrics.get('human_writer_pass_rate_change', 0)}"
+            )
+            click.echo(
+                "Formatting-clean pass rate: "
+                f"actual={focus_metrics.get('formatting_clean_pass_rate_actual', 0)} "
+                f"simulated={focus_metrics.get('formatting_clean_pass_rate_simulated', 0)} "
+                f"change={focus_metrics.get('formatting_clean_pass_rate_change', 0)}"
+            )
+            click.echo(
+                "Duplicate-link issue rate: "
+                f"actual={focus_metrics.get('duplicate_link_issue_rate_actual', 0)} "
+                f"simulated={focus_metrics.get('duplicate_link_issue_rate_simulated', 0)} "
+                f"change={focus_metrics.get('duplicate_link_issue_rate_change', 0)}"
+            )
+        decision = summary.get("decision", {}) if isinstance(summary, dict) else {}
+        if isinstance(decision, dict) and decision:
+            click.echo(
+                "Recommendation: "
+                f"{decision.get('recommendation', 'hold')} "
+                f"(confidence={decision.get('confidence', 'low')})"
+            )
+            rationale = str(decision.get("rationale", "") or "").strip()
+            if rationale:
+                click.echo(f"Decision rationale: {rationale}")
         if store_db:
             click.echo(f"DB run id: {report.get('db_run_id')}")
             comparison = report.get("comparison_to_previous_run")
@@ -480,6 +524,17 @@ def simulate(
                     f"avg_sim_score_change={comparison.get('avg_simulated_score_change', 0)} "
                     f"improved={comparison.get('improved_vs_previous', 0)} "
                     f"regressed={comparison.get('regressed_vs_previous', 0)}"
+                )
+                click.echo(
+                    "Decision shift: "
+                    f"{comparison.get('baseline_decision', '')} -> {comparison.get('current_decision', '')} "
+                    f"(changed={comparison.get('decision_changed', False)})"
+                )
+                click.echo(
+                    "Quality-focus shift: "
+                    f"human_writer={comparison.get('human_writer_pass_rate_change', 0)} "
+                    f"formatting_clean={comparison.get('formatting_clean_pass_rate_change', 0)} "
+                    f"dup_link_issue={comparison.get('duplicate_link_issue_rate_change', 0)}"
                 )
             else:
                 click.echo("No previous simulation run available for comparison.")

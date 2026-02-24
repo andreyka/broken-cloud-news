@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timezone
-from statistics import mean
+from math import comb
+from statistics import mean, pstdev
 import logging
 import re
 
@@ -37,6 +38,15 @@ _ACTIONABLE_TERMS = {
     "incident", "exploit", "harden",
 }
 
+_RUBRIC_DIMENSIONS = (
+    "depth",
+    "link_hygiene",
+    "source_diversity",
+    "cloud_focus",
+    "actionability",
+    "writing_quality",
+)
+
 
 def _strip_cover_image(markdown: str) -> str:
     return re.sub(r"^!\[[^\]]*]\([^)]+\)\s*\n*", "", (markdown or "").strip())
@@ -59,6 +69,314 @@ def _dominant_ratio(items: list[dict]) -> float:
     if not counts:
         return 0.0
     return counts.most_common(1)[0][1] / max(1, len(items))
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def _percentile(values: list[int], q: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return float(values[0])
+    pos = (len(values) - 1) * max(0.0, min(1.0, q))
+    low = int(pos)
+    high = min(len(values) - 1, low + 1)
+    if low == high:
+        return float(values[low])
+    weight = pos - low
+    return float(values[low] + (values[high] - values[low]) * weight)
+
+
+def _sign_test_two_sided_p(wins: int, losses: int) -> float:
+    """Exact two-sided sign-test p-value under p=0.5."""
+    n = max(0, wins) + max(0, losses)
+    if n == 0:
+        return 1.0
+    k = min(max(0, wins), max(0, losses))
+    tail = sum(comb(n, i) for i in range(k + 1))
+    p_value = min(1.0, 2.0 * (tail / (2 ** n)))
+    return round(p_value, 6)
+
+
+def _contains_any(lines: list[str], needles: tuple[str, ...]) -> bool:
+    lowered = " | ".join(str(line).lower() for line in lines)
+    return any(needle in lowered for needle in needles)
+
+
+def _has_duplicate_link_issue(hard_issues: list[str]) -> bool:
+    return _contains_any(hard_issues, ("appears multiple times", "duplicate selected url"))
+
+
+def _is_human_writer_like(breakdown: dict[str, object], notes: list[str]) -> bool:
+    writing_quality = int(breakdown.get("writing_quality", 0) or 0)
+    actionability = int(breakdown.get("actionability", 0) or 0)
+    depth = int(breakdown.get("depth", 0) or 0)
+    style_flags = (
+        "ai-stamp phrasing",
+        "template-style section labels",
+        "standalone source fields",
+        "repetitive style",
+    )
+    return (
+        writing_quality >= 8
+        and actionability >= 10
+        and depth >= 10
+        and not _contains_any(notes, style_flags)
+    )
+
+
+def _is_formatting_clean(hard_issues: list[str], breakdown: dict[str, object]) -> bool:
+    formatting_flags = (
+        "missing selected url",
+        "appears multiple times",
+        "truncation artifact",
+        "fallback phrase artifact",
+        "digest too long",
+        "digest too short",
+    )
+    link_hygiene = int(breakdown.get("link_hygiene", 0) or 0)
+    return (not _contains_any(hard_issues, formatting_flags)) and link_hygiene >= 20
+
+
+def _has_duplicate_story_signal(notes: list[str]) -> bool:
+    return _contains_any(notes, ("repetitive style", "single source dominates"))
+
+
+def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, object]:
+    total = len(results)
+    if total == 0:
+        return {
+            "delta_distribution": {
+                "median_delta": 0.0,
+                "p10_delta": 0.0,
+                "p90_delta": 0.0,
+                "std_delta": 0.0,
+            },
+            "win_loss": {
+                "wins": 0,
+                "losses": 0,
+                "ties": 0,
+                "win_rate_no_ties": 0.0,
+                "non_regression_rate": 0.0,
+                "sign_test_p_value": 1.0,
+            },
+            "gate_quality": {
+                "actual_hard_pass_rate": 0.0,
+                "simulated_hard_pass_rate": 0.0,
+                "hard_pass_rate_change": 0.0,
+                "actual_avg_hard_issues": 0.0,
+                "simulated_avg_hard_issues": 0.0,
+                "avg_hard_issue_change": 0.0,
+                "actual_missing_url_hard_total": 0,
+                "simulated_missing_url_hard_total": 0,
+            },
+            "focus_metrics": {
+                "human_writer_pass_rate_actual": 0.0,
+                "human_writer_pass_rate_simulated": 0.0,
+                "human_writer_pass_rate_change": 0.0,
+                "formatting_clean_pass_rate_actual": 0.0,
+                "formatting_clean_pass_rate_simulated": 0.0,
+                "formatting_clean_pass_rate_change": 0.0,
+                "duplicate_link_issue_rate_actual": 0.0,
+                "duplicate_link_issue_rate_simulated": 0.0,
+                "duplicate_link_issue_rate_change": 0.0,
+                "duplicate_story_signal_rate_actual": 0.0,
+                "duplicate_story_signal_rate_simulated": 0.0,
+                "duplicate_story_signal_rate_change": 0.0,
+            },
+            "dimension_avg_delta": {dim: 0.0 for dim in _RUBRIC_DIMENSIONS},
+            "decision": {
+                "recommendation": "hold",
+                "confidence": "low",
+                "rationale": "No simulation rows available.",
+            },
+        }
+
+    deltas = [int(row.get("delta", 0) or 0) for row in results]
+    wins = sum(1 for d in deltas if d > 0)
+    losses = sum(1 for d in deltas if d < 0)
+    ties = total - wins - losses
+    avg_delta = mean(deltas) if deltas else 0.0
+    sorted_deltas = sorted(deltas)
+
+    actual_hard_counts: list[int] = []
+    simulated_hard_counts: list[int] = []
+    actual_missing_url_hard_total = 0
+    simulated_missing_url_hard_total = 0
+    actual_duplicate_url_hard_total = 0
+    simulated_duplicate_url_hard_total = 0
+    dimension_deltas: dict[str, list[int]] = {dim: [] for dim in _RUBRIC_DIMENSIONS}
+    actual_human_writer_passes = 0
+    simulated_human_writer_passes = 0
+    actual_formatting_clean_passes = 0
+    simulated_formatting_clean_passes = 0
+    actual_duplicate_story_signals = 0
+    simulated_duplicate_story_signals = 0
+
+    for row in results:
+        actual_hard = [str(i) for i in (row.get("actual_gate_hard_issues") or [])]
+        simulated_hard = [str(i) for i in (row.get("simulated_gate_hard_issues") or [])]
+        actual_hard_counts.append(len(actual_hard))
+        simulated_hard_counts.append(len(simulated_hard))
+        actual_missing_url_hard_total += sum(
+            1 for issue in actual_hard if "missing selected url" in issue.lower()
+        )
+        simulated_missing_url_hard_total += sum(
+            1 for issue in simulated_hard if "missing selected url" in issue.lower()
+        )
+        actual_duplicate_url_hard_total += sum(1 for issue in actual_hard if _has_duplicate_link_issue([issue]))
+        simulated_duplicate_url_hard_total += sum(
+            1 for issue in simulated_hard if _has_duplicate_link_issue([issue])
+        )
+
+        actual_breakdown = row.get("actual_breakdown") or {}
+        simulated_breakdown = row.get("simulated_breakdown") or {}
+        if not isinstance(actual_breakdown, dict):
+            actual_breakdown = {}
+        if not isinstance(simulated_breakdown, dict):
+            simulated_breakdown = {}
+        actual_notes = [str(i) for i in (row.get("actual_notes") or [])]
+        simulated_notes = [str(i) for i in (row.get("simulated_notes") or [])]
+
+        if _is_human_writer_like(actual_breakdown, actual_notes):
+            actual_human_writer_passes += 1
+        if _is_human_writer_like(simulated_breakdown, simulated_notes):
+            simulated_human_writer_passes += 1
+        if _is_formatting_clean(actual_hard, actual_breakdown):
+            actual_formatting_clean_passes += 1
+        if _is_formatting_clean(simulated_hard, simulated_breakdown):
+            simulated_formatting_clean_passes += 1
+        if _has_duplicate_story_signal(actual_notes):
+            actual_duplicate_story_signals += 1
+        if _has_duplicate_story_signal(simulated_notes):
+            simulated_duplicate_story_signals += 1
+
+        for dim in _RUBRIC_DIMENSIONS:
+            actual_val = int(actual_breakdown.get(dim, 0) or 0)
+            simulated_val = int(simulated_breakdown.get(dim, 0) or 0)
+            dimension_deltas[dim].append(simulated_val - actual_val)
+
+    actual_hard_pass_rate = _rate(sum(1 for c in actual_hard_counts if c == 0), total)
+    simulated_hard_pass_rate = _rate(sum(1 for c in simulated_hard_counts if c == 0), total)
+    hard_pass_rate_change = simulated_hard_pass_rate - actual_hard_pass_rate
+
+    sign_test_p = _sign_test_two_sided_p(wins=wins, losses=losses)
+    win_rate_no_ties = _rate(wins, wins + losses)
+    non_regression_rate = _rate(wins + ties, total)
+    human_writer_pass_rate_actual = _rate(actual_human_writer_passes, total)
+    human_writer_pass_rate_simulated = _rate(simulated_human_writer_passes, total)
+    formatting_clean_pass_rate_actual = _rate(actual_formatting_clean_passes, total)
+    formatting_clean_pass_rate_simulated = _rate(simulated_formatting_clean_passes, total)
+    duplicate_link_issue_rate_actual = _rate(actual_duplicate_url_hard_total, total)
+    duplicate_link_issue_rate_simulated = _rate(simulated_duplicate_url_hard_total, total)
+    duplicate_story_signal_rate_actual = _rate(actual_duplicate_story_signals, total)
+    duplicate_story_signal_rate_simulated = _rate(simulated_duplicate_story_signals, total)
+
+    dimension_avg_delta = {
+        dim: round(mean(values), 2) if values else 0.0
+        for dim, values in dimension_deltas.items()
+    }
+
+    human_writer_pass_rate_change = human_writer_pass_rate_simulated - human_writer_pass_rate_actual
+    formatting_clean_pass_rate_change = (
+        formatting_clean_pass_rate_simulated - formatting_clean_pass_rate_actual
+    )
+    duplicate_link_issue_rate_change = (
+        duplicate_link_issue_rate_simulated - duplicate_link_issue_rate_actual
+    )
+    duplicate_story_signal_rate_change = (
+        duplicate_story_signal_rate_simulated - duplicate_story_signal_rate_actual
+    )
+
+    # Decision policy tuned for model-swap go/no-go calls.
+    recommendation = "hold"
+    if (
+        avg_delta >= 1.5
+        and wins >= losses + 2
+        and hard_pass_rate_change >= 0.0
+        and human_writer_pass_rate_change >= 0.0
+        and formatting_clean_pass_rate_change >= 0.0
+        and duplicate_link_issue_rate_change <= 0.0
+        and sign_test_p <= 0.2
+    ):
+        recommendation = "promote"
+    elif (
+        avg_delta <= -1.5
+        and losses >= wins + 2
+        and (
+            hard_pass_rate_change <= 0.0
+            or human_writer_pass_rate_change < 0.0
+            or formatting_clean_pass_rate_change < 0.0
+            or duplicate_link_issue_rate_change > 0.0
+        )
+        and sign_test_p <= 0.2
+    ):
+        recommendation = "rollback"
+
+    confidence = "low"
+    if total >= 20 and sign_test_p <= 0.05 and abs(avg_delta) >= 2.0:
+        confidence = "high"
+    elif total >= 12 and sign_test_p <= 0.15 and abs(avg_delta) >= 1.0:
+        confidence = "medium"
+
+    rationale = (
+        f"avg_delta={avg_delta:.2f}, wins/losses/ties={wins}/{losses}/{ties}, "
+        f"human_writer_change={human_writer_pass_rate_change:+.3f}, "
+        f"formatting_clean_change={formatting_clean_pass_rate_change:+.3f}, "
+        f"duplicate_link_issue_change={duplicate_link_issue_rate_change:+.3f}, "
+        f"sign_test_p={sign_test_p:.4f}"
+    )
+
+    return {
+        "delta_distribution": {
+            "median_delta": round(_percentile(sorted_deltas, 0.5), 2),
+            "p10_delta": round(_percentile(sorted_deltas, 0.1), 2),
+            "p90_delta": round(_percentile(sorted_deltas, 0.9), 2),
+            "std_delta": round(pstdev(deltas), 2) if len(deltas) > 1 else 0.0,
+        },
+        "win_loss": {
+            "wins": wins,
+            "losses": losses,
+            "ties": ties,
+            "win_rate_no_ties": round(win_rate_no_ties, 3),
+            "non_regression_rate": round(non_regression_rate, 3),
+            "sign_test_p_value": sign_test_p,
+        },
+        "gate_quality": {
+            "actual_hard_pass_rate": round(actual_hard_pass_rate, 3),
+            "simulated_hard_pass_rate": round(simulated_hard_pass_rate, 3),
+            "hard_pass_rate_change": round(hard_pass_rate_change, 3),
+            "actual_avg_hard_issues": round(mean(actual_hard_counts), 2),
+            "simulated_avg_hard_issues": round(mean(simulated_hard_counts), 2),
+            "avg_hard_issue_change": round(mean(simulated_hard_counts) - mean(actual_hard_counts), 2),
+            "actual_missing_url_hard_total": actual_missing_url_hard_total,
+            "simulated_missing_url_hard_total": simulated_missing_url_hard_total,
+        },
+        "focus_metrics": {
+            "human_writer_pass_rate_actual": round(human_writer_pass_rate_actual, 3),
+            "human_writer_pass_rate_simulated": round(human_writer_pass_rate_simulated, 3),
+            "human_writer_pass_rate_change": round(human_writer_pass_rate_change, 3),
+            "formatting_clean_pass_rate_actual": round(formatting_clean_pass_rate_actual, 3),
+            "formatting_clean_pass_rate_simulated": round(formatting_clean_pass_rate_simulated, 3),
+            "formatting_clean_pass_rate_change": round(formatting_clean_pass_rate_change, 3),
+            "duplicate_link_issue_rate_actual": round(duplicate_link_issue_rate_actual, 3),
+            "duplicate_link_issue_rate_simulated": round(duplicate_link_issue_rate_simulated, 3),
+            "duplicate_link_issue_rate_change": round(duplicate_link_issue_rate_change, 3),
+            "duplicate_story_signal_rate_actual": round(duplicate_story_signal_rate_actual, 3),
+            "duplicate_story_signal_rate_simulated": round(duplicate_story_signal_rate_simulated, 3),
+            "duplicate_story_signal_rate_change": round(duplicate_story_signal_rate_change, 3),
+        },
+        "dimension_avg_delta": dimension_avg_delta,
+        "decision": {
+            "recommendation": recommendation,
+            "confidence": confidence,
+            "rationale": rationale,
+        },
+    }
 
 
 def score_feedback_rubric(
@@ -394,6 +712,7 @@ async def simulate_historical_briefings(
             for issue, count in recurring_notes.most_common(8)
         ],
     }
+    summary.update(_build_decision_summary(results))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -432,6 +751,25 @@ def compare_simulation_reports(
     previous_summary = previous_report.get("summary")
     if not isinstance(previous_summary, dict):
         previous_summary = {}
+
+    current_decision = current_summary.get("decision")
+    if not isinstance(current_decision, dict):
+        current_decision = {}
+    previous_decision = previous_summary.get("decision")
+    if not isinstance(previous_decision, dict):
+        previous_decision = {}
+    current_gate = current_summary.get("gate_quality")
+    if not isinstance(current_gate, dict):
+        current_gate = {}
+    previous_gate = previous_summary.get("gate_quality")
+    if not isinstance(previous_gate, dict):
+        previous_gate = {}
+    current_focus = current_summary.get("focus_metrics")
+    if not isinstance(current_focus, dict):
+        current_focus = {}
+    previous_focus = previous_summary.get("focus_metrics")
+    if not isinstance(previous_focus, dict):
+        previous_focus = {}
 
     current_results = _result_map(current_report)
     previous_results = _result_map(previous_report)
@@ -477,9 +815,39 @@ def compare_simulation_reports(
             float(current_summary.get("avg_delta", 0) or 0) - float(previous_summary.get("avg_delta", 0) or 0),
             2,
         ),
+        "simulated_hard_pass_rate_change": round(
+            float(current_gate.get("simulated_hard_pass_rate", 0) or 0)
+            - float(previous_gate.get("simulated_hard_pass_rate", 0) or 0),
+            3,
+        ),
+        "avg_hard_issue_change_delta": round(
+            float(current_gate.get("avg_hard_issue_change", 0) or 0)
+            - float(previous_gate.get("avg_hard_issue_change", 0) or 0),
+            2,
+        ),
+        "human_writer_pass_rate_change": round(
+            float(current_focus.get("human_writer_pass_rate_simulated", 0) or 0)
+            - float(previous_focus.get("human_writer_pass_rate_simulated", 0) or 0),
+            3,
+        ),
+        "formatting_clean_pass_rate_change": round(
+            float(current_focus.get("formatting_clean_pass_rate_simulated", 0) or 0)
+            - float(previous_focus.get("formatting_clean_pass_rate_simulated", 0) or 0),
+            3,
+        ),
+        "duplicate_link_issue_rate_change": round(
+            float(current_focus.get("duplicate_link_issue_rate_simulated", 0) or 0)
+            - float(previous_focus.get("duplicate_link_issue_rate_simulated", 0) or 0),
+            3,
+        ),
         "improved_vs_previous": len(gains),
         "regressed_vs_previous": len(losses),
         "unchanged_vs_previous": len(equals),
+        "baseline_decision": str(previous_decision.get("recommendation", "") or ""),
+        "current_decision": str(current_decision.get("recommendation", "") or ""),
+        "decision_changed": str(previous_decision.get("recommendation", "") or "") != str(
+            current_decision.get("recommendation", "") or ""
+        ),
         "top_gains": _fmt(top_gains),
         "top_losses": _fmt(top_losses),
     }
