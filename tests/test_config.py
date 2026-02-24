@@ -9,6 +9,8 @@ class TestSettings:
     def test_defaults(self):
         s = Settings()
         assert s.llm_timeout == 120
+        assert s.llm_provider == "openai_compat"
+        assert s.llm_model_writer == ""
         assert s.ghsa_severities == ["CRITICAL", "HIGH"]
         assert s.collector_port == 9001
         assert s.briefing_history_items == 10
@@ -18,9 +20,20 @@ class TestSettings:
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")
         monkeypatch.setenv("BCN_COLLECTOR_PORT", "5000")
+        monkeypatch.setenv("BCN_LLM_PROVIDER", "gemini")
+        monkeypatch.setenv("BCN_LLM_PROVIDER_CRITIC", "openai")
         s = Settings()
         assert s.llm_timeout == 60
+        assert s.llm_provider == "gemini"
+        assert s.llm_provider_critic == "openai_compat"
         assert s.collector_port == 5000
+
+    def test_vertex_provider_aliases(self, monkeypatch):
+        monkeypatch.setenv("BCN_LLM_PROVIDER", "vertex")
+        monkeypatch.setenv("BCN_LLM_PROVIDER_WRITER", "vertex_ai")
+        s = Settings()
+        assert s.llm_provider == "vertexai"
+        assert s.llm_provider_writer == "vertexai"
 
     def test_empty_string_list_fields(self, monkeypatch):
         """Empty env strings should fall back to default lists, not become ['']."""

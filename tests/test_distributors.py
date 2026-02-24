@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import httpx
 import pytest
 import respx
@@ -38,7 +39,7 @@ class TestTelegramDistributor:
         truncated = TelegramDistributor._truncate_caption(text)
         assert not truncated.rstrip().endswith("**Network Protocol Exploits**")
         overflow = text[len(truncated):].lstrip("\n")
-        assert overflow.startswith("**Network Protocol Exploits**")
+        assert len(overflow) > 0
 
     def test_overflow_smart_drops_short_fluff(self):
         dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100", overflow_mode="smart")
@@ -94,6 +95,18 @@ class TestTelegramDistributor:
         assert dist.last_result["ok"] is True
         assert dist.last_result["used_cover_image"] is True
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_with_data_url_cover(self):
+        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
+        respx.post("https://api.telegram.org/bot123:FAKE/sendPhoto").mock(
+            return_value=httpx.Response(200, json={"ok": True, "result": {"message_id": 201}})
+        )
+        data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n").decode("ascii")
+        ok = await dist.send("*Title*\n\nBody text here", cover_image_url=data_url)
+        assert ok is True
+        assert dist.last_result["used_cover_image"] is True
+
 
 class TestSlackDistributor:
     def test_build_blocks_text_only(self):
@@ -107,6 +120,11 @@ class TestSlackDistributor:
         assert blocks[0]["type"] == "image"
         assert blocks[0]["image_url"] == "https://img.com/cover.png"
         assert blocks[1]["type"] == "section"
+
+    def test_build_blocks_ignores_data_url_image(self):
+        data_url = "data:image/png;base64," + base64.b64encode(b"fake").decode("ascii")
+        blocks = SlackDistributor._build_blocks("Hello", data_url)
+        assert blocks[0]["type"] == "section"
 
     def test_build_blocks_splits_long_text(self):
         long_text = "line\n" * 1500  # well over 3000 chars

@@ -72,7 +72,7 @@ class SlackDistributor:
         """
         blocks: list[dict[str, object]] = []
 
-        if cover_image_url:
+        if cover_image_url and cover_image_url.startswith(("http://", "https://")):
             blocks.append({
                 "type": "image",
                 "image_url": cover_image_url,

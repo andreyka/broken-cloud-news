@@ -36,11 +36,7 @@ class CriticExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm = LLMClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout=settings.llm_timeout,
-        )
+        self.llm = LLMClient.from_settings(settings)
         self.quality = BriefingQualityGate(settings)
 
     @override

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 
@@ -77,9 +78,7 @@ class TelegramDistributor:
             if cover_image_url:
                 caption = self._truncate_caption(clean_text)
                 try:
-                    img_resp = await self._client.get(cover_image_url, timeout=30)
-                    img_resp.raise_for_status()
-                    img_bytes = img_resp.content
+                    filename, mime_type, img_bytes = await self._load_cover_image_bytes(cover_image_url)
                     resp = await self._client.post(
                         f"{self.api}/sendPhoto",
                         data={
@@ -87,7 +86,7 @@ class TelegramDistributor:
                             "caption": caption,
                             "parse_mode": "Markdown",
                         },
-                        files={"photo": ("cover.png", img_bytes, "image/png")},
+                        files={"photo": (filename, img_bytes, mime_type)},
                     )
                     resp.raise_for_status()
                     payload = resp.json()
@@ -157,6 +156,29 @@ class TelegramDistributor:
             result["ok"] = False
             self.last_result = result
             return False
+
+    async def _load_cover_image_bytes(self, cover_image_url: str) -> tuple[str, str, bytes]:
+        """Load image bytes from an HTTP URL or data URI."""
+        if cover_image_url.startswith("data:image/"):
+            return self._decode_data_image_uri(cover_image_url)
+
+        img_resp = await self._client.get(cover_image_url, timeout=30)
+        img_resp.raise_for_status()
+        content_type = img_resp.headers.get("content-type", "image/png").split(";")[0].strip() or "image/png"
+        ext = content_type.rsplit("/", 1)[-1] if "/" in content_type else "png"
+        filename = f"cover.{ext}"
+        return filename, content_type, img_resp.content
+
+    @staticmethod
+    def _decode_data_image_uri(value: str) -> tuple[str, str, bytes]:
+        """Decode `data:image/...;base64,...` into filename, mime and bytes."""
+        header, sep, payload = value.partition(",")
+        if not sep or ";base64" not in header:
+            raise ValueError("Unsupported data URI format for cover image")
+        mime_type = header[5:header.index(";")] if header.startswith("data:") else "image/png"
+        raw = base64.b64decode(payload)
+        ext = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
+        return f"cover.{ext}", mime_type, raw
 
     @staticmethod
     def _truncate_caption(text: str) -> str:

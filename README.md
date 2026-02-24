@@ -51,9 +51,9 @@ flowchart TB
     Writer -- "generate briefing" --> Qwen
     Writer -- "draft" --> Critic
     Critic -- "quality feedback" --> Writer
-    Writer -- "generate cover" --> Flux
-    Qwen -- "briefing text" --> Writer
-    Flux -- "cover image" --> Writer
+    Writer -- "generate cover" --> Flux/Gemini Image
+    Qwen/Gemini -- "briefing text" --> Writer
+    Flux/Gemini Image -- "cover image" --> Writer
     Writer -- "store briefing" --> DB
     DB -- "latest briefing" --> Distributor
     Distributor --> TG
@@ -67,7 +67,7 @@ flowchart TB
 |-------|------|---------|------|
 | **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA/AWS/Cloudflare), Reddit RSS, Twitter/X via API v2 |
 | **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
-| **Writer** | 9003 | Daily 9:00 | Generates briefing + Flux cover image from top items |
+| **Writer** | 9003 | Daily 9:00 | Generates briefing and cover image (Gemini image or Flux fallback) |
 | **Critic** | 9005 | On-demand | Scores/criticizes briefing quality (LLM + deterministic gate) |
 | **Distributor** | 9004 | After Writer | Sends photo+caption to Telegram channel |
 
@@ -140,13 +140,35 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BCN_DATABASE_URL` | `postgresql://...` | PostgreSQL connection string |
+| `BCN_LLM_PROVIDER` | `openai_compat` | LLM provider (`openai_compat`, `gemini`, or `vertexai`) |
 | `BCN_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | Qwen API endpoint |
+| `BCN_LLM_MODEL` | `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8` | Default model used by all LLM roles |
+| `BCN_LLM_API_KEY` | - | Optional API key (used for hosted providers) |
+| `BCN_LLM_MODEL_ANALYST` ... `BCN_LLM_MODEL_COVER` | empty | Optional per-role model override (analyst/writer/critic/verifier/cover) |
+| `BCN_LLM_PROVIDER_ANALYST` ... `BCN_LLM_PROVIDER_COVER` | empty | Optional per-role provider override |
+| `BCN_LLM_BASE_URL_ANALYST` ... `BCN_LLM_BASE_URL_COVER` | empty | Optional per-role endpoint override |
 | `BCN_COMFYUI_URL` | `http://host.docker.internal:8188` | ComfyUI Flux endpoint |
 | `BCN_GITHUB_TOKEN` | - | GitHub API token for GHSA |
 | `BCN_TWITTER_BEARER_TOKEN` | - | X API v2 bearer token |
 | `BCN_TELEGRAM_BOT_TOKEN` | - | Telegram bot token |
 | `BCN_TELEGRAM_CHAT_ID` | - | Telegram channel chat ID |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) to include in briefing |
+
+Gemini trial example (role-based):
+```bash
+BCN_LLM_PROVIDER=vertexai
+BCN_LLM_BASE_URL=https://aiplatform.googleapis.com/v1
+BCN_LLM_API_KEY=<your_vertex_key>
+BCN_LLM_MODEL_ANALYST=gemini-3.1-pro-preview
+BCN_LLM_MODEL_WRITER=gemini-3.1-pro-preview
+BCN_LLM_MODEL_CRITIC=gemini-3.1-pro-preview
+BCN_LLM_MODEL_VERIFIER=gemini-3.1-pro-preview
+BCN_LLM_MODEL_COVER=gemini-3-pro-image-preview
+```
+Notes:
+- `vertexai` routes text roles to Vertex `streamGenerateContent`.
+- Cover role can return inline PNG image data when set to `gemini-3-pro-image-preview`.
+- If cover image generation fails, writer falls back to ComfyUI automatically.
 
 Important briefing-quality knobs:
 - `BCN_BRIEFING_MAX_RSS_ITEMS` (default `3`) limits RSS dominance.
@@ -242,7 +264,7 @@ bcn/
   config.py           Pydantic Settings (env vars)
   db.py               asyncpg database layer
   models.py           Pydantic data models
-  llm.py              Qwen LLM client (analysis + briefing)
+  llm.py              Role-aware LLM router/client (analysis + briefing)
   simulation.py       Historical briefing replay + comparison scoring
   comfyui.py          ComfyUI Flux client (cover images)
   scraper.py          Playwright headless Chromium scraper

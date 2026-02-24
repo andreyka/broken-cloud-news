@@ -35,11 +35,7 @@ class AnalystExecutor(AgentExecutor):
     """A2A agent that scores and summarizes news items via the LLM."""
 
     def __init__(self, settings: Settings) -> None:
-        self.llm = LLMClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout=settings.llm_timeout,
-        )
+        self.llm = LLMClient.from_settings(settings)
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
             min_content_length=settings.scrape_min_content_length,

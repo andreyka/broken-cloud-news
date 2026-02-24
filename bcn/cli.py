@@ -233,7 +233,7 @@ def analyze() -> None:
         from bcn.scraper import Scraper
 
         await get_pool(settings)
-        llm = LLMClient(settings.llm_base_url, settings.llm_model, settings.llm_timeout)
+        llm = LLMClient.from_settings(settings)
         scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length)
 
         items = await get_new_items()
