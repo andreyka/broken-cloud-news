@@ -12,6 +12,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.config import Settings
 from bcn.db import get_new_items, update_item_analyzed
 from bcn.llm import LLMClient
@@ -53,7 +54,8 @@ class AnalystExecutor(AgentExecutor):
         """Analyze all ``NEW`` items: scrape if needed, then score via LLM."""
         items = await get_new_items()
         if not items:
-            event_queue.enqueue_event(
+            await enqueue_event_safe(
+                event_queue,
                 new_agent_text_message("No new items to analyze")
             )
             return
@@ -109,7 +111,7 @@ class AnalystExecutor(AgentExecutor):
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
         logger.info(msg)
-        event_queue.enqueue_event(new_agent_text_message(msg))
+        await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
     @override
     async def cancel(

@@ -19,6 +19,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.config import Settings
 from bcn.db import insert_news_item
 from bcn.scraper import Scraper
@@ -127,7 +128,7 @@ class CollectorExecutor(AgentExecutor):
             )
 
         logger.info(result)
-        event_queue.enqueue_event(new_agent_text_message(result))
+        await enqueue_event_safe(event_queue, new_agent_text_message(result))
 
     @override
     async def cancel(

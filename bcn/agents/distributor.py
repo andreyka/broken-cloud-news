@@ -12,6 +12,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.config import Settings
 from bcn.db import (
     get_latest_briefing,
@@ -81,13 +82,15 @@ class DistributorExecutor(AgentExecutor):
         """Send the latest DRAFT briefing to all configured channels."""
         briefing = await get_latest_briefing()
         if not briefing:
-            event_queue.enqueue_event(
+            await enqueue_event_safe(
+                event_queue,
                 new_agent_text_message("No new briefing to distribute")
             )
             return
 
         if not self.channels:
-            event_queue.enqueue_event(
+            await enqueue_event_safe(
+                event_queue,
                 new_agent_text_message("No distribution channels configured")
             )
             return
@@ -156,7 +159,7 @@ class DistributorExecutor(AgentExecutor):
 
         msg = f"Distributed to: {results}"
         logger.info(msg)
-        event_queue.enqueue_event(new_agent_text_message(msg))
+        await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
     @override
     async def cancel(

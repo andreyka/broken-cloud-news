@@ -38,6 +38,16 @@ class FakeEventQueue:
         self.events.append(event)
 
 
+class FakeAsyncEventQueue:
+    """Async stand-in for EventQueue implementations that require await."""
+
+    def __init__(self):
+        self.events: list = []
+
+    async def enqueue_event(self, event):
+        self.events.append(event)
+
+
 def _fake_context(text: str = "collect_all"):
     """Build a minimal RequestContext."""
     from a2a.server.agent_execution import RequestContext
@@ -226,6 +236,20 @@ class TestCollectorExecutor:
         assert "- https://github.com/org/repo" in content
         assert "- https://www.youtube.com/watch?v=abc123" in content
 
+    @pytest.mark.asyncio
+    async def test_execute_supports_async_event_queue(self):
+        from bcn.agents.collector import CollectorExecutor
+
+        settings = _make_settings()
+        executor = CollectorExecutor(settings)
+
+        with patch.object(executor, "_collect_all", new_callable=AsyncMock, return_value=(1, 2, 3, 4)):
+            eq = FakeAsyncEventQueue()
+            ctx = _fake_context("collect")
+            await executor.execute(ctx, eq)
+
+        assert any("All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e) for e in eq.events)
+
 
 # ── Analyst tests ────────────────────────────────────────────────────────
 
@@ -289,6 +313,20 @@ class TestAnalystExecutor:
 
         assert any("No new items" in str(e) for e in eq.events)
 
+    @pytest.mark.asyncio
+    async def test_no_items_async_event_queue(self):
+        from bcn.agents.analyst import AnalystExecutor
+
+        settings = _make_settings()
+        executor = AnalystExecutor(settings)
+
+        with patch("bcn.agents.analyst.get_new_items", new_callable=AsyncMock, return_value=[]):
+            eq = FakeAsyncEventQueue()
+            ctx = _fake_context("analyze")
+            await executor.execute(ctx, eq)
+
+        assert any("No new items" in str(e) for e in eq.events)
+
 
 # ── Writer tests ─────────────────────────────────────────────────────────
 
@@ -315,6 +353,7 @@ class TestWriterExecutor:
         settings = _make_settings(
             briefing_critique_enabled=True,
             briefing_critique_max_rounds=5,
+            briefing_verifier_enabled=False,
         )
         executor = WriterExecutor(settings)
 
@@ -686,6 +725,25 @@ class TestWriterExecutor:
         assert "[Second extra](https://example.com/two)" in out
         assert "\n\n[Second extra](https://example.com/two)" in out
 
+    def test_strip_unselected_github_advisory_links_keeps_selected_only(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        selected = [
+            {"url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4"},
+        ]
+        markdown = (
+            "Bad ref [GHSA-78q6-223p-8x4q](https://github.com/advisories/GHSA-78q6-223p-8x4q)\n\n"
+            "Good ref [GHSA-w6x6-9fp7-fqm4](https://github.com/advisories/GHSA-w6x6-9fp7-fqm4)"
+        )
+
+        out = executor._strip_unselected_github_advisory_links(markdown, selected)
+        assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
+        assert "GHSA-78q6-223p-8x4q" in out
+        assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
+
     def test_quiet_day_mode_detection(self):
         from bcn.agents.writer import WriterExecutor
 
@@ -754,6 +812,177 @@ class TestWriterExecutor:
         assert min_chars == 420
         assert target_chars == 760
         assert hard_max_chars == 1200
+
+    @pytest.mark.asyncio
+    async def test_postprocess_drop_recomputes_missing_urls_before_enrich(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_missing_coverage_max_drops=1,
+            briefing_min_items_after_coverage_drop=1,
+        )
+        executor = WriterExecutor(settings)
+        selected = [
+            {
+                "id": "one",
+                "title": "One",
+                "summary": "First item",
+                "source_type": "rss",
+                "url": "https://example.com/one",
+                "relevance_score": 9,
+            },
+            {
+                "id": "two",
+                "title": "Two",
+                "summary": "Second item",
+                "source_type": "rss",
+                "url": "https://example.com/two",
+                "relevance_score": 7,
+            },
+        ]
+        draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
+
+        with (
+            patch.object(executor.llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft) as mock_enrich,
+            patch.object(executor, "_priority_score", side_effect=lambda item: 0 if item["id"] == "two" else 1),
+        ):
+            out = await executor._postprocess_briefing(
+                briefing_body=draft,
+                selected_items=selected,
+                mode="standard",
+                min_chars=10,
+                target_chars=200,
+                hard_max_chars=2000,
+            )
+
+        # Two enrich attempts from the initial loop only; no extra call with stale dropped URLs.
+        assert mock_enrich.await_count == 2
+        assert "https://example.com/two" not in out
+        assert len(selected) == 1
+        assert selected[0]["id"] == "one"
+
+    @pytest.mark.asyncio
+    async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_missing_coverage_max_drops=0,
+        )
+        executor = WriterExecutor(settings)
+        selected = [
+            {
+                "id": "one",
+                "title": "One",
+                "summary": "First item",
+                "source_type": "rss",
+                "url": "https://example.com/one",
+                "relevance_score": 9,
+            },
+            {
+                "id": "two",
+                "title": "Two",
+                "summary": "Second item",
+                "source_type": "rss",
+                "url": "https://example.com/two",
+                "relevance_score": 8,
+            },
+        ]
+        draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
+
+        with patch.object(executor.llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft) as mock_enrich:
+            out = await executor._postprocess_briefing(
+                briefing_body=draft,
+                selected_items=selected,
+                mode="standard",
+                min_chars=10,
+                target_chars=200,
+                hard_max_chars=2000,
+            )
+
+        assert mock_enrich.await_count == 2
+        assert "https://example.com/one" in out
+        assert "https://example.com/two" in out
+
+    @pytest.mark.asyncio
+    async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings(
+            briefing_missing_coverage_max_drops=0,
+        )
+        executor = WriterExecutor(settings)
+        selected = [
+            {
+                "id": "one",
+                "title": "Craft SSRF",
+                "summary": "Official advisory details.",
+                "source_type": "ghsa",
+                "url": "https://curl.se/libcurl/c/CURLOPT_RESOLVE.html",
+                "relevance_score": 9,
+            },
+            {
+                "id": "two",
+                "title": "New API DoS",
+                "summary": "SQL LIKE wildcard injection DoS advisory.",
+                "source_type": "ghsa",
+                "url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4",
+                "relevance_score": 8,
+            },
+        ]
+        draft = (
+            "**Threat Radar**\n"
+            "Incorrect link [GHSA-78q6-223p-8x4q](https://github.com/advisories/GHSA-78q6-223p-8x4q)\n\n"
+            "Action now."
+        )
+
+        with patch.object(executor.llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft):
+            out = await executor._postprocess_briefing(
+                briefing_body=draft,
+                selected_items=selected,
+                mode="standard",
+                min_chars=10,
+                target_chars=200,
+                hard_max_chars=2000,
+            )
+
+        assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
+        assert "https://curl.se/libcurl/c/CURLOPT_RESOLVE.html" in out
+        assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
+
+    @pytest.mark.asyncio
+    async def test_verifier_llm_hard_issues_are_advisory_without_deterministic_failures(self):
+        from bcn.briefing.verifier import BriefingFactVerifier
+
+        settings = _make_settings()
+        verifier = BriefingFactVerifier(settings)
+        try:
+            with (
+                patch.object(verifier, "_find_dead_urls", new_callable=AsyncMock, return_value=[]),
+                patch.object(verifier, "_top_story_is_ctf_or_event", return_value=False),
+                patch.object(
+                    verifier.llm,
+                    "verify_briefing_facts",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "passed": False,
+                        "score": 42,
+                        "hard_issues": ["Subjective top-story preference"],
+                        "soft_issues": ["Tone could be tighter"],
+                        "recommendations": ["Reorder first section"],
+                    },
+                ),
+            ):
+                report = await verifier.evaluate(
+                    markdown="**Threat Radar**\n[One](https://example.com/one)",
+                    items=[{"url": "https://example.com/one", "title": "One"}],
+                )
+        finally:
+            await verifier.close()
+
+        assert report["passed"] is True
+        assert report["blocking_hard_issues"] == []
+        assert report["llm_hard_issues"] == ["Subjective top-story preference"]
+        assert "Subjective top-story preference" in report["hard_issues"]
 
 
 # ── Distributor tests ────────────────────────────────────────────────────
