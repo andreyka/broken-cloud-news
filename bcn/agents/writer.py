@@ -16,6 +16,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.briefing import BriefingFactVerifier, BriefingQualityGate, BriefingSelector
 from bcn.briefing import text as briefing_text
 from bcn.comfyui import ComfyUIClient
@@ -83,7 +84,7 @@ class WriterExecutor(AgentExecutor):
                 f"Skipping briefing."
             )
             logger.info(msg)
-            event_queue.enqueue_event(new_agent_text_message(msg))
+            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
 
         item_dicts = [dict(i) for i in items]
@@ -96,7 +97,7 @@ class WriterExecutor(AgentExecutor):
                     f"({high_signal} < {min_high_signal}). Skipping briefing."
                 )
                 logger.info(msg)
-                event_queue.enqueue_event(new_agent_text_message(msg))
+                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
                 return
 
         recent_published = await get_recent_published_items(
@@ -114,7 +115,7 @@ class WriterExecutor(AgentExecutor):
         if not selected_items:
             msg = "No items remained after quality/diversity filtering. Skipping briefing."
             logger.info(msg)
-            event_queue.enqueue_event(new_agent_text_message(msg))
+            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
         min_chars, target_chars, hard_max_chars = self._char_limits(
             mode,
@@ -157,6 +158,11 @@ class WriterExecutor(AgentExecutor):
             "recommendations": [],
         }
         while True:
+            briefing_body = self._enforce_release_link_hygiene(
+                briefing_body,
+                selected_items,
+                hard_max_chars=hard_max_chars,
+            )
             round_input = briefing_body
             last_gate = self._quality_gate(
                 markdown=briefing_body,
@@ -245,6 +251,20 @@ class WriterExecutor(AgentExecutor):
             feedback.extend([str(i) for i in last_verification.get("issues", [])])
             feedback.extend([str(i) for i in last_verification.get("recommendations", [])])
 
+            # If coverage keeps regressing, inject deterministic fallback links
+            # before asking the model to rewrite again.
+            missing_items = self._missing_items_for_markdown(briefing_body, selected_items)
+            if missing_items:
+                logger.warning(
+                    "URL coverage regression detected before rewrite; appending %d missing references.",
+                    len(missing_items),
+                )
+                briefing_body = self._append_missing_items_section(briefing_body, missing_items)
+                briefing_body = self._normalize_section_headings(
+                    self._dedupe_markdown_links(briefing_body.strip())
+                )
+                briefing_body = self._de_template_fields(briefing_body)
+
             rewrites += 1
             logger.info(
                 "Briefing failed release checks; rewrite %d/%d "
@@ -315,7 +335,7 @@ class WriterExecutor(AgentExecutor):
                 final_verifier=last_verification,
                 briefing_id=None,
             )
-            event_queue.enqueue_event(new_agent_text_message(msg))
+            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
 
         briefing_body = self._normalize_section_headings(briefing_body)
@@ -361,7 +381,7 @@ class WriterExecutor(AgentExecutor):
 
         msg = f"Briefing {briefing_id} created with {len(selected_items)} items"
         logger.info(msg)
-        event_queue.enqueue_event(new_agent_text_message(msg))
+        await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
     def _select_items_for_briefing(
         self,
@@ -496,6 +516,11 @@ class WriterExecutor(AgentExecutor):
                 weakest.get("url"),
             )
 
+            # Recompute after the drop so we don't pass stale URLs to the enricher.
+            missing_items = self._missing_items_for_markdown(markdown, selected_items)
+            if not missing_items:
+                break
+
             markdown = await self.llm.enrich_briefing(
                 draft_markdown=markdown,
                 items=selected_items,
@@ -511,6 +536,18 @@ class WriterExecutor(AgentExecutor):
             markdown = self._de_template_fields(markdown)
             missing_items = self._missing_items_for_markdown(markdown, selected_items)
 
+        # Final deterministic fallback to prevent endless URL coverage oscillation.
+        if missing_items:
+            logger.warning(
+                "Coverage fallback appending %d missing selected item references.",
+                len(missing_items),
+            )
+            markdown = self._append_missing_items_section(markdown, missing_items)
+            markdown = self._normalize_section_headings(
+                self._dedupe_markdown_links(markdown.strip())
+            )
+            markdown = self._de_template_fields(markdown)
+
         if len(markdown) > hard_max_chars:
             markdown = await self.llm.tighten_briefing(
                 markdown=markdown,
@@ -525,6 +562,11 @@ class WriterExecutor(AgentExecutor):
         if len(markdown) > hard_max_chars:
             markdown = self._clip_markdown(markdown, hard_max_chars)
 
+        markdown = self._enforce_release_link_hygiene(
+            markdown,
+            selected_items,
+            hard_max_chars=hard_max_chars,
+        )
         return markdown.strip()
 
     @staticmethod
@@ -550,6 +592,57 @@ class WriterExecutor(AgentExecutor):
     @staticmethod
     def _clip_markdown(markdown: str, limit: int) -> str:
         return briefing_text.clip_markdown(markdown, limit)
+
+    def _enforce_release_link_hygiene(
+        self,
+        markdown: str,
+        selected_items: list[dict],
+        *,
+        hard_max_chars: int,
+    ) -> str:
+        """Apply deterministic URL cleanup just before release checks."""
+        cleaned = self._strip_unselected_github_advisory_links(markdown, selected_items)
+        cleaned = self._normalize_section_headings(
+            self._dedupe_markdown_links((cleaned or "").strip())
+        )
+        cleaned = self._de_template_fields(cleaned)
+
+        missing_items = self._missing_items_for_markdown(cleaned, selected_items)
+        if missing_items:
+            logger.warning(
+                "Final deterministic coverage pass appending %d missing selected item references.",
+                len(missing_items),
+            )
+            cleaned = self._append_missing_items_section(cleaned, missing_items)
+            cleaned = self._normalize_section_headings(
+                self._dedupe_markdown_links(cleaned.strip())
+            )
+            cleaned = self._de_template_fields(cleaned)
+
+        if len(cleaned) > hard_max_chars:
+            cleaned = self._clip_markdown(cleaned, hard_max_chars)
+
+        return cleaned.strip()
+
+    @staticmethod
+    def _strip_unselected_github_advisory_links(markdown: str, selected_items: list[dict]) -> str:
+        """Drop markdown-link formatting for GHSA advisory URLs not in selected items."""
+        selected_urls = {
+            briefing_text.normalize_url(str(item.get("url", "")))
+            for item in selected_items
+            if item.get("url")
+        }
+
+        def _replace(match: re.Match[str]) -> str:
+            label = match.group(1)
+            url = match.group(2)
+            normalized = briefing_text.normalize_url(url)
+            lowered = normalized.lower()
+            if "github.com/advisories/ghsa-" in lowered and normalized not in selected_urls:
+                return label
+            return match.group(0)
+
+        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace, markdown or "")
 
     async def _trace_start_run(
         self,

@@ -12,6 +12,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.briefing.verifier import BriefingFactVerifier
 from bcn.config import Settings
 from bcn.db import get_items_by_ids, get_latest_any_briefing
@@ -51,7 +52,10 @@ class VerifierExecutor(AgentExecutor):
         if not raw or raw.lower() == "verify_latest":
             briefing = await get_latest_any_briefing()
             if not briefing:
-                event_queue.enqueue_event(new_agent_text_message("No briefing found to verify"))
+                await enqueue_event_safe(
+                    event_queue,
+                    new_agent_text_message("No briefing found to verify"),
+                )
                 return
             source = f"briefing:{briefing['id']}"
             draft_markdown = str(briefing.get("content_markdown") or "")
@@ -64,7 +68,10 @@ class VerifierExecutor(AgentExecutor):
             draft_markdown = raw
 
         if not draft_markdown:
-            event_queue.enqueue_event(new_agent_text_message("No markdown provided for verification"))
+            await enqueue_event_safe(
+                event_queue,
+                new_agent_text_message("No markdown provided for verification"),
+            )
             return
 
         report = await self.verifier.evaluate(
@@ -87,8 +94,9 @@ class VerifierExecutor(AgentExecutor):
             response["verifier_passed"],
             response["verifier_score"],
         )
-        event_queue.enqueue_event(
-            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2))
+        await enqueue_event_safe(
+            event_queue,
+            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2)),
         )
 
     @override

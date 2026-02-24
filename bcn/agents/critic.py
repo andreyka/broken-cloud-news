@@ -12,6 +12,7 @@ from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
+from bcn.agents.base import enqueue_event_safe
 from bcn.briefing.quality import BriefingQualityGate
 from bcn.config import Settings
 from bcn.db import get_items_by_ids, get_latest_any_briefing
@@ -57,7 +58,10 @@ class CriticExecutor(AgentExecutor):
         if not raw or raw.lower() == "critique_latest":
             briefing = await get_latest_any_briefing()
             if not briefing:
-                event_queue.enqueue_event(new_agent_text_message("No briefing found to critique"))
+                await enqueue_event_safe(
+                    event_queue,
+                    new_agent_text_message("No briefing found to critique"),
+                )
                 return
             source = f"briefing:{briefing['id']}"
             draft_markdown = str(briefing.get("content_markdown") or "")
@@ -70,7 +74,10 @@ class CriticExecutor(AgentExecutor):
             draft_markdown = raw
 
         if not draft_markdown:
-            event_queue.enqueue_event(new_agent_text_message("No markdown provided for critique"))
+            await enqueue_event_safe(
+                event_queue,
+                new_agent_text_message("No markdown provided for critique"),
+            )
             return
 
         mode = "standard"
@@ -116,8 +123,9 @@ class CriticExecutor(AgentExecutor):
             response["critic_passed"],
             response["critic_score"],
         )
-        event_queue.enqueue_event(
-            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2))
+        await enqueue_event_safe(
+            event_queue,
+            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2)),
         )
 
     @override

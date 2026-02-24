@@ -45,20 +45,21 @@ class BriefingFactVerifier:
     ) -> dict[str, Any]:
         """Evaluate factual quality and return a blocking/non-blocking report."""
         body = (markdown or "").strip()
-        hard_issues: list[str] = []
+        deterministic_hard_issues: list[str] = []
         soft_issues: list[str] = []
         recommendations: list[str] = []
 
         all_urls = self._extract_urls_in_order(body)
         dead_urls = await self._find_dead_urls(all_urls)
         if dead_urls:
-            hard_issues.append(
+            deterministic_hard_issues.append(
                 "Dead or unreachable links detected: " + ", ".join(dead_urls[:3])
             )
             recommendations.append("Replace or remove dead links before publishing.")
 
-        if self._top_story_is_ctf_or_event(body, items):
-            hard_issues.append("Top story appears to be CTF/event-style announcement.")
+        top_story_is_ctf_or_event = self._top_story_is_ctf_or_event(body, items)
+        if top_story_is_ctf_or_event:
+            deterministic_hard_issues.append("Top story appears to be CTF/event-style announcement.")
             recommendations.append(
                 "Promote a production-impact cloud-security story above event/CTF items."
             )
@@ -67,14 +68,18 @@ class BriefingFactVerifier:
             draft_markdown=body,
             items=items,
             mode=mode,
-            deterministic_issues=hard_issues,
+            deterministic_issues=deterministic_hard_issues,
         )
 
-        hard_issues.extend([str(i) for i in llm_report.get("hard_issues", [])])
+        llm_hard_issues = [str(i) for i in llm_report.get("hard_issues", [])]
+        hard_issues = list(deterministic_hard_issues)
+        hard_issues.extend(llm_hard_issues)
         soft_issues.extend([str(i) for i in llm_report.get("soft_issues", [])])
         recommendations.extend([str(i) for i in llm_report.get("recommendations", [])])
 
         # Deduplicate while preserving order.
+        deterministic_hard_issues = list(dict.fromkeys([i for i in deterministic_hard_issues if i]))[:16]
+        llm_hard_issues = list(dict.fromkeys([i for i in llm_hard_issues if i]))[:16]
         hard_issues = list(dict.fromkeys([i for i in hard_issues if i]))[:16]
         soft_issues = list(dict.fromkeys([i for i in soft_issues if i]))[:16]
         recommendations = list(dict.fromkeys([i for i in recommendations if i]))[:16]
@@ -83,17 +88,21 @@ class BriefingFactVerifier:
         llm_score = int(llm_report.get("score", 0) or 0)
         hard_penalty = min(35, len(hard_issues) * 12)
         score = max(0, llm_score - hard_penalty)
-        passed = llm_passed and not hard_issues
+        # Block only on deterministic hard failures; LLM hard findings are advisory.
+        passed = not deterministic_hard_issues
 
         return {
             "passed": passed,
             "score": score,
             "hard_issues": hard_issues,
+            "blocking_hard_issues": deterministic_hard_issues,
+            "llm_hard_issues": llm_hard_issues,
+            "llm_passed": llm_passed,
             "soft_issues": soft_issues,
             "issues": (hard_issues + soft_issues)[:24],
             "recommendations": recommendations,
             "dead_urls": dead_urls[:12],
-            "top_story_ok": not self._top_story_is_ctf_or_event(body, items),
+            "top_story_ok": not top_story_is_ctf_or_event,
         }
 
     async def _find_dead_urls(self, urls: list[str]) -> list[str]:

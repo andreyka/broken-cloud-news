@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import inspect
+from typing import Any
+
 import uvicorn
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.events import EventQueue
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 
@@ -83,3 +87,10 @@ async def serve_agent(
     )
     server = uvicorn.Server(config)
     await server.serve()
+
+
+async def enqueue_event_safe(event_queue: EventQueue, event: Any) -> None:
+    """Enqueue an event for both sync and async queue implementations."""
+    result = event_queue.enqueue_event(event)
+    if inspect.isawaitable(result):
+        await result
