@@ -1,17 +1,22 @@
-"""Qwen LLM client for item analysis and briefing generation."""
+"""Role-aware LLM client for analysis, briefing, and cover generation."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from bcn.models import AnalysisResult
+
+if TYPE_CHECKING:
+    from bcn.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +236,16 @@ PROMPT_REGISTRY: dict[str, str] = {
     "briefing_fact_verifier": BRIEFING_FACT_VERIFIER_PROMPT,
 }
 
+LLM_ROLES = ("analyst", "writer", "critic", "verifier", "cover")
+
+
+@dataclass(frozen=True)
+class _EndpointConfig:
+    base_url: str
+    model: str
+    provider: str = "openai_compat"
+    api_key: str = ""
+
 
 def build_prompt_versions() -> dict[str, dict[str, str | int]]:
     """Return stable prompt fingerprints for trace reproducibility."""
@@ -245,13 +260,120 @@ def build_prompt_versions() -> dict[str, dict[str, str | int]]:
 
 
 class LLMClient:
-    """OpenAI-compatible chat client for the Qwen LLM on DGX Spark."""
+    """Role-aware LLM client supporting OpenAI-compatible, Gemini, and Vertex AI APIs."""
 
-    def __init__(self, base_url: str, model: str, timeout: int = 120) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: int = 120,
+        *,
+        provider: str = "openai_compat",
+        api_key: str = "",
+        role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
+    ) -> None:
+        self.base_url = (base_url or "").rstrip("/")
+        self.model = model or ""
+        self.provider = self._normalize_provider(provider)
+        self.api_key = api_key or ""
+        self.timeout = timeout
+        self._default_endpoint = _EndpointConfig(
+            base_url=self.base_url,
+            model=self.model,
+            provider=self.provider,
+            api_key=self.api_key,
+        )
+        self._role_endpoints: dict[str, _EndpointConfig] = {}
+        for role, override in (role_overrides or {}).items():
+            if role not in LLM_ROLES:
+                continue
+            payload = (
+                {
+                    "base_url": override.base_url,
+                    "model": override.model,
+                    "provider": override.provider,
+                    "api_key": override.api_key,
+                }
+                if isinstance(override, _EndpointConfig)
+                else override
+            )
+            resolved = self._resolve_endpoint_override(payload)
+            if resolved:
+                self._role_endpoints[role] = resolved
         self._client = httpx.AsyncClient(timeout=timeout)
         self._url_status_cache: dict[str, bool] = {}
+
+    @classmethod
+    def from_settings(cls, settings: "Settings") -> "LLMClient":
+        """Build a role-aware LLM client from application settings."""
+        role_overrides: dict[str, dict[str, str]] = {}
+        for role in LLM_ROLES:
+            role_overrides[role] = {
+                "provider": cls._resolve_role_value(settings, "llm_provider", role),
+                "base_url": cls._resolve_role_value(settings, "llm_base_url", role),
+                "model": cls._resolve_role_value(settings, "llm_model", role),
+                "api_key": cls._resolve_role_value(settings, "llm_api_key", role),
+            }
+        return cls(
+            base_url=str(settings.llm_base_url or ""),
+            model=str(settings.llm_model or ""),
+            timeout=int(settings.llm_timeout),
+            provider=str(settings.llm_provider or "openai_compat"),
+            api_key=str(settings.llm_api_key or ""),
+            role_overrides=role_overrides,
+        )
+
+    @staticmethod
+    def _resolve_role_value(settings: "Settings", field: str, role: str) -> str:
+        override = str(getattr(settings, f"{field}_{role}", "") or "").strip()
+        base = str(getattr(settings, field, "") or "").strip()
+        return override or base
+
+    @staticmethod
+    def _normalize_provider(value: str) -> str:
+        provider = (value or "").strip().lower()
+        if provider in {"gemini", "gemini_native", "google"}:
+            return "gemini"
+        if provider in {"vertexai", "vertex_ai", "vertex", "google_vertex"}:
+            return "vertexai"
+        return "openai_compat"
+
+    def _resolve_endpoint_override(self, payload: dict[str, str] | None) -> _EndpointConfig | None:
+        if not payload:
+            return None
+        base_url = str(payload.get("base_url", "") or "").strip() or self.base_url
+        model = str(payload.get("model", "") or "").strip() or self.model
+        provider = self._normalize_provider(str(payload.get("provider", "") or self.provider))
+        api_key = str(payload.get("api_key", "") or "").strip() or self.api_key
+        if not base_url or not model:
+            return None
+        return _EndpointConfig(
+            base_url=base_url.rstrip("/"),
+            model=model,
+            provider=provider,
+            api_key=api_key,
+        )
+
+    def _endpoint(self, role: str | None = None) -> _EndpointConfig:
+        if role and role in self._role_endpoints:
+            return self._role_endpoints[role]
+        return self._default_endpoint
+
+    def model_for_role(self, role: str) -> str:
+        """Expose resolved model for trace/debug output."""
+        return self._endpoint(role).model
+
+    def endpoint_map(self) -> dict[str, dict[str, str]]:
+        """Expose effective endpoint configuration by role."""
+        out: dict[str, dict[str, str]] = {
+            "default": self._endpoint(None).__dict__.copy(),
+        }
+        for role in LLM_ROLES:
+            out[role] = self._endpoint(role).__dict__.copy()
+        for value in out.values():
+            if value.get("api_key"):
+                value["api_key"] = "***"
+        return out
 
     def prompt_versions(self) -> dict[str, dict[str, str | int]]:
         """Expose prompt fingerprints for trace persistence."""
@@ -267,22 +389,43 @@ class LLMClient:
         user_content: str,
         retries: int = 3,
     ) -> str:
-        """Send a chat-completion request with automatic retries."""
+        """Send a chat request using the default endpoint."""
+        return await self._chat_for_role(
+            role=None,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            retries=retries,
+        )
+
+    async def _chat_for_role(
+        self,
+        *,
+        role: str | None,
+        system_prompt: str,
+        user_content: str,
+        retries: int = 3,
+    ) -> str:
+        """Send a role-specific chat request with automatic retries."""
+        endpoint = self._endpoint(role)
         last_exc: Exception | None = None
         for attempt in range(1, retries + 1):
             try:
-                response = await self._client.post(
-                    f"{self.base_url}/chat/completions",
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_content},
-                        ],
-                    },
-                )
-                response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
+                if endpoint.provider in {"gemini", "vertexai"}:
+                    return await self._chat_gemini(endpoint, system_prompt, user_content)
+                return await self._chat_openai_compat(endpoint, system_prompt, user_content)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else 0
+                retryable = status in {408, 409, 425, 429} or status >= 500
+                if not retryable:
+                    raise
+                last_exc = exc
+                if attempt < retries:
+                    wait = 2 ** attempt
+                    logger.warning(
+                        "LLM request failed (attempt %d/%d, status=%d), retrying in %ds",
+                        attempt, retries, status, wait,
+                    )
+                    await asyncio.sleep(wait)
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt < retries:
@@ -292,12 +435,235 @@ class LLMClient:
                         attempt, retries, type(exc).__name__, wait,
                     )
                     await asyncio.sleep(wait)
-        raise last_exc  # type: ignore[misc]
+        raise last_exc if last_exc else RuntimeError("LLM request failed without exception")
+
+    async def _chat_openai_compat(
+        self,
+        endpoint: _EndpointConfig,
+        system_prompt: str,
+        user_content: str,
+    ) -> str:
+        response = await self._client.post(
+            f"{endpoint.base_url}/chat/completions",
+            headers=self._headers(endpoint),
+            json={
+                "model": endpoint.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+            },
+        )
+        response.raise_for_status()
+        return str(response.json()["choices"][0]["message"]["content"])
+
+    async def _chat_gemini(
+        self,
+        endpoint: _EndpointConfig,
+        system_prompt: str,
+        user_content: str,
+    ) -> str:
+        use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(endpoint)
+        if use_vertex:
+            response = await self._client.post(
+                self._gemini_vertex_stream_url(endpoint),
+                params=self._gemini_params(endpoint),
+                headers={"Content-Type": "application/json"},
+                json=self._gemini_text_payload_vertex(system_prompt, user_content),
+            )
+        else:
+            response = await self._client.post(
+                self._gemini_native_generate_url(endpoint),
+                params=self._gemini_params(endpoint),
+                headers={"Content-Type": "application/json"},
+                json=self._gemini_text_payload_native(system_prompt, user_content),
+            )
+        response.raise_for_status()
+        text = self._extract_gemini_text(response.json())
+        if not text:
+            raise RuntimeError("Gemini response did not include a text part")
+        return text
+
+    async def _generate_gemini_image(
+        self,
+        endpoint: _EndpointConfig,
+        prompt_text: str,
+    ) -> tuple[str, bytes]:
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt_text}],
+                }
+            ],
+            "generationConfig": {
+                "responseModalities": ["IMAGE"],
+            },
+        }
+        use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(endpoint)
+        if use_vertex:
+            response = await self._client.post(
+                self._gemini_vertex_stream_url(endpoint),
+                params=self._gemini_params(endpoint),
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            )
+        else:
+            response = await self._client.post(
+                self._gemini_native_generate_url(endpoint),
+                params=self._gemini_params(endpoint),
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            )
+        response.raise_for_status()
+        image = self._extract_gemini_image_data(response.json())
+        if not image:
+            raise RuntimeError("Gemini image response did not include image data")
+        return image
+
+    @staticmethod
+    def _is_gemini_vertex_endpoint(endpoint: _EndpointConfig) -> bool:
+        base = endpoint.base_url.lower()
+        return "aiplatform.googleapis.com" in base or "/publishers/google/models/" in base
+
+    @staticmethod
+    def _gemini_params(endpoint: _EndpointConfig) -> dict[str, str] | None:
+        return {"key": endpoint.api_key} if endpoint.api_key else None
+
+    @staticmethod
+    def _gemini_vertex_stream_url(endpoint: _EndpointConfig) -> str:
+        base = endpoint.base_url.rstrip("/")
+        lowered = base.lower()
+        if lowered.endswith(":streamgeneratecontent"):
+            return base
+        if lowered.endswith(":generatecontent"):
+            return base[:-len(":generateContent")] + ":streamGenerateContent"
+        if "/publishers/google/models/" in lowered:
+            return f"{base}:streamGenerateContent"
+        if lowered.endswith("/publishers/google/models"):
+            return f"{base}/{endpoint.model}:streamGenerateContent"
+        return f"{base}/publishers/google/models/{endpoint.model}:streamGenerateContent"
+
+    @staticmethod
+    def _gemini_native_generate_url(endpoint: _EndpointConfig) -> str:
+        base = endpoint.base_url.rstrip("/")
+        lowered = base.lower()
+        if lowered.endswith(":generatecontent"):
+            return base
+        if "/models/" in lowered:
+            return f"{base}:generateContent"
+        if lowered.endswith("/models"):
+            return f"{base}/{endpoint.model}:generateContent"
+        return f"{base}/models/{endpoint.model}:generateContent"
+
+    @staticmethod
+    def _gemini_text_payload_native(system_prompt: str, user_content: str) -> dict[str, Any]:
+        return {
+            "system_instruction": {
+                "parts": [{"text": system_prompt}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_content}],
+                }
+            ],
+        }
+
+    @staticmethod
+    def _gemini_text_payload_vertex(system_prompt: str, user_content: str) -> dict[str, Any]:
+        # Vertex stream endpoint reliably accepts a single user text payload.
+        merged = (
+            "System instructions:\n"
+            f"{system_prompt}\n\n"
+            "User request:\n"
+            f"{user_content}"
+        )
+        return {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": merged}],
+                }
+            ],
+        }
+
+    @staticmethod
+    def _extract_gemini_text(payload: Any) -> str:
+        chunks = payload if isinstance(payload, list) else [payload]
+        pieces: list[str] = []
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            if "error" in chunk:
+                raise RuntimeError(f"Gemini error response: {chunk['error']!r}")
+            candidates = chunk.get("candidates", [])
+            if not isinstance(candidates, list):
+                continue
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                content = candidate.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                parts = content.get("parts", [])
+                if not isinstance(parts, list):
+                    continue
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    text = str(part.get("text", "") or "").strip()
+                    if text:
+                        pieces.append(text)
+        return "\n".join(pieces).strip()
+
+    @staticmethod
+    def _extract_gemini_image_data(payload: Any) -> tuple[str, bytes] | None:
+        chunks = payload if isinstance(payload, list) else [payload]
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                continue
+            if "error" in chunk:
+                raise RuntimeError(f"Gemini error response: {chunk['error']!r}")
+            candidates = chunk.get("candidates", [])
+            if not isinstance(candidates, list):
+                continue
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                content = candidate.get("content", {})
+                if not isinstance(content, dict):
+                    continue
+                parts = content.get("parts", [])
+                if not isinstance(parts, list):
+                    continue
+                for part in parts:
+                    if not isinstance(part, dict):
+                        continue
+                    inline = part.get("inlineData") or part.get("inline_data")
+                    if not isinstance(inline, dict):
+                        continue
+                    b64_data = str(inline.get("data", "") or "").strip()
+                    if not b64_data:
+                        continue
+                    mime = str(inline.get("mimeType", "") or inline.get("mime_type", "") or "image/png")
+                    return mime, base64.b64decode(b64_data)
+        return None
+
+    @staticmethod
+    def _headers(endpoint: _EndpointConfig) -> dict[str, str]:
+        if endpoint.api_key:
+            return {"Authorization": f"Bearer {endpoint.api_key}"}
+        return {}
 
     async def analyze_item(self, title: str, content: str) -> AnalysisResult:
         """Score and summarize a single news item."""
         user_msg = f"Title: {title}\n\nContent: {content}"
-        raw = await self.chat(ANALYZER_SYSTEM_PROMPT, user_msg)
+        raw = await self._chat_for_role(
+            role="analyst",
+            system_prompt=ANALYZER_SYSTEM_PROMPT,
+            user_content=user_msg,
+        )
 
         try:
             cleaned = re.sub(r"```json\s*", "", raw)
@@ -347,7 +713,11 @@ class LLMClient:
         )
         if style_memory:
             user_msg += "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
-        return await self.chat(BRIEFING_SYSTEM_PROMPT, user_msg)
+        return await self._chat_for_role(
+            role="writer",
+            system_prompt=BRIEFING_SYSTEM_PROMPT,
+            user_content=user_msg,
+        )
 
     async def tighten_briefing(
         self,
@@ -360,7 +730,11 @@ class LLMClient:
             f"Target length: <= {target_chars} chars (hard max {hard_max_chars}).\n\n"
             f"Digest:\n{markdown}"
         )
-        tightened = await self.chat(BRIEFING_TIGHTENER_PROMPT, user_msg)
+        tightened = await self._chat_for_role(
+            role="writer",
+            system_prompt=BRIEFING_TIGHTENER_PROMPT,
+            user_content=user_msg,
+        )
         return tightened.strip()
 
     async def enrich_briefing(
@@ -398,7 +772,11 @@ class LLMClient:
             missing = "\n".join(f"- {u}" for u in missing_urls)
             user_msg += "\n\nRequired URLs currently missing and must be included exactly once:\n" + missing
 
-        rewritten = await self.chat(BRIEFING_ENRICHER_PROMPT, user_msg)
+        rewritten = await self._chat_for_role(
+            role="writer",
+            system_prompt=BRIEFING_ENRICHER_PROMPT,
+            user_content=user_msg,
+        )
         return rewritten.strip()
 
     async def critique_briefing(
@@ -429,7 +807,11 @@ class LLMClient:
             + "\n\nDraft:\n"
             + draft_markdown
         )
-        raw = await self.chat(BRIEFING_CRITIC_PROMPT, user_msg)
+        raw = await self._chat_for_role(
+            role="critic",
+            system_prompt=BRIEFING_CRITIC_PROMPT,
+            user_content=user_msg,
+        )
         try:
             cleaned = re.sub(r"```json\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned)
@@ -503,7 +885,11 @@ class LLMClient:
             + "\n\nDraft:\n"
             + draft_markdown
         )
-        raw = await self.chat(BRIEFING_FACT_VERIFIER_PROMPT, user_msg)
+        raw = await self._chat_for_role(
+            role="verifier",
+            system_prompt=BRIEFING_FACT_VERIFIER_PROMPT,
+            user_content=user_msg,
+        )
         try:
             cleaned = re.sub(r"```json\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned)
@@ -568,14 +954,37 @@ class LLMClient:
             "Story cards:\n\n"
             + cards_json
         )
-        revised = await self.chat(BRIEFING_REWRITE_PROMPT, user_msg)
+        revised = await self._chat_for_role(
+            role="writer",
+            system_prompt=BRIEFING_REWRITE_PROMPT,
+            user_content=user_msg,
+        )
         return revised.strip()
 
     async def generate_cover_prompt(self, topics: str) -> str:
         """Generate a Flux image prompt from today's security topics."""
         user_msg = f"Topics:\n{topics}"
-        raw = await self.chat(COVER_ART_SYSTEM_PROMPT, user_msg)
+        raw = await self._chat_for_role(
+            role="cover",
+            system_prompt=COVER_ART_SYSTEM_PROMPT,
+            user_content=user_msg,
+        )
         return raw.replace("`", "").strip()
+
+    def supports_cover_image_generation(self) -> bool:
+        """Return True when the cover role points to a Gemini image model."""
+        endpoint = self._endpoint("cover")
+        model = (endpoint.model or "").lower()
+        return endpoint.provider in {"gemini", "vertexai"} and "image" in model
+
+    async def generate_cover_image_data_url(self, prompt_text: str) -> str | None:
+        """Generate cover image bytes via Gemini and return a data URL."""
+        endpoint = self._endpoint("cover")
+        if endpoint.provider not in {"gemini", "vertexai"}:
+            return None
+        mime_type, image_bytes = await self._generate_gemini_image(endpoint, prompt_text)
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
     def _build_style_memory(self, recent_briefings: list[dict]) -> str:
         """Build compact style-memory snippets to reduce repetitive writing."""
@@ -601,7 +1010,11 @@ class LLMClient:
             f"Candidate items ({len(entries)} total):\n\n"
             + "\n\n".join(entries)
         )
-        raw = await self.chat(BRIEFING_STORY_CARD_PROMPT, user_msg)
+        raw = await self._chat_for_role(
+            role="writer",
+            system_prompt=BRIEFING_STORY_CARD_PROMPT,
+            user_content=user_msg,
+        )
         try:
             cleaned = re.sub(r"```json\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned)

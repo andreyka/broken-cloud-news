@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import httpx
 import pytest
 import respx
 
+from bcn.config import Settings
 from bcn.llm import LLMClient, build_prompt_versions
 
 
@@ -182,3 +184,188 @@ class TestGenerateCoverPrompt:
         result = await llm.generate_cover_prompt("topics")
         assert "`" not in result
         assert "cyberpunk server room" in result
+
+
+def test_from_settings_role_overrides():
+    settings = Settings(
+        llm_base_url="http://default-llm:8000/v1",
+        llm_model="default-model",
+        llm_provider="openai_compat",
+        llm_model_writer="writer-model",
+        llm_provider_writer="vertexai",
+        llm_base_url_writer="https://aiplatform.googleapis.com/v1",
+    )
+    llm = LLMClient.from_settings(settings)
+    assert llm.model_for_role("analyst") == "default-model"
+    assert llm.model_for_role("writer") == "writer-model"
+    assert llm.endpoint_map()["writer"]["provider"] == "vertexai"
+
+
+class TestProviderRouting:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_analyze_item_uses_role_endpoint(self):
+        llm = LLMClient(
+            base_url="http://default-llm:8000/v1",
+            model="default-model",
+            timeout=5,
+            role_overrides={
+                "analyst": {
+                    "base_url": "http://analyst-llm:8000/v1",
+                    "model": "analyst-model",
+                }
+            },
+        )
+        payload = json.dumps(
+            {
+                "summary": "ok",
+                "relevance_score": 8,
+                "tags": ["cloud"],
+                "image_prompt": "prompt",
+            }
+        )
+        route = respx.post("http://analyst-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response(payload)
+        )
+        result = await llm.analyze_item("Title", "Body")
+        assert result.relevance_score == 8
+        assert route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gemini_provider_chat(self):
+        llm = LLMClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="gemini",
+            api_key="test-key",
+        )
+        route = respx.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {"content": {"parts": [{"text": "hello from gemini"}]}},
+                    ]
+                },
+            )
+        )
+        result = await llm.chat("system", "user")
+        assert result == "hello from gemini"
+        assert route.called
+        assert route.calls[0].request.url.params.get("key") == "test-key"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_vertexai_provider_chat_stream(self):
+        llm = LLMClient(
+            base_url="https://aiplatform.googleapis.com/v1",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="vertexai",
+            api_key="test-key",
+        )
+        route = respx.post(
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]},
+                    {"candidates": [{"content": {"parts": [{"text": "vertex"}]}}]},
+                ],
+            )
+        )
+        result = await llm.chat("system", "user")
+        assert result == "hello\nvertex"
+        assert route.called
+        assert route.calls[0].request.url.params.get("key") == "test-key"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_gemini_vertex_provider_chat_stream(self):
+        llm = LLMClient(
+            base_url="https://aiplatform.googleapis.com/v1",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="gemini",
+            api_key="test-key",
+        )
+        route = respx.post(
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.1-pro-preview:streamGenerateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]},
+                    {"candidates": [{"content": {"parts": [{"text": "world"}]}}]},
+                ],
+            )
+        )
+        result = await llm.chat("system", "user")
+        assert result == "hello\nworld"
+        assert route.called
+        assert route.calls[0].request.url.params.get("key") == "test-key"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_generate_cover_image_data_url(self):
+        raw = base64.b64encode(b"\x89PNG\r\n").decode("ascii")
+        llm = LLMClient(
+            base_url="http://fake-llm:8000/v1",
+            model="default-model",
+            timeout=5,
+            provider="openai_compat",
+            role_overrides={
+                "cover": {
+                    "provider": "gemini",
+                    "base_url": "https://aiplatform.googleapis.com/v1",
+                    "model": "gemini-3-pro-image-preview",
+                    "api_key": "test-key",
+                }
+            },
+        )
+        route = respx.post(
+            "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3-pro-image-preview:streamGenerateContent"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json=[
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [
+                                        {"inlineData": {"mimeType": "image/png", "data": raw}},
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ],
+            )
+        )
+        assert llm.supports_cover_image_generation() is True
+        data_url = await llm.generate_cover_image_data_url("prompt text")
+        assert data_url is not None
+        assert data_url.startswith("data:image/png;base64,")
+        assert route.called
+
+    def test_supports_cover_image_generation_with_vertexai_provider(self):
+        llm = LLMClient(
+            base_url="http://fake-llm:8000/v1",
+            model="default-model",
+            timeout=5,
+            provider="openai_compat",
+            role_overrides={
+                "cover": {
+                    "provider": "vertexai",
+                    "base_url": "https://aiplatform.googleapis.com/v1",
+                    "model": "gemini-3-pro-image-preview",
+                }
+            },
+        )
+        assert llm.supports_cover_image_generation() is True

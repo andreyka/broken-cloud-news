@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import field_validator
@@ -11,7 +12,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """BCN configuration backed by ``BCN_``-prefixed environment variables."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="BCN_")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="BCN_",
+        enable_decoding=False,
+    )
 
     @field_validator(
         "twitter_handles", "rss_feeds", "ghsa_severities",
@@ -24,6 +29,13 @@ class Settings(BaseSettings):
         """Allow empty env-var strings to fall back to the field default."""
         if isinstance(v, str) and v.strip() == "":
             return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
         return v
 
     @field_validator("telegram_overflow_mode")
@@ -38,13 +50,83 @@ class Settings(BaseSettings):
         mode = (v or "").strip().lower()
         return mode if mode in {"strict", "balanced", "minimal"} else "balanced"
 
+    @field_validator("llm_provider")
+    @classmethod
+    def _validate_llm_provider(cls, v: str) -> str:
+        value = (v or "").strip().lower()
+        aliases = {
+            "openai": "openai_compat",
+            "openai_compat": "openai_compat",
+            "openai-compatible": "openai_compat",
+            "gemini": "gemini",
+            "gemini_native": "gemini",
+            "google": "gemini",
+            "vertexai": "vertexai",
+            "vertex_ai": "vertexai",
+            "vertex": "vertexai",
+            "google_vertex": "vertexai",
+        }
+        if not value:
+            return "openai_compat"
+        return aliases.get(value, "openai_compat")
+
+    @field_validator(
+        "llm_provider_analyst",
+        "llm_provider_writer",
+        "llm_provider_critic",
+        "llm_provider_verifier",
+        "llm_provider_cover",
+    )
+    @classmethod
+    def _validate_llm_role_provider(cls, v: str) -> str:
+        value = (v or "").strip().lower()
+        aliases = {
+            "openai": "openai_compat",
+            "openai_compat": "openai_compat",
+            "openai-compatible": "openai_compat",
+            "gemini": "gemini",
+            "gemini_native": "gemini",
+            "google": "gemini",
+            "vertexai": "vertexai",
+            "vertex_ai": "vertexai",
+            "vertex": "vertexai",
+            "google_vertex": "vertexai",
+        }
+        if not value:
+            return ""
+        return aliases.get(value, "openai_compat")
+
     # Database
     database_url: str = "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
 
-    # LLM (Qwen on DGX Spark)
+    # LLM
+    llm_provider: str = "openai_compat"  # openai_compat, gemini, vertexai
     llm_base_url: str = "http://192.168.0.9:8000/v1"
     llm_model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+    llm_api_key: str = ""
     llm_timeout: int = 120
+
+    # LLM role overrides (optional; empty string => fall back to shared setting)
+    llm_provider_analyst: str = ""
+    llm_provider_writer: str = ""
+    llm_provider_critic: str = ""
+    llm_provider_verifier: str = ""
+    llm_provider_cover: str = ""
+    llm_base_url_analyst: str = ""
+    llm_base_url_writer: str = ""
+    llm_base_url_critic: str = ""
+    llm_base_url_verifier: str = ""
+    llm_base_url_cover: str = ""
+    llm_model_analyst: str = ""
+    llm_model_writer: str = ""
+    llm_model_critic: str = ""
+    llm_model_verifier: str = ""
+    llm_model_cover: str = ""
+    llm_api_key_analyst: str = ""
+    llm_api_key_writer: str = ""
+    llm_api_key_critic: str = ""
+    llm_api_key_verifier: str = ""
+    llm_api_key_cover: str = ""
 
     # ComfyUI (Flux on DGX Spark)
     comfyui_url: str = "http://192.168.0.9:8188"

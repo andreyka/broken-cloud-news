@@ -25,11 +25,7 @@ class BriefingFactVerifier:
 
     def __init__(self, settings: Settings, llm: LLMClient | None = None) -> None:
         self.settings = settings
-        self.llm = llm or LLMClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout=settings.llm_timeout,
-        )
+        self.llm = llm or LLMClient.from_settings(settings)
         self._http = httpx.AsyncClient(timeout=12)
         self._url_liveness_cache: dict[str, bool] = {}
 

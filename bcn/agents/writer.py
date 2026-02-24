@@ -51,11 +51,7 @@ class WriterExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm = LLMClient(
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout=settings.llm_timeout,
-        )
+        self.llm = LLMClient.from_settings(settings)
         self.comfyui = ComfyUIClient(
             base_url=settings.comfyui_url,
             timeout=settings.comfyui_timeout,
@@ -348,11 +344,19 @@ class WriterExecutor(AgentExecutor):
         logger.info("Cover prompt: %s", cover_prompt[:100])
 
         cover_url = ""
+        if self.llm.supports_cover_image_generation():
+            try:
+                cover_url = await self.llm.generate_cover_image_data_url(cover_prompt) or ""
+                if cover_url:
+                    logger.info("Cover image generated via Gemini image model")
+            except Exception:
+                logger.exception("Failed to generate Gemini cover image, falling back to ComfyUI")
         try:
-            timestamp = int(time.time() * 1000)
-            prefix = f"Digest_Cover_{timestamp}"
-            cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
-            logger.info("Cover image: %s", cover_url)
+            if not cover_url:
+                timestamp = int(time.time() * 1000)
+                prefix = f"Digest_Cover_{timestamp}"
+                cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
+                logger.info("Cover image: %s", cover_url)
         except Exception:
             logger.exception("Failed to generate cover image, continuing without it")
 
@@ -664,8 +668,8 @@ class WriterExecutor(AgentExecutor):
                 mode=mode,
                 selected_item_ids=ids,
                 selected_items=selected_items,
-                llm_model=self.settings.llm_model,
-                llm_model_version=self._model_version(),
+                llm_model=self.llm.model_for_role("writer"),
+                llm_model_version=self._model_version(role="writer"),
                 prompts=self.llm.prompt_versions(),
                 config_snapshot=self._component_config_snapshot(),
                 git_sha=self._git_sha(),
@@ -782,8 +786,8 @@ class WriterExecutor(AgentExecutor):
         points = [str(item).strip() for item in feedback if str(item).strip()]
         return " | ".join(points[:6])[:2000]
 
-    def _model_version(self) -> str:
-        model = (self.settings.llm_model or "").strip()
+    def _model_version(self, role: str = "writer") -> str:
+        model = (self.llm.model_for_role(role) or "").strip()
         if ":" in model:
             return model.rsplit(":", 1)[-1].strip() or "unknown"
         if "@" in model:
@@ -814,7 +818,8 @@ class WriterExecutor(AgentExecutor):
             key: filtered[key]
             for key in filtered
             if key.startswith("scrape_")
-            or key in {"relevance_threshold", "llm_model", "llm_timeout", "llm_base_url"}
+            or key.startswith("llm_")
+            or key in {"relevance_threshold"}
         }
         writer = {
             key: filtered[key]
@@ -823,13 +828,12 @@ class WriterExecutor(AgentExecutor):
             or key in {
                 "relevance_threshold",
                 "briefing_lookback_hours",
-                "llm_model",
                 "llm_timeout",
-                "llm_base_url",
                 "comfyui_url",
                 "comfyui_timeout",
                 "comfyui_poll_interval",
             }
+            or key.startswith("llm_")
         }
         critic = {
             key: filtered[key]
@@ -878,7 +882,7 @@ class WriterExecutor(AgentExecutor):
     def _format_markdown(briefing_body: str, cover_url: str) -> str:
         """Wrap the briefing body with an optional cover image in Markdown."""
         md = ""
-        if cover_url:
+        if cover_url and cover_url.startswith(("http://", "https://")):
             md += f"![Daily Cover]({cover_url})\n\n"
         md += briefing_body
         return md
@@ -896,7 +900,7 @@ class WriterExecutor(AgentExecutor):
         html_body = f"<p>{html_body}</p>"
 
         parts = ["<html><body>"]
-        if cover_url:
+        if cover_url and cover_url.startswith(("http://", "https://")):
             parts.append(
                 f'<img src="{cover_url}" alt="Daily Cover" style="max-width:600px"/>'
             )
