@@ -638,7 +638,8 @@ class WriterExecutor(AgentExecutor):
             url = match.group(2)
             normalized = briefing_text.normalize_url(url)
             lowered = normalized.lower()
-            if "github.com/advisories/ghsa-" in lowered and normalized not in selected_urls:
+            is_github_ghsa = "github.com/" in lowered and "/ghsa-" in lowered
+            if is_github_ghsa and normalized not in selected_urls:
                 return label
             return match.group(0)
 

@@ -736,12 +736,15 @@ class TestWriterExecutor:
         ]
         markdown = (
             "Bad ref [GHSA-78q6-223p-8x4q](https://github.com/advisories/GHSA-78q6-223p-8x4q)\n\n"
+            "Also bad [GHSA-9c6g-9j6q-6w4w](https://github.com/craftcms/cms/security/advisories/GHSA-9c6g-9j6q-6w4w)\n\n"
             "Good ref [GHSA-w6x6-9fp7-fqm4](https://github.com/advisories/GHSA-w6x6-9fp7-fqm4)"
         )
 
         out = executor._strip_unselected_github_advisory_links(markdown, selected)
         assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
+        assert "https://github.com/craftcms/cms/security/advisories/GHSA-9c6g-9j6q-6w4w" not in out
         assert "GHSA-78q6-223p-8x4q" in out
+        assert "GHSA-9c6g-9j6q-6w4w" in out
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
 
     def test_quiet_day_mode_detection(self):
