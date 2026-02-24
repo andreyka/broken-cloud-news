@@ -408,6 +408,13 @@ class TestWriterExecutor:
         # initial critique + one critique after each rewrite
         assert mock_critique.await_count == 6
         assert mock_revise.await_count == 5
+        first_rewrite_kwargs = mock_revise.await_args_list[0].kwargs
+        assert "feedback_context" in first_rewrite_kwargs
+        feedback_context = first_rewrite_kwargs["feedback_context"]
+        assert isinstance(feedback_context, dict)
+        assert "blocking" in feedback_context
+        assert "critic" in feedback_context
+        assert "coverage" in feedback_context
 
     def test_selection_limits_single_domain(self):
         from bcn.agents.writer import WriterExecutor

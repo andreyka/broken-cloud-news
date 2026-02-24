@@ -542,12 +542,34 @@ async def _simulate_briefing_body(
             feedback.extend(gate.get("issues", []))
             feedback.extend([str(i) for i in critique.get("issues", [])])
             feedback.extend([str(r) for r in critique.get("recommendations", [])])
+            missing_items = writer._missing_items_for_markdown(briefing_body, items)
+            feedback_context = writer._build_rewrite_feedback_context(
+                gate=gate,
+                critique=critique,
+                verification={
+                    "passed": True,
+                    "score": 100,
+                    "hard_issues": [],
+                    "blocking_hard_issues": [],
+                    "soft_issues": [],
+                    "recommendations": [],
+                },
+                mode=mode,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+                rewrite_attempt=rewrites + 1,
+                max_rewrites=max_rewrites,
+                selected_items=items,
+                missing_selected_urls=[str(i.get("url", "")) for i in missing_items if i.get("url")],
+            )
 
             rewrites += 1
             briefing_body = await writer.llm.revise_briefing(
                 draft_markdown=briefing_body,
                 items=items,
                 feedback=feedback,
+                feedback_context=feedback_context,
                 mode=mode,
                 min_chars=min_chars,
                 target_chars=target_chars,

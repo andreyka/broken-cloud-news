@@ -246,10 +246,11 @@ class WriterExecutor(AgentExecutor):
             feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
             feedback.extend([str(i) for i in last_verification.get("issues", [])])
             feedback.extend([str(i) for i in last_verification.get("recommendations", [])])
+            missing_items = self._missing_items_for_markdown(briefing_body, selected_items)
+            missing_urls = [str(i.get("url", "")) for i in missing_items if i.get("url")]
 
             # If coverage keeps regressing, inject deterministic fallback links
             # before asking the model to rewrite again.
-            missing_items = self._missing_items_for_markdown(briefing_body, selected_items)
             if missing_items:
                 logger.warning(
                     "URL coverage regression detected before rewrite; appending %d missing references.",
@@ -260,6 +261,20 @@ class WriterExecutor(AgentExecutor):
                     self._dedupe_markdown_links(briefing_body.strip())
                 )
                 briefing_body = self._de_template_fields(briefing_body)
+
+            feedback_context = self._build_rewrite_feedback_context(
+                gate=last_gate,
+                critique=last_critique,
+                verification=last_verification,
+                mode=mode,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+                rewrite_attempt=rewrites + 1,
+                max_rewrites=max_rewrites,
+                selected_items=selected_items,
+                missing_selected_urls=missing_urls,
+            )
 
             rewrites += 1
             logger.info(
@@ -277,6 +292,7 @@ class WriterExecutor(AgentExecutor):
                 draft_markdown=briefing_body,
                 items=selected_items,
                 feedback=feedback,
+                feedback_context=feedback_context,
                 mode=mode,
                 min_chars=min_chars,
                 target_chars=target_chars,
@@ -785,6 +801,148 @@ class WriterExecutor(AgentExecutor):
     def _build_rationale(feedback: list[str]) -> str:
         points = [str(item).strip() for item in feedback if str(item).strip()]
         return " | ".join(points[:6])[:2000]
+
+    def _build_rewrite_feedback_context(
+        self,
+        *,
+        gate: dict[str, object],
+        critique: dict[str, object],
+        verification: dict[str, object],
+        mode: str,
+        min_chars: int,
+        target_chars: int,
+        hard_max_chars: int,
+        rewrite_attempt: int,
+        max_rewrites: int,
+        selected_items: list[dict[str, Any]],
+        missing_selected_urls: list[str] | None = None,
+    ) -> dict[str, Any]:
+        gate_hard = self._string_list(gate.get("hard_issues"), limit=16)
+        gate_soft = self._string_list(gate.get("soft_issues"), limit=16)
+        gate_issues = self._string_list(gate.get("issues"), limit=20)
+        critic_issues = self._string_list(critique.get("issues"), limit=16)
+        critic_recommendations = self._string_list(critique.get("recommendations"), limit=16)
+        verifier_hard = self._string_list(verification.get("hard_issues"), limit=16)
+        verifier_blocking_hard = self._string_list(verification.get("blocking_hard_issues"), limit=16)
+        verifier_soft = self._string_list(verification.get("soft_issues"), limit=16)
+        verifier_recommendations = self._string_list(verification.get("recommendations"), limit=16)
+
+        critic_dims = critique.get("dimension_scores", {})
+        if not isinstance(critic_dims, dict):
+            critic_dims = {}
+        min_thresholds = {
+            "score": int(self.settings.briefing_critic_min_score),
+            "actionability": int(self.settings.briefing_critic_min_actionability),
+            "source_diversity": int(self.settings.briefing_critic_min_source_diversity),
+            "link_hygiene": int(self.settings.briefing_critic_min_link_hygiene),
+        }
+        failed_critic_thresholds: list[str] = []
+        critic_score = int(critique.get("score", 0) or 0)
+        if critic_score < min_thresholds["score"]:
+            failed_critic_thresholds.append(
+                f"score {critic_score} < {min_thresholds['score']}"
+            )
+        for dim in ("actionability", "source_diversity", "link_hygiene"):
+            dim_score = int(critic_dims.get(dim, 0) or 0)
+            if dim_score < min_thresholds[dim]:
+                failed_critic_thresholds.append(
+                    f"{dim} {dim_score} < {min_thresholds[dim]}"
+                )
+
+        compact_items: list[dict[str, Any]] = []
+        for item in selected_items[:12]:
+            compact_items.append(
+                {
+                    "url": str(item.get("url", "")).strip(),
+                    "title": str(item.get("title", "")).strip(),
+                    "source_type": str(item.get("source_type", "")).strip(),
+                    "relevance_score": int(item.get("relevance_score", 0) or 0),
+                }
+            )
+
+        priorities: list[str] = []
+        if gate_hard:
+            priorities.append("Resolve gate hard issues first (blocking release).")
+        if verifier_blocking_hard:
+            priorities.append("Resolve verifier deterministic blocking issues before style changes.")
+        if verifier_hard:
+            priorities.append("Address verifier hard issues to tighten factual grounding.")
+        if failed_critic_thresholds:
+            priorities.append(
+                "Raise critic threshold failures: " + "; ".join(failed_critic_thresholds[:3])
+            )
+        if not priorities:
+            priorities.append("Improve clarity and actionability while preserving exact URL coverage.")
+
+        return {
+            "rewrite": {
+                "attempt": int(max(1, rewrite_attempt)),
+                "max_attempts": int(max(0, max_rewrites)),
+                "mode": mode,
+                "target_length_chars": {
+                    "min": int(min_chars),
+                    "target": int(target_chars),
+                    "hard_max": int(hard_max_chars),
+                },
+            },
+            "release_status": {
+                "gate_passed": bool(gate.get("passed", False)),
+                "critic_passed": self._passes_critic_thresholds(critique),
+                "verifier_passed": bool(verification.get("passed", True)),
+            },
+            "priority_order": priorities[:6],
+            "blocking": {
+                "gate_hard_issues": gate_hard,
+                "verifier_blocking_hard_issues": verifier_blocking_hard,
+                "verifier_hard_issues": verifier_hard,
+            },
+            "gate": {
+                "issues": gate_issues,
+                "soft_issues": gate_soft,
+            },
+            "critic": {
+                "passed": bool(critique.get("passed", False)),
+                "score": critic_score,
+                "dimension_scores": {
+                    "actionability": int(critic_dims.get("actionability", 0) or 0),
+                    "source_diversity": int(critic_dims.get("source_diversity", 0) or 0),
+                    "link_hygiene": int(critic_dims.get("link_hygiene", 0) or 0),
+                    "clarity": int(critic_dims.get("clarity", 0) or 0),
+                    "style": int(critic_dims.get("style", 0) or 0),
+                },
+                "thresholds": min_thresholds,
+                "failed_thresholds": failed_critic_thresholds,
+                "issues": critic_issues,
+                "recommendations": critic_recommendations,
+            },
+            "verifier": {
+                "passed": bool(verification.get("passed", True)),
+                "score": int(verification.get("score", 0) or 0),
+                "soft_issues": verifier_soft,
+                "recommendations": verifier_recommendations,
+            },
+            "coverage": {
+                "missing_selected_urls": [str(url).strip() for url in (missing_selected_urls or []) if str(url).strip()][:16],
+                "selected_items": compact_items,
+            },
+        }
+
+    @staticmethod
+    def _string_list(value: object, *, limit: int = 16) -> list[str]:
+        if isinstance(value, list):
+            raw = value
+        elif value is None:
+            raw = []
+        else:
+            raw = [value]
+        out: list[str] = []
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+            if len(out) >= limit:
+                break
+        return out
 
     def _model_version(self, role: str = "writer") -> str:
         model = (self.llm.model_for_role(role) or "").strip()
