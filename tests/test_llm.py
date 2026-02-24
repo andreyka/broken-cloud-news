@@ -186,6 +186,94 @@ class TestGenerateCoverPrompt:
         assert "cyberpunk server room" in result
 
 
+class TestStoryCards:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_retry_and_fill_missing_cards(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions")
+        route.side_effect = [
+            _chat_response("not-json"),
+            _chat_response(
+                json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "main_url": "https://a.com/path).",
+                                "what_happened": "A issue",
+                                "reference_links": ["https://b.com/advisory"],
+                            }
+                        ]
+                    }
+                )
+            ),
+        ]
+        items = [
+            {
+                "title": "A issue",
+                "url": "https://a.com/path",
+                "summary": "A summary",
+                "source_type": "rss",
+            },
+            {
+                "title": "B issue",
+                "url": "https://b.com/advisory",
+                "summary": "B summary",
+                "source_type": "ghsa",
+            },
+        ]
+        cards = await llm._build_story_cards(["- item a", "- item b"], items)
+        assert route.call_count == 2
+        assert [c["main_url"] for c in cards] == [
+            "https://a.com/path",
+            "https://b.com/advisory",
+        ]
+        assert cards[1]["what_happened"] == "B summary"
+
+        second_req = json.loads(route.calls[1].request.content)
+        assert "Return exactly 2 cards" in second_req["messages"][1]["content"]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_revise_briefing_embeds_structured_feedback_context(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions")
+        route.side_effect = [
+            _chat_response(
+                json.dumps(
+                    {
+                        "cards": [
+                            {
+                                "main_url": "https://a.com",
+                                "what_happened": "A issue",
+                                "reference_links": [],
+                            }
+                        ]
+                    }
+                )
+            ),
+            _chat_response("Rewritten draft"),
+        ]
+        rewritten = await llm.revise_briefing(
+            draft_markdown="Old draft",
+            items=[
+                {
+                    "title": "A issue",
+                    "url": "https://a.com",
+                    "summary": "A summary",
+                    "source_type": "rss",
+                }
+            ],
+            feedback=["Fix link flow"],
+            feedback_context={"priority_order": ["Fix hard blockers first"]},
+        )
+        assert rewritten == "Rewritten draft"
+        assert route.call_count == 2
+
+        rewrite_req = json.loads(route.calls[1].request.content)
+        rewrite_msg = rewrite_req["messages"][1]["content"]
+        assert "Structured feedback context" in rewrite_msg
+        assert "\"priority_order\"" in rewrite_msg
+
+
 def test_from_settings_role_overrides():
     settings = Settings(
         llm_base_url="http://default-llm:8000/v1",

@@ -10,6 +10,7 @@ import json
 import logging
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 
@@ -191,10 +192,12 @@ BRIEFING_CRITIC_PROMPT = (
 BRIEFING_REWRITE_PROMPT = (
     "You are rewriting a cloud-security digest to satisfy an editorial critic.\n"
     "Apply all feedback while keeping factual grounding and valid links.\n"
+    "Input includes a structured feedback JSON block; treat it as authoritative priority context.\n"
     "Rules:\n"
     "- Markdown only.\n"
     "- Keep all selected URLs present exactly once.\n"
     "- Improve actionability, clarity, and section flow.\n"
+    "- Resolve blocking/hard issues first, then verifier factual issues, then stylistic refinements.\n"
     "- Remove template field patterns (`Detection:`, `Source:`) and repetitive heading formulas.\n"
     "- Keep references inline in natural prose.\n"
     "- Remove repetitive/boilerplate phrasing.\n"
@@ -222,6 +225,20 @@ BRIEFING_FACT_VERIFIER_PROMPT = (
 
 _SKIP_DOMAINS = frozenset({
     "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
+})
+_TRACKING_PARAM_NAMES = frozenset({
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "msclkid",
+    "rb_clickid",
+    "s_cid",
+    "vero_conv",
+    "vero_id",
+    "yclid",
 })
 
 PROMPT_REGISTRY: dict[str, str] = {
@@ -404,6 +421,7 @@ class LLMClient:
         system_prompt: str,
         user_content: str,
         retries: int = 3,
+        json_response: bool = False,
     ) -> str:
         """Send a role-specific chat request with automatic retries."""
         endpoint = self._endpoint(role)
@@ -411,8 +429,18 @@ class LLMClient:
         for attempt in range(1, retries + 1):
             try:
                 if endpoint.provider in {"gemini", "vertexai"}:
-                    return await self._chat_gemini(endpoint, system_prompt, user_content)
-                return await self._chat_openai_compat(endpoint, system_prompt, user_content)
+                    return await self._chat_gemini(
+                        endpoint,
+                        system_prompt,
+                        user_content,
+                        json_response=json_response,
+                    )
+                return await self._chat_openai_compat(
+                    endpoint,
+                    system_prompt,
+                    user_content,
+                    json_response=json_response,
+                )
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
                 retryable = status in {408, 409, 425, 429} or status >= 500
@@ -442,17 +470,20 @@ class LLMClient:
         endpoint: _EndpointConfig,
         system_prompt: str,
         user_content: str,
+        *,
+        json_response: bool = False,
     ) -> str:
+        request: dict[str, Any] = {
+            "model": endpoint.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+        }
         response = await self._client.post(
             f"{endpoint.base_url}/chat/completions",
             headers=self._headers(endpoint),
-            json={
-                "model": endpoint.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-            },
+            json=request,
         )
         response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
@@ -462,6 +493,8 @@ class LLMClient:
         endpoint: _EndpointConfig,
         system_prompt: str,
         user_content: str,
+        *,
+        json_response: bool = False,
     ) -> str:
         use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(endpoint)
         if use_vertex:
@@ -469,14 +502,22 @@ class LLMClient:
                 self._gemini_vertex_stream_url(endpoint),
                 params=self._gemini_params(endpoint),
                 headers={"Content-Type": "application/json"},
-                json=self._gemini_text_payload_vertex(system_prompt, user_content),
+                json=self._gemini_text_payload_vertex(
+                    system_prompt,
+                    user_content,
+                    json_response=json_response,
+                ),
             )
         else:
             response = await self._client.post(
                 self._gemini_native_generate_url(endpoint),
                 params=self._gemini_params(endpoint),
                 headers={"Content-Type": "application/json"},
-                json=self._gemini_text_payload_native(system_prompt, user_content),
+                json=self._gemini_text_payload_native(
+                    system_prompt,
+                    user_content,
+                    json_response=json_response,
+                ),
             )
         response.raise_for_status()
         text = self._extract_gemini_text(response.json())
@@ -557,8 +598,13 @@ class LLMClient:
         return f"{base}/models/{endpoint.model}:generateContent"
 
     @staticmethod
-    def _gemini_text_payload_native(system_prompt: str, user_content: str) -> dict[str, Any]:
-        return {
+    def _gemini_text_payload_native(
+        system_prompt: str,
+        user_content: str,
+        *,
+        json_response: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "system_instruction": {
                 "parts": [{"text": system_prompt}],
             },
@@ -569,9 +615,17 @@ class LLMClient:
                 }
             ],
         }
+        if json_response:
+            payload["generationConfig"] = {"responseMimeType": "application/json"}
+        return payload
 
     @staticmethod
-    def _gemini_text_payload_vertex(system_prompt: str, user_content: str) -> dict[str, Any]:
+    def _gemini_text_payload_vertex(
+        system_prompt: str,
+        user_content: str,
+        *,
+        json_response: bool = False,
+    ) -> dict[str, Any]:
         # Vertex stream endpoint reliably accepts a single user text payload.
         merged = (
             "System instructions:\n"
@@ -579,7 +633,7 @@ class LLMClient:
             "User request:\n"
             f"{user_content}"
         )
-        return {
+        payload: dict[str, Any] = {
             "contents": [
                 {
                     "role": "user",
@@ -587,6 +641,9 @@ class LLMClient:
                 }
             ],
         }
+        if json_response:
+            payload["generationConfig"] = {"responseMimeType": "application/json"}
+        return payload
 
     @staticmethod
     def _extract_gemini_text(payload: Any) -> str:
@@ -651,6 +708,55 @@ class LLMClient:
         return None
 
     @staticmethod
+    def _parse_json_response(raw_text: str) -> Any:
+        """Parse JSON from model output with fence stripping and raw-decode fallback."""
+        cleaned = re.sub(r"```json\s*", "", raw_text or "", flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```\s*", "", cleaned).strip()
+        if not cleaned:
+            raise json.JSONDecodeError("empty response", cleaned, 0)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            decoder = json.JSONDecoder()
+            for idx, ch in enumerate(cleaned):
+                if ch not in "{[":
+                    continue
+                try:
+                    parsed, _ = decoder.raw_decode(cleaned[idx:])
+                    return parsed
+                except json.JSONDecodeError:
+                    continue
+        raise json.JSONDecodeError("unable to parse json", cleaned, 0)
+
+    @staticmethod
+    def _normalized_url_key(url: str) -> str:
+        if not url:
+            return ""
+        trimmed = str(url).strip().rstrip(").,;!?")
+        if not trimmed:
+            return ""
+        try:
+            parsed = urlparse(trimmed)
+        except Exception:
+            return trimmed
+        scheme = parsed.scheme.lower() or "https"
+        netloc = parsed.netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        path = parsed.path.rstrip("/")
+        query_params: list[tuple[str, str]] = []
+        for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
+            key = raw_key.lower()
+            if key.startswith("utm_") or key.startswith("mc_") or key in _TRACKING_PARAM_NAMES:
+                continue
+            query_params.append((key, raw_value))
+        query_params.sort()
+        query = urlencode(query_params, doseq=True)
+        if query:
+            return f"{scheme}://{netloc}{path}?{query}"
+        return f"{scheme}://{netloc}{path}"
+
+    @staticmethod
     def _headers(endpoint: _EndpointConfig) -> dict[str, str]:
         if endpoint.api_key:
             return {"Authorization": f"Bearer {endpoint.api_key}"}
@@ -663,19 +769,18 @@ class LLMClient:
             role="analyst",
             system_prompt=ANALYZER_SYSTEM_PROMPT,
             user_content=user_msg,
+            json_response=True,
         )
 
         try:
-            cleaned = re.sub(r"```json\s*", "", raw)
-            cleaned = re.sub(r"```\s*", "", cleaned)
-            parsed = json.loads(cleaned)
+            parsed = self._parse_json_response(raw)
             return AnalysisResult(
                 summary=parsed.get("summary", raw[:500]),
                 relevance_score=max(1, min(10, int(parsed.get("relevance_score", 5)))),
                 tags=parsed.get("tags", []),
                 image_prompt=parsed.get("image_prompt", "cloud security concept art"),
             )
-        except (json.JSONDecodeError, KeyError, ValueError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError):
             logger.warning("Failed to parse LLM JSON, using fallback")
             return AnalysisResult(
                 summary=raw[:500],
@@ -811,11 +916,12 @@ class LLMClient:
             role="critic",
             system_prompt=BRIEFING_CRITIC_PROMPT,
             user_content=user_msg,
+            json_response=True,
         )
         try:
-            cleaned = re.sub(r"```json\s*", "", raw)
-            cleaned = re.sub(r"```\s*", "", cleaned)
-            parsed = json.loads(cleaned)
+            parsed = self._parse_json_response(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("critic payload must be an object")
             passed = bool(parsed.get("passed", False))
             score = max(0, min(100, int(parsed.get("score", 0))))
             dimension_scores = parsed.get("dimension_scores", {}) or {}
@@ -889,11 +995,12 @@ class LLMClient:
             role="verifier",
             system_prompt=BRIEFING_FACT_VERIFIER_PROMPT,
             user_content=user_msg,
+            json_response=True,
         )
         try:
-            cleaned = re.sub(r"```json\s*", "", raw)
-            cleaned = re.sub(r"```\s*", "", cleaned)
-            parsed = json.loads(cleaned)
+            parsed = self._parse_json_response(raw)
+            if not isinstance(parsed, dict):
+                raise ValueError("verifier payload must be an object")
             hard = parsed.get("hard_issues", [])
             soft = parsed.get("soft_issues", [])
             recs = parsed.get("recommendations", [])
@@ -925,6 +1032,7 @@ class LLMClient:
         draft_markdown: str,
         items: list[dict],
         feedback: list[str],
+        feedback_context: dict[str, Any] | None = None,
         *,
         mode: str = "standard",
         min_chars: int = 1200,
@@ -938,7 +1046,9 @@ class LLMClient:
         story_cards = await self._build_story_cards(entries, items)
         cards_json = json.dumps({"cards": story_cards}, ensure_ascii=False, indent=2)
 
-        fb = "\n".join(f"- {line}" for line in feedback[:20]) or "- improve overall quality"
+        fb = "\n".join(f"- {line}" for line in feedback[:40]) or "- improve overall quality"
+        structured = feedback_context or {}
+        structured_json = json.dumps(structured, ensure_ascii=False, indent=2)
         mode_text = (
             "quiet_day: deeper practical guidance with fewer items accepted"
             if mode == "quiet_day"
@@ -947,7 +1057,9 @@ class LLMClient:
         user_msg = (
             f"Mode: {mode_text}\n"
             f"Target length: {min_chars}-{hard_max_chars} chars (ideal ~{target_chars}).\n\n"
-            "Feedback to address:\n"
+            "Structured feedback context (JSON, blocking-first priority):\n"
+            f"{structured_json}\n\n"
+            "Feedback to address (flattened supplemental list):\n"
             f"{fb}\n\n"
             "Current draft:\n"
             f"{draft_markdown}\n\n"
@@ -1014,50 +1126,136 @@ class LLMClient:
             role="writer",
             system_prompt=BRIEFING_STORY_CARD_PROMPT,
             user_content=user_msg,
+            json_response=True,
         )
-        try:
-            cleaned = re.sub(r"```json\s*", "", raw)
-            cleaned = re.sub(r"```\s*", "", cleaned)
-            parsed = json.loads(cleaned)
-            cards = parsed.get("cards", [])
-            if not isinstance(cards, list) or not cards:
-                raise ValueError("cards missing")
-            by_url = {str(item.get("url") or "").strip(): item for item in items}
-            normalized: list[dict[str, Any]] = []
-            for card in cards:
-                if not isinstance(card, dict):
+        for attempt in range(2):
+            try:
+                parsed = self._parse_json_response(raw)
+                normalized = self._normalize_story_cards(parsed, items)
+                if normalized:
+                    return normalized
+                raise ValueError("story cards normalization produced no valid entries")
+            except Exception as exc:
+                if attempt == 0:
+                    logger.warning(
+                        "Invalid story cards payload; retrying strict JSON repair (%s)",
+                        type(exc).__name__,
+                    )
+                    repair_msg = (
+                        f"{user_msg}\n\n"
+                        "Your previous response was invalid or missing required cards.\n"
+                        "Return STRICT JSON ONLY with object shape {\"cards\": [...]}.\n"
+                        f"Return exactly {len(items)} cards (one per candidate item URL).\n"
+                        "Keep each `main_url` exactly equal to one of the provided candidate URLs.\n\n"
+                        "Previous invalid response (for correction):\n"
+                        f"{raw[:4000]}"
+                    )
+                    raw = await self._chat_for_role(
+                        role="writer",
+                        system_prompt=BRIEFING_STORY_CARD_PROMPT,
+                        user_content=repair_msg,
+                        json_response=True,
+                    )
                     continue
-                main_url = str(card.get("main_url") or "").strip()
-                item = by_url.get(main_url)
-                if not item:
-                    continue
-                refs = card.get("reference_links", [])
-                if not isinstance(refs, list):
-                    refs = []
-                cleaned_refs: list[str] = []
-                for ref in refs:
-                    ref_s = str(ref).strip()
-                    if not ref_s:
-                        continue
-                    if ref_s.startswith(("http://", "https://")):
-                        cleaned_refs.append(ref_s)
-                normalized.append(
-                    {
-                        "main_url": main_url,
-                        "what_happened": str(card.get("what_happened") or item.get("summary") or ""),
-                        "why_now": str(card.get("why_now") or ""),
-                        "who_impacted": str(card.get("who_impacted") or ""),
-                        "offensive_angle": str(card.get("offensive_angle") or ""),
-                        "defensive_action_24h": str(card.get("defensive_action_24h") or ""),
-                        "reference_links": cleaned_refs[:3],
-                    }
-                )
-            if normalized:
-                return normalized
-        except Exception:
-            logger.warning("Failed to parse story cards; using deterministic fallback cards")
-
+                logger.warning("Failed to parse story cards; using deterministic fallback cards")
         return self._fallback_story_cards(items)
+
+    def _normalize_story_cards(self, payload: Any, items: list[dict]) -> list[dict[str, Any]]:
+        """Normalize parsed story-card payload and align URLs with selected items."""
+        cards: Any
+        if isinstance(payload, dict):
+            cards = payload.get("cards")
+            if not isinstance(cards, list):
+                for key in ("story_cards", "items"):
+                    candidate = payload.get(key)
+                    if isinstance(candidate, list):
+                        cards = candidate
+                        break
+        elif isinstance(payload, list):
+            cards = payload
+        else:
+            cards = []
+        if not isinstance(cards, list) or not cards:
+            raise ValueError("cards missing")
+
+        by_url_key: dict[str, dict] = {}
+        for item in items:
+            item_url = str(item.get("url") or "").strip()
+            key = self._normalized_url_key(item_url)
+            if key:
+                by_url_key[key] = item
+
+        cards_by_item_key: dict[str, dict[str, Any]] = {}
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            main_url_raw = str(card.get("main_url") or card.get("url") or "").strip()
+            refs_raw = card.get("reference_links", [])
+            refs_list = refs_raw if isinstance(refs_raw, list) else []
+
+            item = by_url_key.get(self._normalized_url_key(main_url_raw))
+            if not item:
+                for ref in refs_list:
+                    ref_s = str(ref).strip()
+                    item = by_url_key.get(self._normalized_url_key(ref_s))
+                    if item:
+                        break
+            if not item:
+                continue
+
+            canonical_main_url = str(item.get("url") or main_url_raw).strip()
+            item_key = self._normalized_url_key(canonical_main_url)
+            if not item_key or item_key in cards_by_item_key:
+                continue
+            cleaned_refs: list[str] = []
+            seen_ref_keys: set[str] = set()
+            for ref in refs_list:
+                ref_s = str(ref).strip()
+                if not ref_s.startswith(("http://", "https://")):
+                    continue
+                ref_key = self._normalized_url_key(ref_s.rstrip(").,;!?"))
+                if ref_key and ref_key in seen_ref_keys:
+                    continue
+                if ref_key:
+                    seen_ref_keys.add(ref_key)
+                normalized_ref = ref_s.rstrip(").,;!?")
+                if normalized_ref == canonical_main_url:
+                    continue
+                cleaned_refs.append(normalized_ref)
+
+            cards_by_item_key[item_key] = {
+                "main_url": canonical_main_url,
+                "what_happened": str(
+                    card.get("what_happened")
+                    or item.get("summary")
+                    or item.get("title")
+                    or ""
+                ).strip(),
+                "why_now": str(card.get("why_now") or "").strip(),
+                "who_impacted": str(card.get("who_impacted") or "").strip(),
+                "offensive_angle": str(card.get("offensive_angle") or "").strip(),
+                "defensive_action_24h": str(card.get("defensive_action_24h") or "").strip(),
+                "reference_links": cleaned_refs[:3],
+            }
+
+        if not cards_by_item_key:
+            raise ValueError("no cards mapped to selected items")
+
+        fallback_by_item_key = {
+            self._normalized_url_key(str(card.get("main_url") or "")): card
+            for card in self._fallback_story_cards(items)
+        }
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            item_key = self._normalized_url_key(str(item.get("url") or ""))
+            if not item_key:
+                continue
+            chosen = cards_by_item_key.get(item_key) or fallback_by_item_key.get(item_key)
+            if chosen:
+                normalized.append(chosen)
+        if not normalized:
+            raise ValueError("story cards empty after normalization")
+        return normalized
 
     @staticmethod
     def _fallback_story_cards(items: list[dict]) -> list[dict[str, Any]]:
