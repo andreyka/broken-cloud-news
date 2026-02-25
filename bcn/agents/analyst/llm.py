@@ -4,8 +4,8 @@ import json
 import logging
 from typing import Any
 
-from bcn.models import AnalysisResult
-from bcn.llm import LLMClient
+from bcn.common.models import AnalysisResult
+from bcn.common.llm import LLMClient
 from bcn.agents.analyst.prompt import ANALYZER_SYSTEM_PROMPT
 from bcn.agents.tools import fetch_page_content
 

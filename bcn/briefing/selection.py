@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from bcn.briefing.text import normalize_url, to_dict
-from bcn.config import Settings
+from bcn.common.config import Settings
 
 _TRUSTED_RSS_DOMAINS = frozenset({
     "cisa.gov",

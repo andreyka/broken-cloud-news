@@ -20,9 +20,9 @@ from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
 from bcn.agents.base import enqueue_event_safe
-from bcn.config import Settings
-from bcn.db import insert_news_item
-from bcn.scraper import Scraper
+from bcn.common.config import Settings
+from bcn.common.db import insert_news_item
+from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
@@ -186,29 +186,15 @@ class CollectorExecutor(AgentExecutor):
         headers: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> str:
-        """Fetch text via HTTP and optionally fall back to Playwright request API."""
-        try:
-            resp = await self._http.get(url, headers=headers, timeout=timeout)
-            resp.raise_for_status()
-            return resp.text
-        except Exception as primary_exc:
-            if not self.settings.scrape_playwright_fetch_fallback:
-                raise
-
-            status, text = await self.scraper.fetch_text(
-                url=url,
-                headers=headers,
-                timeout_ms=timeout * 1000,
-            )
-            if status >= 200 and status < 400 and text:
-                logger.info(
-                    "Fetched via Playwright fallback: %s (status=%d, %d chars)",
-                    url,
-                    status,
-                    len(text),
-                )
-                return text
-            raise primary_exc
+        """Fetch text exclusively through Playwright APIRequestContext to avoid bot blocks."""
+        status, text = await self.scraper.fetch_text(
+            url=url,
+            headers=headers,
+            timeout_ms=timeout * 1000,
+        )
+        if status >= 200 and status < 400 and text:
+            return text
+        raise RuntimeError(f"Failed to fetch {url} (status={status})")
 
     async def _fetch_json_with_fallback(
         self,

@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from bcn.llm import LLMClient
+from bcn.common.llm import LLMClient
 from bcn.agents.verifier.prompt import BRIEFING_FACT_VERIFIER_PROMPT
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from bcn.llm import LLMClient
+from bcn.common.llm import LLMClient
 from bcn.agents.critic.prompt import BRIEFING_CRITIC_PROMPT
 
 logger = logging.getLogger(__name__)

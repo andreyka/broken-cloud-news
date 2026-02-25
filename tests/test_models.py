@@ -4,7 +4,7 @@ import pytest
 from uuid import uuid4
 from datetime import datetime, timezone
 
-from bcn.models import (
+from bcn.common.models import (
     AnalysisResult,
     Briefing,
     DistributionOutcome,

@@ -6,7 +6,7 @@ import pytest
 @pytest.fixture
 def settings():
     """Return a Settings instance with harmless defaults (no real services)."""
-    from bcn.config import Settings
+    from bcn.common.config import Settings
 
     return Settings(
         database_url="postgresql://test:test@localhost:5432/test",

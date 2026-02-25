@@ -10,7 +10,7 @@ from uuid import UUID
 
 import asyncpg
 
-from bcn.config import Settings
+from bcn.common.config import Settings
 
 logger = logging.getLogger(__name__)
 

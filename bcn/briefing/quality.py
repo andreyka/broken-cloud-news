@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from bcn.config import Settings
+from bcn.common.config import Settings
 from bcn.briefing.text import normalize_url
 
 _AI_STAMP_PATTERNS = (
