@@ -1,7 +1,7 @@
 """Shared tools for agents to use during LLM generation."""
 
 import logging
-from bcn.scraper import Scraper
+from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 

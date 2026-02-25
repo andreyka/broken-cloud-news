@@ -13,11 +13,11 @@ from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
 from bcn.agents.base import enqueue_event_safe
-from bcn.config import Settings
-from bcn.db import get_new_items, update_item_analyzed
-from bcn.llm import LLMClient
+from bcn.common.config import Settings
+from bcn.common.db import get_new_items, update_item_analyzed
+from bcn.common.llm import LLMClient
 from bcn.agents.analyst.llm import AnalystLLM
-from bcn.scraper import Scraper
+from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ from uuid import uuid4
 import click
 import httpx
 
-from bcn.config import Settings
+from bcn.common.config import Settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,7 +126,7 @@ async def _run_agent_directly(
     Returns:
         Concatenated text output from the executor.
     """
-    from bcn.db import get_pool, close_pool
+    from bcn.common.db import get_pool, close_pool
 
     await get_pool(settings)
     executor = executor_cls(settings)
@@ -192,7 +192,7 @@ def collect(source: str) -> None:
 
     async def _run():
         from bcn.agents.collector.agent import CollectorExecutor
-        from bcn.db import get_pool, close_pool
+        from bcn.common.db import get_pool, close_pool
 
         await get_pool(settings)
         executor = CollectorExecutor(settings)
@@ -228,9 +228,9 @@ def analyze() -> None:
 
     async def _run():
         from bcn.agents.analyst.agent import AnalystExecutor
-        from bcn.db import get_pool, close_pool, get_new_items, update_item_analyzed
-        from bcn.llm import LLMClient
-        from bcn.scraper import Scraper
+        from bcn.common.db import get_pool, close_pool, get_new_items, update_item_analyzed
+        from bcn.common.llm import LLMClient
+        from bcn.common.scraper import Scraper
 
         await get_pool(settings)
         llm = LLMClient.from_settings(settings)
@@ -405,7 +405,7 @@ def simulate(
     settings = Settings()
 
     async def _run():
-        from bcn.db import (
+        from bcn.common.db import (
             close_pool,
             count_simulation_runs,
             ensure_simulation_tables,
@@ -551,7 +551,7 @@ def distribute() -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.db import (
+        from bcn.common.db import (
             close_pool,
             get_latest_briefing,
             get_pool,
@@ -684,7 +684,7 @@ def review(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.db import (
+        from bcn.common.db import (
             close_pool,
             get_briefing_by_id,
             get_latest_any_briefing,
@@ -747,7 +747,7 @@ def review_queue(limit: int, only_unreviewed: bool) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.db import close_pool, get_pool, get_review_queue
+        from bcn.common.db import close_pool, get_pool, get_review_queue
 
         await get_pool(settings)
         rows = await get_review_queue(limit=max(1, int(limit)), only_unreviewed=only_unreviewed)
@@ -799,7 +799,7 @@ def record_outcome(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.db import close_pool, get_pool, upsert_distribution_outcome
+        from bcn.common.db import close_pool, get_pool, upsert_distribution_outcome
 
         try:
             parsed_id = UUID(briefing_id)
@@ -875,7 +875,7 @@ def export_training(
         from datetime import datetime
         from uuid import UUID
 
-        from bcn.db import (
+        from bcn.common.db import (
             close_pool,
             get_distribution_outcomes,
             get_generation_preference_pairs_for_runs,
@@ -1182,7 +1182,7 @@ def run() -> None:
         from bcn.agents.distributor.agent import DistributorExecutor, SKILLS as DIST_SKILLS
         from bcn.agents.critic.agent import CriticExecutor, SKILLS as CRIT_SKILLS
         from bcn.agents.verifier.agent import VerifierExecutor, SKILLS as VERI_SKILLS
-        from bcn.db import get_pool
+        from bcn.common.db import get_pool
         from apscheduler import AsyncScheduler
         from apscheduler.triggers.interval import IntervalTrigger
         from apscheduler.triggers.cron import CronTrigger

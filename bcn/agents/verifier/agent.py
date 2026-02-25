@@ -14,8 +14,8 @@ from a2a.utils import new_agent_text_message
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.briefing.verifier import BriefingFactVerifier
-from bcn.config import Settings
-from bcn.db import get_items_by_ids, get_latest_any_briefing
+from bcn.common.config import Settings
+from bcn.common.db import get_items_by_ids, get_latest_any_briefing
 
 logger = logging.getLogger(__name__)
 

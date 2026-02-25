@@ -96,15 +96,17 @@ class Scraper:
     async def fetch_text(
         self,
         url: str,
+        method: str = "GET",
         headers: dict[str, str] | None = None,
         timeout_ms: int = 45000,
     ) -> tuple[int, str]:
         """Fetch raw response text through Playwright network stack.
 
-        Useful as a fallback when direct HTTP requests are blocked or flaky.
+        Useful as a fallback or standard fetch mechanism to bypass simple blocks.
 
         Args:
             url: Target URL.
+            method: HTTP method (e.g., "GET", "HEAD", "POST").
             headers: Optional request headers.
             timeout_ms: Request timeout in milliseconds.
 
@@ -113,8 +115,9 @@ class Scraper:
         """
         context = await self._ensure_browser()
         try:
-            response = await context.request.get(
+            response = await context.request.fetch(
                 url,
+                method=method,
                 headers=headers or {},
                 timeout=timeout_ms,
             )

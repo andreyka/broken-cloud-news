@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from bcn.config import Settings
+from bcn.common.config import Settings
 
 
 class TestSettings:

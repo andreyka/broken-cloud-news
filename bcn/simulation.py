@@ -15,8 +15,8 @@ import logging
 import re
 
 from bcn.agents.writer.agent import WriterExecutor
-from bcn.config import Settings
-from bcn.db import get_distributed_briefings, get_items_by_ids
+from bcn.common.config import Settings
+from bcn.common.db import get_distributed_briefings, get_items_by_ids
 
 logger = logging.getLogger(__name__)
 

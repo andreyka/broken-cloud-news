@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from bcn.llm import LLMClient
+from bcn.common.llm import LLMClient
 from bcn.agents.tools import fetch_page_content
 from bcn.agents.writer.prompt import (
     BRIEFING_SYSTEM_PROMPT,
@@ -23,9 +23,12 @@ _SKIP_DOMAINS = frozenset({
     "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
 })
 
+from bcn.common.scraper import Scraper
+
 class WriterLLM:
     def __init__(self, client: LLMClient):
         self.client = client
+        self.scraper = Scraper()
 
     async def generate_briefing(
         self,
@@ -334,8 +337,8 @@ class WriterLLM:
             return self.client._url_status_cache[url]
 
         try:
-            resp = await self.client._client.get(url, follow_redirects=True, timeout=10)
-            alive = resp.status_code in {200, 401, 403, 405, 429}
+            status, _ = await self.scraper.fetch_text(url, method="HEAD", timeout_ms=10000)
+            alive = status in {200, 401, 403, 405, 429}
         except Exception:
             alive = False
 

@@ -14,10 +14,10 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 
-from bcn.models import AnalysisResult
+from bcn.common.models import AnalysisResult
 
 if TYPE_CHECKING:
-    from bcn.config import Settings
+    from bcn.common.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -164,14 +164,14 @@ class LLMClient:
         retries: int = 3,
     ) -> str:
         """Send a chat request using the default endpoint."""
-        return await self._chat_for_role(
+        return await self.chat_for_role(
             role=None,
             system_prompt=system_prompt,
             user_content=user_content,
             retries=retries,
         )
 
-    async def _chat_for_role(
+    async def chat_for_role(
         self,
         *,
         role: str | None,

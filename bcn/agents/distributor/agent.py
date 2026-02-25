@@ -13,8 +13,8 @@ from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 
 from bcn.agents.base import enqueue_event_safe
-from bcn.config import Settings
-from bcn.db import (
+from bcn.common.config import Settings
+from bcn.common.db import (
     get_latest_briefing,
     mark_briefing_distributed,
     mark_items_published,

@@ -6,12 +6,11 @@ import logging
 import re
 from typing import Any
 
-import httpx
-
 from bcn.briefing.text import normalize_url
-from bcn.config import Settings
-from bcn.llm import LLMClient
+from bcn.common.config import Settings
+from bcn.common.llm import LLMClient
 from bcn.agents.verifier.llm import VerifierLLM
+from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +32,11 @@ class BriefingFactVerifier:
         self.settings = settings
         base_client = llm_client or LLMClient.from_settings(settings)
         self.verifier_llm = VerifierLLM(base_client)
-        self._http = httpx.AsyncClient(timeout=12)
+        self.scraper = Scraper()
         self._url_liveness_cache: dict[str, bool] = {}
 
     async def close(self) -> None:
-        await self._http.aclose()
+        await self.scraper.close()
 
     async def evaluate(
         self,
@@ -187,12 +186,12 @@ class BriefingFactVerifier:
         alive_status = {200, 401, 403, 405, 429}
         alive = False
         try:
-            resp = await self._http.head(url, follow_redirects=True)
-            alive = resp.status_code in alive_status
-            if not alive and resp.status_code >= 500:
+            status, _ = await self.scraper.fetch_text(url, method="HEAD", timeout_ms=10000)
+            alive = status in alive_status
+            if not alive and status >= 500:
                 # Some sources reject HEAD; retry with GET.
-                resp = await self._http.get(url, follow_redirects=True)
-                alive = resp.status_code in alive_status
+                status, _ = await self.scraper.fetch_text(url, method="GET", timeout_ms=10000)
+                alive = status in alive_status
         except Exception:
             alive = False
 

@@ -19,9 +19,9 @@ from a2a.utils import new_agent_text_message
 from bcn.agents.base import enqueue_event_safe
 from bcn.briefing import BriefingFactVerifier, BriefingQualityGate, BriefingSelector
 from bcn.briefing import text as briefing_text
-from bcn.comfyui import ComfyUIClient
-from bcn.config import Settings
-from bcn.db import (
+from bcn.common.comfyui import ComfyUIClient
+from bcn.common.config import Settings
+from bcn.common.db import (
     append_generation_round,
     create_generation_run,
     finalize_generation_run,
@@ -31,7 +31,7 @@ from bcn.db import (
     get_recent_published_items,
     insert_briefing,
 )
-from bcn.llm import LLMClient
+from bcn.common.llm import LLMClient
 from bcn.agents.writer.llm import WriterLLM
 from bcn.agents.critic.llm import CriticLLM
 

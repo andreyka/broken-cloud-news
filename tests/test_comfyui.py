@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from bcn.comfyui import ComfyUIClient
+from bcn.common.comfyui import ComfyUIClient
 
 
 @pytest.fixture
