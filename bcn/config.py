@@ -268,6 +268,7 @@ class Settings(BaseSettings):
     briefing_missing_coverage_max_drops: int = 2
     briefing_verifier_enabled: bool = True
     briefing_verifier_max_links: int = 12
+    briefing_verifier_block_on_llm_hard: bool = True
     briefing_critic_min_score: int = 80
     briefing_critic_min_actionability: int = 70
     briefing_critic_min_source_diversity: int = 65
@@ -275,3 +276,4 @@ class Settings(BaseSettings):
 
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never
+    briefing_distribution_max_draft_age_minutes: int = 180

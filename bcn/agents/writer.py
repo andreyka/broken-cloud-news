@@ -34,6 +34,17 @@ from bcn.db import (
 from bcn.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+_CRITIC_BLOCKING_TERMS = (
+    "factual overreach",
+    "contradiction",
+    "not in selected item",
+    "not in selected items",
+    "ungrounded",
+    "hallucinat",
+    "invalid advisory",
+    "invalid link",
+    "misleading claim",
+)
 
 SKILLS = [
     AgentSkill(
@@ -134,6 +145,10 @@ class WriterExecutor(AgentExecutor):
             target_chars=target_chars,
             hard_max_chars=hard_max_chars,
         )
+        min_chars, target_chars, hard_max_chars = self._char_limits(
+            mode,
+            selected_count=len(selected_items),
+        )
 
         trace_run_id = await self._trace_start_run(
             mode=mode,
@@ -154,6 +169,10 @@ class WriterExecutor(AgentExecutor):
             "recommendations": [],
         }
         while True:
+            min_chars, target_chars, hard_max_chars = self._char_limits(
+                mode,
+                selected_count=len(selected_items),
+            )
             briefing_body = self._enforce_release_link_hygiene(
                 briefing_body,
                 selected_items,
@@ -464,6 +483,8 @@ class WriterExecutor(AgentExecutor):
             return False
         if not bool(critique.get("passed", False)):
             return False
+        if self._has_critical_critic_issue(critique):
+            return False
 
         score = int(critique.get("score", 0) or 0)
         dims = critique.get("dimension_scores", {}) or {}
@@ -480,6 +501,22 @@ class WriterExecutor(AgentExecutor):
             and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
         )
 
+    @staticmethod
+    def _has_critical_critic_issue(critique: dict[str, object]) -> bool:
+        issues = critique.get("issues", [])
+        recommendations = critique.get("recommendations", [])
+        payload: list[str] = []
+        if isinstance(issues, list):
+            payload.extend(str(i) for i in issues)
+        elif issues:
+            payload.append(str(issues))
+        if isinstance(recommendations, list):
+            payload.extend(str(i) for i in recommendations)
+        elif recommendations:
+            payload.append(str(recommendations))
+        joined = " | ".join(text.lower() for text in payload if text)
+        return any(term in joined for term in _CRITIC_BLOCKING_TERMS)
+
     async def _postprocess_briefing(
         self,
         briefing_body: str,
@@ -490,6 +527,10 @@ class WriterExecutor(AgentExecutor):
         hard_max_chars: int,
     ) -> str:
         """Enforce URL coverage and depth/length constraints on LLM draft."""
+        current_min_chars, current_target_chars, current_hard_max_chars = self._char_limits(
+            mode,
+            selected_count=len(selected_items),
+        )
         markdown = self._normalize_section_headings(
             self._dedupe_markdown_links((briefing_body or "").strip())
         )
@@ -497,7 +538,7 @@ class WriterExecutor(AgentExecutor):
 
         for _ in range(2):
             missing_items = self._missing_items_for_markdown(markdown, selected_items)
-            too_short = len(markdown) < min_chars
+            too_short = len(markdown) < current_min_chars
             if not missing_items and not too_short:
                 break
 
@@ -505,9 +546,9 @@ class WriterExecutor(AgentExecutor):
             markdown = await self.llm.enrich_briefing(
                 draft_markdown=markdown,
                 items=selected_items,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
+                min_chars=current_min_chars,
+                target_chars=current_target_chars,
+                hard_max_chars=current_hard_max_chars,
                 missing_urls=missing_urls or None,
                 mode=mode,
             )
@@ -529,6 +570,10 @@ class WriterExecutor(AgentExecutor):
                 item for item in selected_items
                 if str(item.get("id")) != str(weakest.get("id"))
             ]
+            current_min_chars, current_target_chars, current_hard_max_chars = self._char_limits(
+                mode,
+                selected_count=len(selected_items),
+            )
             drops += 1
             logger.warning(
                 "Dropping uncovered low-priority item after rewrite retries: %s (%s)",
@@ -544,9 +589,9 @@ class WriterExecutor(AgentExecutor):
             markdown = await self.llm.enrich_briefing(
                 draft_markdown=markdown,
                 items=selected_items,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
+                min_chars=current_min_chars,
+                target_chars=current_target_chars,
+                hard_max_chars=current_hard_max_chars,
                 missing_urls=[str(i.get("url", "")) for i in missing_items if i.get("url")] or None,
                 mode=mode,
             )
@@ -568,24 +613,24 @@ class WriterExecutor(AgentExecutor):
             )
             markdown = self._de_template_fields(markdown)
 
-        if len(markdown) > hard_max_chars:
+        if len(markdown) > current_hard_max_chars:
             markdown = await self.llm.tighten_briefing(
                 markdown=markdown,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
+                target_chars=current_target_chars,
+                hard_max_chars=current_hard_max_chars,
             )
             markdown = self._normalize_section_headings(
                 self._dedupe_markdown_links(markdown.strip())
             )
             markdown = self._de_template_fields(markdown)
 
-        if len(markdown) > hard_max_chars:
-            markdown = self._clip_markdown(markdown, hard_max_chars)
+        if len(markdown) > current_hard_max_chars:
+            markdown = self._clip_markdown(markdown, current_hard_max_chars)
 
         markdown = self._enforce_release_link_hygiene(
             markdown,
             selected_items,
-            hard_max_chars=hard_max_chars,
+            hard_max_chars=current_hard_max_chars,
         )
         return markdown.strip()
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from typing_extensions import override
 
@@ -87,6 +87,25 @@ class DistributorExecutor(AgentExecutor):
                 new_agent_text_message("No new briefing to distribute")
             )
             return
+        max_age_minutes = max(0, int(self.settings.briefing_distribution_max_draft_age_minutes))
+        if max_age_minutes > 0:
+            created_at = briefing.get("created_at")
+            if isinstance(created_at, datetime):
+                created_utc = (
+                    created_at.astimezone(timezone.utc)
+                    if created_at.tzinfo is not None
+                    else created_at.replace(tzinfo=timezone.utc)
+                )
+                age = datetime.now(timezone.utc) - created_utc
+                if age > timedelta(minutes=max_age_minutes):
+                    age_minutes = int(age.total_seconds() // 60)
+                    await enqueue_event_safe(
+                        event_queue,
+                        new_agent_text_message(
+                            f"Latest draft is stale ({age_minutes} minutes old), skipping distribution"
+                        ),
+                    )
+                    return
 
         if not self.channels:
             await enqueue_event_safe(

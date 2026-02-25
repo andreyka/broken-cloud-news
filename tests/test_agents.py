@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from unittest.mock import AsyncMock, patch, MagicMock
 from uuid import uuid4
@@ -960,10 +960,12 @@ class TestWriterExecutor:
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
 
     @pytest.mark.asyncio
-    async def test_verifier_llm_hard_issues_are_advisory_without_deterministic_failures(self):
+    async def test_verifier_llm_hard_issues_block_when_configured(self):
         from bcn.briefing.verifier import BriefingFactVerifier
 
-        settings = _make_settings()
+        settings = _make_settings(
+            briefing_verifier_block_on_llm_hard=True,
+        )
         verifier = BriefingFactVerifier(settings)
         try:
             with (
@@ -989,10 +991,84 @@ class TestWriterExecutor:
         finally:
             await verifier.close()
 
-        assert report["passed"] is True
+        assert report["passed"] is False
         assert report["blocking_hard_issues"] == []
         assert report["llm_hard_issues"] == ["Subjective top-story preference"]
         assert "Subjective top-story preference" in report["hard_issues"]
+        assert report["llm_hard_blocking"] is True
+
+    @pytest.mark.asyncio
+    async def test_verifier_blocks_unselected_advisory_mentions(self):
+        from bcn.briefing.verifier import BriefingFactVerifier
+
+        settings = _make_settings(
+            briefing_verifier_block_on_llm_hard=False,
+        )
+        verifier = BriefingFactVerifier(settings)
+        try:
+            with (
+                patch.object(verifier, "_find_dead_urls", new_callable=AsyncMock, return_value=[]),
+                patch.object(verifier, "_top_story_is_ctf_or_event", return_value=False),
+                patch.object(
+                    verifier.llm,
+                    "verify_briefing_facts",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "passed": True,
+                        "score": 90,
+                        "hard_issues": [],
+                        "soft_issues": [],
+                        "recommendations": [],
+                    },
+                ),
+            ):
+                report = await verifier.evaluate(
+                    markdown=(
+                        "**Threat Radar**\n"
+                        "- Wrong reference [GHSA-ab12-cd34-ef56]"
+                        "(https://github.com/advisories/GHSA-ab12-cd34-ef56)"
+                    ),
+                    items=[
+                        {
+                            "url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4",
+                            "title": "GHSA-w6x6-9fp7-fqm4",
+                            "summary": "Selected advisory",
+                        }
+                    ],
+                )
+        finally:
+            await verifier.close()
+
+        assert report["passed"] is False
+        assert report["llm_hard_blocking"] is False
+        assert any(
+            "not present in selected items" in issue
+            for issue in report["blocking_hard_issues"]
+        )
+        assert any(
+            "Remove references to advisories not present in selected items."
+            in rec for rec in report["recommendations"]
+        )
+
+    def test_passes_critic_thresholds_blocks_critical_issue_terms(self):
+        from bcn.agents.writer import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        critique = {
+            "passed": True,
+            "score": 96,
+            "dimension_scores": {
+                "actionability": 95,
+                "source_diversity": 94,
+                "link_hygiene": 95,
+            },
+            "issues": ["Factual overreach: claim not in selected items."],
+            "recommendations": [],
+        }
+
+        assert executor._passes_critic_thresholds(critique) is False
 
 
 # ── Distributor tests ────────────────────────────────────────────────────
@@ -1011,3 +1087,40 @@ class TestDistributorExecutor:
             await executor.execute(ctx, eq)
 
         assert any("No new briefing" in str(e) for e in eq.events)
+
+    @pytest.mark.asyncio
+    async def test_skips_stale_latest_draft(self):
+        from bcn.agents.distributor import DistributorExecutor
+
+        settings = _make_settings(
+            briefing_distribution_max_draft_age_minutes=60,
+            telegram_bot_token="123:abc",
+            telegram_chat_id="@broken-cloud",
+        )
+        executor = DistributorExecutor(settings)
+        stale_created_at = datetime.now(timezone.utc) - timedelta(hours=3)
+        stale_briefing = {
+            "id": uuid4(),
+            "created_at": stale_created_at,
+            "content_markdown": "**Old draft**",
+            "content_html": "<p>Old draft</p>",
+            "cover_image_url": "",
+            "item_ids": [],
+        }
+
+        with (
+            patch(
+                "bcn.agents.distributor.get_latest_briefing",
+                new_callable=AsyncMock,
+                return_value=stale_briefing,
+            ),
+            patch("bcn.agents.distributor.mark_briefing_distributed", new_callable=AsyncMock) as mock_mark,
+            patch("bcn.agents.distributor.mark_items_published", new_callable=AsyncMock) as mock_publish,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("distribute")
+            await executor.execute(ctx, eq)
+
+        assert any("Latest draft is stale" in str(e) for e in eq.events)
+        mock_mark.assert_not_called()
+        mock_publish.assert_not_called()

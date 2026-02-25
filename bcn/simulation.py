@@ -512,11 +512,19 @@ async def _simulate_briefing_body(
         target_chars=target_chars,
         hard_max_chars=hard_max_chars,
     )
+    min_chars, target_chars, hard_max_chars = writer._char_limits(
+        mode,
+        selected_count=len(items),
+    )
 
     rewrites = 0
     if apply_critic_rewrites and writer.settings.briefing_critique_enabled:
         max_rewrites = max(0, int(writer.settings.briefing_critique_max_rounds))
         while True:
+            min_chars, target_chars, hard_max_chars = writer._char_limits(
+                mode,
+                selected_count=len(items),
+            )
             gate = writer._quality_gate(
                 markdown=briefing_body,
                 selected_items=items,
@@ -586,6 +594,10 @@ async def _simulate_briefing_body(
 
     briefing_body = writer._normalize_section_headings(briefing_body)
     briefing_body = writer._de_template_fields(briefing_body)
+    min_chars, target_chars, hard_max_chars = writer._char_limits(
+        mode,
+        selected_count=len(items),
+    )
 
     meta = {
         "mode": mode,
