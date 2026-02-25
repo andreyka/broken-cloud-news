@@ -111,27 +111,18 @@ def append_missing_items_section(markdown: str, missing_items: list[dict]) -> st
     if not missing_items:
         return markdown
 
-    entries: list[str] = []
+    entries: list[str] = ["🔗 **References:**"]
     for item in missing_items:
         title = str(item.get("title") or "Untitled item").strip()
-        summary = str(item.get("summary") or "").strip()
-        summary = re.sub(r"\s+", " ", summary)
-        if len(summary) > 180:
-            summary = summary[:177].rstrip() + "..."
         url = str(item.get("url") or "").strip()
         if not url:
             continue
+        entries.append(f"• [{title}]({url})")
 
-        if summary:
-            entries.append(f"[{title}]({url}) — {summary}")
-        else:
-            entries.append(f"[{title}]({url})")
-
-    if not entries:
+    if len(entries) == 1:
         return markdown
 
-    # Add visual spacing between entries for Telegram readability.
-    suffix = "\n\n".join(entries)
+    suffix = "\n".join(entries)
     return markdown.rstrip() + "\n\n" + suffix
 
 
