@@ -16,6 +16,7 @@ from bcn.agents.base import enqueue_event_safe
 from bcn.config import Settings
 from bcn.db import get_new_items, update_item_analyzed
 from bcn.llm import LLMClient
+from bcn.agents.analyst.llm import AnalystLLM
 from bcn.scraper import Scraper
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ class AnalystExecutor(AgentExecutor):
     """A2A agent that scores and summarizes news items via the LLM."""
 
     def __init__(self, settings: Settings) -> None:
-        self.llm = LLMClient.from_settings(settings)
+        self.llm_client = LLMClient.from_settings(settings)
+        self.analyst_llm = AnalystLLM(self.llm_client)
         self.scraper = Scraper(
             content_limit=settings.scrape_content_limit,
             min_content_length=settings.scrape_min_content_length,
@@ -83,7 +85,7 @@ class AnalystExecutor(AgentExecutor):
                 content = title
 
             try:
-                result = await self.llm.analyze_item(title, content)
+                result = await self.analyst_llm.analyze_item(title, content, url=item["url"] or "")
                 await update_item_analyzed(
                     item_id=item["id"],
                     summary=result.summary,

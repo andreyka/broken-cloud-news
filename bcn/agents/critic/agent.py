@@ -17,6 +17,7 @@ from bcn.briefing.quality import BriefingQualityGate
 from bcn.config import Settings
 from bcn.db import get_items_by_ids, get_latest_any_briefing
 from bcn.llm import LLMClient
+from bcn.agents.critic.llm import CriticLLM
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class CriticExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm = LLMClient.from_settings(settings)
+        self.llm_client = LLMClient.from_settings(settings)
+        self.critic_llm = CriticLLM(self.llm_client)
         self.quality = BriefingQualityGate(settings)
 
     @override
@@ -86,7 +88,7 @@ class CriticExecutor(AgentExecutor):
             hard_max_chars=hard_max_chars,
         )
 
-        critique = await self.llm.critique_briefing(
+        critique = await self.critic_llm.critique_briefing(
             draft_markdown=draft_markdown,
             items=items,
             mode=mode,

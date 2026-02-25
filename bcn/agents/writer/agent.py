@@ -32,6 +32,8 @@ from bcn.db import (
     insert_briefing,
 )
 from bcn.llm import LLMClient
+from bcn.agents.writer.llm import WriterLLM
+from bcn.agents.critic.llm import CriticLLM
 
 logger = logging.getLogger(__name__)
 _CRITIC_BLOCKING_TERMS = (
@@ -62,7 +64,9 @@ class WriterExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm = LLMClient.from_settings(settings)
+        self.llm_client = LLMClient.from_settings(settings)
+        self.writer_llm = WriterLLM(self.llm_client)
+        self.critic_llm = CriticLLM(self.llm_client)
         self.comfyui = ComfyUIClient(
             base_url=settings.comfyui_url,
             timeout=settings.comfyui_timeout,
@@ -70,7 +74,7 @@ class WriterExecutor(AgentExecutor):
         )
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
-        self.verifier = BriefingFactVerifier(settings, llm=self.llm)
+        self.verifier = BriefingFactVerifier(settings, llm_client=self.llm_client)
 
     @override
     async def execute(
@@ -132,7 +136,7 @@ class WriterExecutor(AgentExecutor):
         history = await get_recent_briefings(limit=self.settings.briefing_history_items)
         history_items = [dict(r) for r in history]
 
-        briefing_body = await self.llm.generate_briefing(
+        briefing_body = await self.writer_llm.generate_briefing(
             selected_items,
             recent_briefings=history_items,
             mode=mode,
@@ -187,7 +191,7 @@ class WriterExecutor(AgentExecutor):
                 hard_max_chars=hard_max_chars,
             )
             if self.settings.briefing_critique_enabled:
-                last_critique = await self.llm.critique_briefing(
+                last_critique = await self.critic_llm.critique_briefing(
                     draft_markdown=briefing_body,
                     items=selected_items,
                     mode=mode,
@@ -307,7 +311,7 @@ class WriterExecutor(AgentExecutor):
                 last_critique.get("score"),
                 last_verification.get("score"),
             )
-            rewritten_output = await self.llm.revise_briefing(
+            rewritten_output = await self.writer_llm.revise_briefing(
                 draft_markdown=briefing_body,
                 items=selected_items,
                 feedback=feedback,
@@ -375,13 +379,13 @@ class WriterExecutor(AgentExecutor):
         logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
         topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in selected_items)
-        cover_prompt = await self.llm.generate_cover_prompt(topics)
+        cover_prompt = await self.writer_llm.generate_cover_prompt(topics)
         logger.info("Cover prompt: %s", cover_prompt[:100])
 
         cover_url = ""
-        if self.llm.supports_cover_image_generation():
+        if self.writer_llm.supports_cover_image_generation():
             try:
-                cover_url = await self.llm.generate_cover_image_data_url(cover_prompt) or ""
+                cover_url = await self.writer_llm.generate_cover_image_data_url(cover_prompt) or ""
                 if cover_url:
                     logger.info("Cover image generated via Gemini image model")
             except Exception:
@@ -543,7 +547,7 @@ class WriterExecutor(AgentExecutor):
                 break
 
             missing_urls = [str(i.get("url", "")) for i in missing_items if i.get("url")]
-            markdown = await self.llm.enrich_briefing(
+            markdown = await self.writer_llm.enrich_briefing(
                 draft_markdown=markdown,
                 items=selected_items,
                 min_chars=current_min_chars,
@@ -586,7 +590,7 @@ class WriterExecutor(AgentExecutor):
             if not missing_items:
                 break
 
-            markdown = await self.llm.enrich_briefing(
+            markdown = await self.writer_llm.enrich_briefing(
                 draft_markdown=markdown,
                 items=selected_items,
                 min_chars=current_min_chars,
@@ -614,7 +618,7 @@ class WriterExecutor(AgentExecutor):
             markdown = self._de_template_fields(markdown)
 
         if len(markdown) > current_hard_max_chars:
-            markdown = await self.llm.tighten_briefing(
+            markdown = await self.writer_llm.tighten_briefing(
                 markdown=markdown,
                 target_chars=current_target_chars,
                 hard_max_chars=current_hard_max_chars,
@@ -729,9 +733,9 @@ class WriterExecutor(AgentExecutor):
                 mode=mode,
                 selected_item_ids=ids,
                 selected_items=selected_items,
-                llm_model=self.llm.model_for_role("writer"),
+                llm_model=self.llm_client.model_for_role("writer"),
                 llm_model_version=self._model_version(role="writer"),
-                prompts=self.llm.prompt_versions(),
+                prompts=self.writer_llm.prompt_versions(),
                 config_snapshot=self._component_config_snapshot(),
                 git_sha=self._git_sha(),
                 initial_draft=initial_draft,
@@ -989,8 +993,8 @@ class WriterExecutor(AgentExecutor):
                 break
         return out
 
-    def _model_version(self, role: str = "writer") -> str:
-        model = (self.llm.model_for_role(role) or "").strip()
+    def _model_version(self, role: str) -> str:
+        model = (self.llm_client.model_for_role(role) or "").strip()
         if ":" in model:
             return model.rsplit(":", 1)[-1].strip() or "unknown"
         if "@" in model:

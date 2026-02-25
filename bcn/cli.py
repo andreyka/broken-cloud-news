@@ -191,7 +191,7 @@ def collect(source: str) -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.agents.collector import CollectorExecutor
+        from bcn.agents.collector.agent import CollectorExecutor
         from bcn.db import get_pool, close_pool
 
         await get_pool(settings)
@@ -227,7 +227,7 @@ def analyze() -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.agents.analyst import AnalystExecutor
+        from bcn.agents.analyst.agent import AnalystExecutor
         from bcn.db import get_pool, close_pool, get_new_items, update_item_analyzed
         from bcn.llm import LLMClient
         from bcn.scraper import Scraper
@@ -281,7 +281,7 @@ def write() -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.agents.writer import WriterExecutor
+        from bcn.agents.writer.agent import WriterExecutor
 
         result = await _run_agent_directly(
             executor_cls=WriterExecutor,
@@ -302,7 +302,7 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
     settings = Settings()
 
     async def _run():
-        from bcn.agents.critic import CriticExecutor
+        from bcn.agents.critic.agent import CriticExecutor
 
         skill: str
         if text_input:
@@ -333,7 +333,7 @@ def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.agents.verifier import VerifierExecutor
+        from bcn.agents.verifier.agent import VerifierExecutor
 
         skill: str
         if text_input:
@@ -1176,12 +1176,12 @@ def run() -> None:
 
     async def _daemon():
         from bcn.agents.base import build_agent_card, serve_agent
-        from bcn.agents.collector import CollectorExecutor, SKILLS as COLL_SKILLS
-        from bcn.agents.analyst import AnalystExecutor, SKILLS as ANAL_SKILLS
-        from bcn.agents.writer import WriterExecutor, SKILLS as WRIT_SKILLS
-        from bcn.agents.distributor import DistributorExecutor, SKILLS as DIST_SKILLS
-        from bcn.agents.critic import CriticExecutor, SKILLS as CRIT_SKILLS
-        from bcn.agents.verifier import VerifierExecutor, SKILLS as VERI_SKILLS
+        from bcn.agents.collector.agent import CollectorExecutor, SKILLS as COLL_SKILLS
+        from bcn.agents.analyst.agent import AnalystExecutor, SKILLS as ANAL_SKILLS
+        from bcn.agents.writer.agent import WriterExecutor, SKILLS as WRIT_SKILLS
+        from bcn.agents.distributor.agent import DistributorExecutor, SKILLS as DIST_SKILLS
+        from bcn.agents.critic.agent import CriticExecutor, SKILLS as CRIT_SKILLS
+        from bcn.agents.verifier.agent import VerifierExecutor, SKILLS as VERI_SKILLS
         from bcn.db import get_pool
         from apscheduler import AsyncScheduler
         from apscheduler.triggers.interval import IntervalTrigger

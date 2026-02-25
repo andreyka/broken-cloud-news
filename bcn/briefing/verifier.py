@@ -11,6 +11,7 @@ import httpx
 from bcn.briefing.text import normalize_url
 from bcn.config import Settings
 from bcn.llm import LLMClient
+from bcn.agents.verifier.llm import VerifierLLM
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +29,10 @@ _GITHUB_ADVISORY_URL_PATTERN = re.compile(
 class BriefingFactVerifier:
     """Runs factual checks (deterministic + LLM) before publishing."""
 
-    def __init__(self, settings: Settings, llm: LLMClient | None = None) -> None:
+    def __init__(self, settings: Settings, llm_client: LLMClient | None = None) -> None:
         self.settings = settings
-        self.llm = llm or LLMClient.from_settings(settings)
+        base_client = llm_client or LLMClient.from_settings(settings)
+        self.verifier_llm = VerifierLLM(base_client)
         self._http = httpx.AsyncClient(timeout=12)
         self._url_liveness_cache: dict[str, bool] = {}
 
@@ -74,7 +76,7 @@ class BriefingFactVerifier:
                 "Remove references to advisories not present in selected items."
             )
 
-        llm_report = await self.llm.verify_briefing_facts(
+        llm_report = await self.verifier_llm.verify_briefing_facts(
             draft_markdown=body,
             items=items,
             mode=mode,

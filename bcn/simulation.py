@@ -14,7 +14,7 @@ from statistics import mean, pstdev
 import logging
 import re
 
-from bcn.agents.writer import WriterExecutor
+from bcn.agents.writer.agent import WriterExecutor
 from bcn.config import Settings
 from bcn.db import get_distributed_briefings, get_items_by_ids
 
