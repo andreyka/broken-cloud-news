@@ -18,6 +18,11 @@ _CTF_EVENT_PATTERN = re.compile(
     r"\b(ctf|capture[-\s]the[-\s]flag|challenge|webinar|conference|meetup|call for papers)\b",
     re.IGNORECASE,
 )
+_GHSA_ID_PATTERN = re.compile(r"\bGHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}\b", re.IGNORECASE)
+_GITHUB_ADVISORY_URL_PATTERN = re.compile(
+    r"https?://github\.com/advisories/(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})",
+    re.IGNORECASE,
+)
 
 
 class BriefingFactVerifier:
@@ -59,6 +64,15 @@ class BriefingFactVerifier:
             recommendations.append(
                 "Promote a production-impact cloud-security story above event/CTF items."
             )
+        unselected_mentions = self._find_unselected_advisory_mentions(body, items)
+        if unselected_mentions:
+            deterministic_hard_issues.append(
+                "Briefing mentions advisory identifiers not present in selected items: "
+                + ", ".join(unselected_mentions[:4])
+            )
+            recommendations.append(
+                "Remove references to advisories not present in selected items."
+            )
 
         llm_report = await self.llm.verify_briefing_facts(
             draft_markdown=body,
@@ -84,8 +98,8 @@ class BriefingFactVerifier:
         llm_score = int(llm_report.get("score", 0) or 0)
         hard_penalty = min(35, len(hard_issues) * 12)
         score = max(0, llm_score - hard_penalty)
-        # Block only on deterministic hard failures; LLM hard findings are advisory.
-        passed = not deterministic_hard_issues
+        llm_hard_blocking = bool(self.settings.briefing_verifier_block_on_llm_hard) and bool(llm_hard_issues)
+        passed = not deterministic_hard_issues and not llm_hard_blocking
 
         return {
             "passed": passed,
@@ -93,6 +107,7 @@ class BriefingFactVerifier:
             "hard_issues": hard_issues,
             "blocking_hard_issues": deterministic_hard_issues,
             "llm_hard_issues": llm_hard_issues,
+            "llm_hard_blocking": llm_hard_blocking,
             "llm_passed": llm_passed,
             "soft_issues": soft_issues,
             "issues": (hard_issues + soft_issues)[:24],
@@ -100,6 +115,54 @@ class BriefingFactVerifier:
             "dead_urls": dead_urls[:12],
             "top_story_ok": not top_story_is_ctf_or_event,
         }
+
+    def _find_unselected_advisory_mentions(
+        self,
+        markdown: str,
+        items: list[dict[str, Any]],
+    ) -> list[str]:
+        selected_urls = {
+            normalize_url(str(item.get("url", "")))
+            for item in items
+            if str(item.get("url", "")).strip()
+        }
+        selected_ghsas = self._collect_selected_ghsa_ids(items)
+        mentions: list[str] = []
+        seen: set[str] = set()
+
+        for match in _GHSA_ID_PATTERN.finditer(markdown or ""):
+            ghsa = match.group(0).upper()
+            key = f"id:{ghsa.lower()}"
+            if ghsa.lower() in selected_ghsas or key in seen:
+                continue
+            seen.add(key)
+            mentions.append(ghsa)
+
+        for match in _GITHUB_ADVISORY_URL_PATTERN.finditer(markdown or ""):
+            url = normalize_url(match.group(0))
+            ghsa = str(match.group(1) or "").upper()
+            key = f"url:{url.lower()}"
+            if url in selected_urls or ghsa.lower() in selected_ghsas or key in seen:
+                continue
+            seen.add(key)
+            mentions.append(url)
+
+        return mentions[:8]
+
+    @staticmethod
+    def _collect_selected_ghsa_ids(items: list[dict[str, Any]]) -> set[str]:
+        selected: set[str] = set()
+        for item in items:
+            text = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("summary") or ""),
+                    str(item.get("url") or ""),
+                ]
+            )
+            for match in _GHSA_ID_PATTERN.finditer(text):
+                selected.add(match.group(0).lower())
+        return selected
 
     async def _find_dead_urls(self, urls: list[str]) -> list[str]:
         max_links = max(1, int(self.settings.briefing_verifier_max_links))
