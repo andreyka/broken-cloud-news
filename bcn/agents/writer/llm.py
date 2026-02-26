@@ -179,7 +179,7 @@ class WriterLLM:
         """Generate a Flux image prompt from today's security topics."""
         user_msg = f"Topics:\n{topics}"
         raw = await self.client.chat_for_role(
-            role="cover",
+            role="writer",
             system_prompt=COVER_ART_SYSTEM_PROMPT,
             user_content=user_msg,
         )
