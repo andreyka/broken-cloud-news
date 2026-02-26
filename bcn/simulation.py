@@ -26,6 +26,10 @@ _AI_STAMP_PATTERNS = (
     re.compile(r"\bever[-\s]evolving\b", re.IGNORECASE),
 )
 
+_RUBRIC_DIMENSIONS = (
+    "depth",
+    "link_hygiene",
+    "source_diversity",
     "cloud_focus",
     "actionability",
     "writing_quality",
