@@ -499,7 +499,7 @@ async def _simulate_briefing_body(
         selected_count=len(items),
     )
 
-    briefing_body = await writer.llm.generate_briefing(
+    briefing_body = await writer.writer_llm.generate_briefing(
         items,
         recent_briefings=recent_briefings,
         mode=mode,
@@ -532,7 +532,7 @@ async def _simulate_briefing_body(
                 min_chars=min_chars,
                 hard_max_chars=hard_max_chars,
             )
-            critique = await writer.llm.critique_briefing(
+            critique = await writer.critic_llm.critique_briefing(
                 draft_markdown=briefing_body,
                 items=items,
                 mode=mode,
@@ -573,7 +573,7 @@ async def _simulate_briefing_body(
             )
 
             rewrites += 1
-            briefing_body = await writer.llm.revise_briefing(
+            briefing_body = await writer.writer_llm.revise_briefing(
                 draft_markdown=briefing_body,
                 items=items,
                 feedback=feedback,
