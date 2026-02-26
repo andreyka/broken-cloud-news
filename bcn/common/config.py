@@ -139,9 +139,12 @@ class Settings(BaseSettings):
     # X API (Twitter)
     twitter_bearer_token: str = ""
     twitter_handles: list[str] = [
-        "GoogleVRP", "HackingLZ", "anton_chuvakin", "AISecHub",
+        "GoogleVRP", "anton_chuvakin", "AISecHub",
         "_JohnHammond", "lauriewired", "chompie1337", "Steph3nSims",
-        "d0znpp", "KimZetter", "argvee", "avkovaleff", "tom_doerr",
+        "KimZetter", "argvee", "avkovaleff", "tom_doerr",
+        "gadievron", "Dinosn", "steipete", "philvenables",
+        "Fox0x01", "Laughing_Mantis", "virusbtn", "thegrugq",
+        "lukOlejnik",
     ]
     twitter_max_items: int = 20
     twitter_required_keywords: list[str] = [
