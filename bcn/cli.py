@@ -228,49 +228,13 @@ def analyze() -> None:
 
     async def _run():
         from bcn.agents.analyst.agent import AnalystExecutor
-        from bcn.common.db import get_pool, close_pool, get_new_items, update_item_analyzed
-        from bcn.common.llm import LLMClient
-        from bcn.common.scraper import Scraper
 
-        await get_pool(settings)
-        llm = LLMClient.from_settings(settings)
-        scraper = Scraper(settings.scrape_content_limit, settings.scrape_min_content_length)
-
-        items = await get_new_items()
-        if not items:
-            click.echo("No new items to analyze")
-            return
-
-        analyzed = 0
-        for item in items:
-            title = item["title"] or ""
-            content = item["full_content"] or ""
-
-            if not content and item["source_type"] == "rss" and item["url"]:
-                content = await scraper.scrape(item["url"])
-
-            if not content:
-                content = title
-
-            try:
-                result = await llm.analyze_item(title, content)
-                await update_item_analyzed(
-                    item_id=item["id"],
-                    summary=result.summary,
-                    relevance_score=result.relevance_score,
-                    ai_tags=result.tags,
-                    full_content=content if content != title else item["full_content"],
-                    image_prompt=result.image_prompt,
-                )
-                analyzed += 1
-                click.echo(f"  [{result.relevance_score}/10] {item['source_type']}: {title[:60]}")
-            except Exception as exc:
-                click.echo(f"  [ERROR] {item['id']}: {type(exc).__name__}: {exc or repr(exc)}", err=True)
-
-        click.echo(f"\nAnalyzed {analyzed}/{len(items)} items")
-        await llm.close()
-        await scraper.close()
-        await close_pool()
+        result = await _run_agent_directly(
+            executor_cls=AnalystExecutor,
+            settings=settings,
+            skill="analyze_new_items",
+        )
+        click.echo(result)
 
     asyncio.run(_run())
 
