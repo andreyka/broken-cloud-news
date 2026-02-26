@@ -26,26 +26,24 @@ _AI_STAMP_PATTERNS = (
     re.compile(r"\bever[-\s]evolving\b", re.IGNORECASE),
 )
 
+    "cloud_focus",
+    "actionability",
+    "writing_quality",
+)
+
 _CLOUD_TECH_TERMS = {
     "kubernetes", "k8s", "qemu", "kvm", "envoy", "postgres",
     "clickhouse", "redis", "cloudflare", "terraform", "load balancer",
     "managed database", "iam", "serverless", "quic", "container",
+    "llm", "mlops", "gpu", "inference", "rag", "machine learning", "ai",
 }
 
 _ACTIONABLE_TERMS = {
     "cve-", "patch", "mitigation", "detect", "detection", "ioc",
     "playbook", "upgrade", "rotate", "enforce", "validate",
-    "incident", "exploit", "harden",
+    "incident", "exploit", "harden", "supply chain", "zero-day",
+    "protocol", "ddos"
 }
-
-_RUBRIC_DIMENSIONS = (
-    "depth",
-    "link_hygiene",
-    "source_diversity",
-    "cloud_focus",
-    "actionability",
-    "writing_quality",
-)
 
 
 def _strip_cover_image(markdown: str) -> str:
@@ -636,6 +634,7 @@ async def simulate_historical_briefings(
     # Replay oldest -> newest for realistic style memory context.
     ordered = sorted(briefings, key=lambda b: b["created_at"])
     writer = WriterExecutor(settings)
+    critic = writer.critic_llm # reuse the critic from the writer
     results: list[dict[str, object]] = []
     recurring_notes: Counter[str] = Counter()
 
@@ -699,6 +698,12 @@ async def simulate_historical_briefings(
             hard_max_chars=hard_max_chars,
         )
 
+        actual_critic_eval = await critic.critique_briefing(actual_body, items, mode=mode)
+        simulated_critic_eval = await critic.critique_briefing(simulated_body, items, mode=mode)
+        
+        actual_style_score = actual_critic_eval.get("dimension_scores", {}).get("style", 0)
+        simulated_style_score = simulated_critic_eval.get("dimension_scores", {}).get("style", 0)
+
         for note in actual_eval["notes"]:
             recurring_notes[str(note)] += 1
 
@@ -711,6 +716,8 @@ async def simulate_historical_briefings(
             "simulated_rewrites": int(meta["rewrites"]),
             "actual_score": int(actual_eval["score"]),
             "simulated_score": int(simulated_eval["score"]),
+            "actual_llm_tone_score": int(actual_style_score),
+            "simulated_llm_tone_score": int(simulated_style_score),
             "delta": delta,
             "actual_breakdown": actual_eval["breakdown"],
             "simulated_breakdown": simulated_eval["breakdown"],
@@ -734,9 +741,15 @@ async def simulate_historical_briefings(
     simulated_scores = [int(r["simulated_score"]) for r in results]
     deltas = [int(r["delta"]) for r in results]
 
+    actual_llm_tone_scores = [int(r["actual_llm_tone_score"]) for r in results]
+    simulated_llm_tone_scores = [int(r["simulated_llm_tone_score"]) for r in results]
+
     summary = {
         "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
         "avg_simulated_score": round(mean(simulated_scores), 2) if simulated_scores else 0.0,
+        "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2) if actual_llm_tone_scores else 0.0,
+        "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2) if simulated_llm_tone_scores else 0.0,
+        "avg_llm_tone_score_change": round(mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores), 2) if simulated_llm_tone_scores and actual_llm_tone_scores else 0.0,
         "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
         "improved": sum(1 for d in deltas if d > 0),
         "regressed": sum(1 for d in deltas if d < 0),
