@@ -8,21 +8,26 @@ against a feedback-aligned rubric.
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
-from math import comb
-from statistics import mean, pstdev
+from datetime import datetime
+from datetime import timezone
 import logging
+from math import comb
 import re
+from statistics import mean
+from statistics import pstdev
 
 from bcn.agents.writer.agent import WriterExecutor
 from bcn.common.config import Settings
-from bcn.common.db import get_distributed_briefings, get_items_by_ids
+from bcn.common.db import get_distributed_briefings
+from bcn.common.db import get_items_by_ids
 
 logger = logging.getLogger(__name__)
 
 _AI_STAMP_PATTERNS = (
-    re.compile(r"clouds?\s+are\s+getting.+tools?\s+are\s+just\s+getting", re.IGNORECASE),
-    re.compile(r"\b(in\s+today'?s\s+(?:fast|rapidly)\s+evolving)\b", re.IGNORECASE),
+    re.compile(r"clouds?\s+are\s+getting.+tools?\s+are\s+just\s+getting",
+               re.IGNORECASE),
+    re.compile(r"\b(in\s+today'?s\s+(?:fast|rapidly)\s+evolving)\b",
+               re.IGNORECASE),
     re.compile(r"\bever[-\s]evolving\b", re.IGNORECASE),
 )
 
@@ -36,17 +41,35 @@ _RUBRIC_DIMENSIONS = (
 )
 
 _CLOUD_TECH_TERMS = {
-    "kubernetes", "k8s", "qemu", "kvm", "envoy", "postgres",
-    "clickhouse", "redis", "cloudflare", "terraform", "load balancer",
-    "managed database", "iam", "serverless", "quic", "container",
-    "llm", "mlops", "gpu", "inference", "rag", "machine learning", "ai",
+    "kubernetes",
+    "k8s",
+    "qemu",
+    "kvm",
+    "envoy",
+    "postgres",
+    "clickhouse",
+    "redis",
+    "cloudflare",
+    "terraform",
+    "load balancer",
+    "managed database",
+    "iam",
+    "serverless",
+    "quic",
+    "container",
+    "llm",
+    "mlops",
+    "gpu",
+    "inference",
+    "rag",
+    "machine learning",
+    "ai",
 }
 
 _ACTIONABLE_TERMS = {
-    "cve-", "patch", "mitigation", "detect", "detection", "ioc",
-    "playbook", "upgrade", "rotate", "enforce", "validate",
-    "incident", "exploit", "harden", "supply chain", "zero-day",
-    "protocol", "ddos"
+    "cve-", "patch", "mitigation", "detect", "detection", "ioc", "playbook",
+    "upgrade", "rotate", "enforce", "validate", "incident", "exploit", "harden",
+    "supply chain", "zero-day", "protocol", "ddos"
 }
 
 
@@ -100,7 +123,7 @@ def _sign_test_two_sided_p(wins: int, losses: int) -> float:
         return 1.0
     k = min(max(0, wins), max(0, losses))
     tail = sum(comb(n, i) for i in range(k + 1))
-    p_value = min(1.0, 2.0 * (tail / (2 ** n)))
+    p_value = min(1.0, 2.0 * (tail / (2**n)))
     return round(p_value, 6)
 
 
@@ -110,10 +133,12 @@ def _contains_any(lines: list[str], needles: tuple[str, ...]) -> bool:
 
 
 def _has_duplicate_link_issue(hard_issues: list[str]) -> bool:
-    return _contains_any(hard_issues, ("appears multiple times", "duplicate selected url"))
+    return _contains_any(hard_issues,
+                         ("appears multiple times", "duplicate selected url"))
 
 
-def _is_human_writer_like(breakdown: dict[str, object], notes: list[str]) -> bool:
+def _is_human_writer_like(breakdown: dict[str, object],
+                          notes: list[str]) -> bool:
     writing_quality = int(breakdown.get("writing_quality", 0) or 0)
     actionability = int(breakdown.get("actionability", 0) or 0)
     depth = int(breakdown.get("depth", 0) or 0)
@@ -123,15 +148,12 @@ def _is_human_writer_like(breakdown: dict[str, object], notes: list[str]) -> boo
         "standalone source fields",
         "repetitive style",
     )
-    return (
-        writing_quality >= 8
-        and actionability >= 10
-        and depth >= 10
-        and not _contains_any(notes, style_flags)
-    )
+    return (writing_quality >= 8 and actionability >= 10 and depth >= 10 and
+            not _contains_any(notes, style_flags))
 
 
-def _is_formatting_clean(hard_issues: list[str], breakdown: dict[str, object]) -> bool:
+def _is_formatting_clean(hard_issues: list[str],
+                         breakdown: dict[str, object]) -> bool:
     formatting_flags = (
         "missing selected url",
         "appears multiple times",
@@ -141,14 +163,16 @@ def _is_formatting_clean(hard_issues: list[str], breakdown: dict[str, object]) -
         "digest too short",
     )
     link_hygiene = int(breakdown.get("link_hygiene", 0) or 0)
-    return (not _contains_any(hard_issues, formatting_flags)) and link_hygiene >= 20
+    return (not _contains_any(hard_issues,
+                              formatting_flags)) and link_hygiene >= 20
 
 
 def _has_duplicate_story_signal(notes: list[str]) -> bool:
     return _contains_any(notes, ("repetitive style", "single source dominates"))
 
 
-def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, object]:
+def _build_decision_summary(
+        results: list[dict[str, object]]) -> dict[str, object]:
     total = len(results)
     if total == 0:
         return {
@@ -190,7 +214,9 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
                 "duplicate_story_signal_rate_simulated": 0.0,
                 "duplicate_story_signal_rate_change": 0.0,
             },
-            "dimension_avg_delta": {dim: 0.0 for dim in _RUBRIC_DIMENSIONS},
+            "dimension_avg_delta": {
+                dim: 0.0 for dim in _RUBRIC_DIMENSIONS
+            },
             "decision": {
                 "recommendation": "hold",
                 "confidence": "low",
@@ -211,7 +237,9 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
     simulated_missing_url_hard_total = 0
     actual_duplicate_url_hard_total = 0
     simulated_duplicate_url_hard_total = 0
-    dimension_deltas: dict[str, list[int]] = {dim: [] for dim in _RUBRIC_DIMENSIONS}
+    dimension_deltas: dict[str, list[int]] = {
+        dim: [] for dim in _RUBRIC_DIMENSIONS
+    }
     actual_human_writer_passes = 0
     simulated_human_writer_passes = 0
     actual_formatting_clean_passes = 0
@@ -220,20 +248,24 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
     simulated_duplicate_story_signals = 0
 
     for row in results:
-        actual_hard = [str(i) for i in (row.get("actual_gate_hard_issues") or [])]
-        simulated_hard = [str(i) for i in (row.get("simulated_gate_hard_issues") or [])]
+        actual_hard = [
+            str(i) for i in (row.get("actual_gate_hard_issues") or [])
+        ]
+        simulated_hard = [
+            str(i) for i in (row.get("simulated_gate_hard_issues") or [])
+        ]
         actual_hard_counts.append(len(actual_hard))
         simulated_hard_counts.append(len(simulated_hard))
         actual_missing_url_hard_total += sum(
-            1 for issue in actual_hard if "missing selected url" in issue.lower()
-        )
+            1 for issue in actual_hard
+            if "missing selected url" in issue.lower())
         simulated_missing_url_hard_total += sum(
-            1 for issue in simulated_hard if "missing selected url" in issue.lower()
-        )
-        actual_duplicate_url_hard_total += sum(1 for issue in actual_hard if _has_duplicate_link_issue([issue]))
+            1 for issue in simulated_hard
+            if "missing selected url" in issue.lower())
+        actual_duplicate_url_hard_total += sum(
+            1 for issue in actual_hard if _has_duplicate_link_issue([issue]))
         simulated_duplicate_url_hard_total += sum(
-            1 for issue in simulated_hard if _has_duplicate_link_issue([issue])
-        )
+            1 for issue in simulated_hard if _has_duplicate_link_issue([issue]))
 
         actual_breakdown = row.get("actual_breakdown") or {}
         simulated_breakdown = row.get("simulated_breakdown") or {}
@@ -262,21 +294,30 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
             simulated_val = int(simulated_breakdown.get(dim, 0) or 0)
             dimension_deltas[dim].append(simulated_val - actual_val)
 
-    actual_hard_pass_rate = _rate(sum(1 for c in actual_hard_counts if c == 0), total)
-    simulated_hard_pass_rate = _rate(sum(1 for c in simulated_hard_counts if c == 0), total)
+    actual_hard_pass_rate = _rate(sum(1 for c in actual_hard_counts if c == 0),
+                                  total)
+    simulated_hard_pass_rate = _rate(
+        sum(1 for c in simulated_hard_counts if c == 0), total)
     hard_pass_rate_change = simulated_hard_pass_rate - actual_hard_pass_rate
 
     sign_test_p = _sign_test_two_sided_p(wins=wins, losses=losses)
     win_rate_no_ties = _rate(wins, wins + losses)
     non_regression_rate = _rate(wins + ties, total)
     human_writer_pass_rate_actual = _rate(actual_human_writer_passes, total)
-    human_writer_pass_rate_simulated = _rate(simulated_human_writer_passes, total)
-    formatting_clean_pass_rate_actual = _rate(actual_formatting_clean_passes, total)
-    formatting_clean_pass_rate_simulated = _rate(simulated_formatting_clean_passes, total)
-    duplicate_link_issue_rate_actual = _rate(actual_duplicate_url_hard_total, total)
-    duplicate_link_issue_rate_simulated = _rate(simulated_duplicate_url_hard_total, total)
-    duplicate_story_signal_rate_actual = _rate(actual_duplicate_story_signals, total)
-    duplicate_story_signal_rate_simulated = _rate(simulated_duplicate_story_signals, total)
+    human_writer_pass_rate_simulated = _rate(simulated_human_writer_passes,
+                                             total)
+    formatting_clean_pass_rate_actual = _rate(actual_formatting_clean_passes,
+                                              total)
+    formatting_clean_pass_rate_simulated = _rate(
+        simulated_formatting_clean_passes, total)
+    duplicate_link_issue_rate_actual = _rate(actual_duplicate_url_hard_total,
+                                             total)
+    duplicate_link_issue_rate_simulated = _rate(
+        simulated_duplicate_url_hard_total, total)
+    duplicate_story_signal_rate_actual = _rate(actual_duplicate_story_signals,
+                                               total)
+    duplicate_story_signal_rate_simulated = _rate(
+        simulated_duplicate_story_signals, total)
 
     dimension_avg_delta = {
         dim: round(mean(values), 2) if values else 0.0
@@ -284,39 +325,27 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
     }
 
     human_writer_pass_rate_change = human_writer_pass_rate_simulated - human_writer_pass_rate_actual
-    formatting_clean_pass_rate_change = (
-        formatting_clean_pass_rate_simulated - formatting_clean_pass_rate_actual
-    )
-    duplicate_link_issue_rate_change = (
-        duplicate_link_issue_rate_simulated - duplicate_link_issue_rate_actual
-    )
+    formatting_clean_pass_rate_change = (formatting_clean_pass_rate_simulated -
+                                         formatting_clean_pass_rate_actual)
+    duplicate_link_issue_rate_change = (duplicate_link_issue_rate_simulated -
+                                        duplicate_link_issue_rate_actual)
     duplicate_story_signal_rate_change = (
-        duplicate_story_signal_rate_simulated - duplicate_story_signal_rate_actual
-    )
+        duplicate_story_signal_rate_simulated -
+        duplicate_story_signal_rate_actual)
 
     # Decision policy tuned for model-swap go/no-go calls.
     recommendation = "hold"
-    if (
-        avg_delta >= 1.5
-        and wins >= losses + 2
-        and hard_pass_rate_change >= 0.0
-        and human_writer_pass_rate_change >= 0.0
-        and formatting_clean_pass_rate_change >= 0.0
-        and duplicate_link_issue_rate_change <= 0.0
-        and sign_test_p <= 0.2
-    ):
+    if (avg_delta >= 1.5 and wins >= losses + 2 and
+            hard_pass_rate_change >= 0.0 and
+            human_writer_pass_rate_change >= 0.0 and
+            formatting_clean_pass_rate_change >= 0.0 and
+            duplicate_link_issue_rate_change <= 0.0 and sign_test_p <= 0.2):
         recommendation = "promote"
     elif (
-        avg_delta <= -1.5
-        and losses >= wins + 2
-        and (
-            hard_pass_rate_change <= 0.0
-            or human_writer_pass_rate_change < 0.0
-            or formatting_clean_pass_rate_change < 0.0
-            or duplicate_link_issue_rate_change > 0.0
-        )
-        and sign_test_p <= 0.2
-    ):
+            avg_delta <= -1.5 and losses >= wins + 2 and
+        (hard_pass_rate_change <= 0.0 or human_writer_pass_rate_change < 0.0 or
+         formatting_clean_pass_rate_change < 0.0 or
+         duplicate_link_issue_rate_change > 0.0) and sign_test_p <= 0.2):
         recommendation = "rollback"
 
     confidence = "low"
@@ -330,8 +359,7 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
         f"human_writer_change={human_writer_pass_rate_change:+.3f}, "
         f"formatting_clean_change={formatting_clean_pass_rate_change:+.3f}, "
         f"duplicate_link_issue_change={duplicate_link_issue_rate_change:+.3f}, "
-        f"sign_test_p={sign_test_p:.4f}"
-    )
+        f"sign_test_p={sign_test_p:.4f}")
 
     return {
         "delta_distribution": {
@@ -349,28 +377,49 @@ def _build_decision_summary(results: list[dict[str, object]]) -> dict[str, objec
             "sign_test_p_value": sign_test_p,
         },
         "gate_quality": {
-            "actual_hard_pass_rate": round(actual_hard_pass_rate, 3),
-            "simulated_hard_pass_rate": round(simulated_hard_pass_rate, 3),
-            "hard_pass_rate_change": round(hard_pass_rate_change, 3),
-            "actual_avg_hard_issues": round(mean(actual_hard_counts), 2),
-            "simulated_avg_hard_issues": round(mean(simulated_hard_counts), 2),
-            "avg_hard_issue_change": round(mean(simulated_hard_counts) - mean(actual_hard_counts), 2),
-            "actual_missing_url_hard_total": actual_missing_url_hard_total,
-            "simulated_missing_url_hard_total": simulated_missing_url_hard_total,
+            "actual_hard_pass_rate":
+                round(actual_hard_pass_rate, 3),
+            "simulated_hard_pass_rate":
+                round(simulated_hard_pass_rate, 3),
+            "hard_pass_rate_change":
+                round(hard_pass_rate_change, 3),
+            "actual_avg_hard_issues":
+                round(mean(actual_hard_counts), 2),
+            "simulated_avg_hard_issues":
+                round(mean(simulated_hard_counts), 2),
+            "avg_hard_issue_change":
+                round(
+                    mean(simulated_hard_counts) - mean(actual_hard_counts), 2),
+            "actual_missing_url_hard_total":
+                actual_missing_url_hard_total,
+            "simulated_missing_url_hard_total":
+                simulated_missing_url_hard_total,
         },
         "focus_metrics": {
-            "human_writer_pass_rate_actual": round(human_writer_pass_rate_actual, 3),
-            "human_writer_pass_rate_simulated": round(human_writer_pass_rate_simulated, 3),
-            "human_writer_pass_rate_change": round(human_writer_pass_rate_change, 3),
-            "formatting_clean_pass_rate_actual": round(formatting_clean_pass_rate_actual, 3),
-            "formatting_clean_pass_rate_simulated": round(formatting_clean_pass_rate_simulated, 3),
-            "formatting_clean_pass_rate_change": round(formatting_clean_pass_rate_change, 3),
-            "duplicate_link_issue_rate_actual": round(duplicate_link_issue_rate_actual, 3),
-            "duplicate_link_issue_rate_simulated": round(duplicate_link_issue_rate_simulated, 3),
-            "duplicate_link_issue_rate_change": round(duplicate_link_issue_rate_change, 3),
-            "duplicate_story_signal_rate_actual": round(duplicate_story_signal_rate_actual, 3),
-            "duplicate_story_signal_rate_simulated": round(duplicate_story_signal_rate_simulated, 3),
-            "duplicate_story_signal_rate_change": round(duplicate_story_signal_rate_change, 3),
+            "human_writer_pass_rate_actual":
+                round(human_writer_pass_rate_actual, 3),
+            "human_writer_pass_rate_simulated":
+                round(human_writer_pass_rate_simulated, 3),
+            "human_writer_pass_rate_change":
+                round(human_writer_pass_rate_change, 3),
+            "formatting_clean_pass_rate_actual":
+                round(formatting_clean_pass_rate_actual, 3),
+            "formatting_clean_pass_rate_simulated":
+                round(formatting_clean_pass_rate_simulated, 3),
+            "formatting_clean_pass_rate_change":
+                round(formatting_clean_pass_rate_change, 3),
+            "duplicate_link_issue_rate_actual":
+                round(duplicate_link_issue_rate_actual, 3),
+            "duplicate_link_issue_rate_simulated":
+                round(duplicate_link_issue_rate_simulated, 3),
+            "duplicate_link_issue_rate_change":
+                round(duplicate_link_issue_rate_change, 3),
+            "duplicate_story_signal_rate_actual":
+                round(duplicate_story_signal_rate_actual, 3),
+            "duplicate_story_signal_rate_simulated":
+                round(duplicate_story_signal_rate_simulated, 3),
+            "duplicate_story_signal_rate_change":
+                round(duplicate_story_signal_rate_change, 3),
         },
         "dimension_avg_delta": dimension_avg_delta,
         "decision": {
@@ -394,21 +443,24 @@ def score_feedback_rubric(
     length = len(body)
     notes: list[str] = []
 
-    source_counts = Counter(str(i.get("source_type", "")).lower() for i in items)
+    source_counts = Counter(
+        str(i.get("source_type", "")).lower() for i in items)
     has_reddit = source_counts.get("reddit", 0) > 0
-    has_cloudflare = any(
-        "cloudflare" in (str(i.get("url", "")) + " " + str(i.get("title", ""))).lower()
-        for i in items
-    )
+    has_cloudflare = any("cloudflare" in (str(i.get("url", "")) + " " +
+                                          str(i.get("title", ""))).lower()
+                         for i in items)
     dominant_ratio = _dominant_ratio(items)
 
     # 1) Length/depth (15)
     depth_score = 15
     if length < min_chars:
-        depth_score = max(0, 15 - int((min_chars - length) / max(1, min_chars) * 15))
+        depth_score = max(
+            0, 15 - int((min_chars - length) / max(1, min_chars) * 15))
         notes.append(f"Too short ({length} chars vs min {min_chars}).")
     elif length > hard_max_chars:
-        depth_score = max(0, 15 - int((length - hard_max_chars) / max(1, hard_max_chars) * 15))
+        depth_score = max(
+            0, 15 - int(
+                (length - hard_max_chars) / max(1, hard_max_chars) * 15))
         notes.append(f"Too long ({length} chars vs hard max {hard_max_chars}).")
 
     # 2) Link hygiene (20)
@@ -416,7 +468,8 @@ def score_feedback_rubric(
     link_hard = [i for i in hard_issues if "url" in i.lower()]
     link_score = max(0, 20 - (8 * len(link_hard)))
     if link_hard:
-        notes.append("Link hygiene issues detected (missing/duplicate selected URLs).")
+        notes.append(
+            "Link hygiene issues detected (missing/duplicate selected URLs).")
 
     # 3) Source diversity (20)
     unique_sources = len(source_counts)
@@ -435,9 +488,9 @@ def score_feedback_rubric(
     source_score = max(0, min(20, source_score))
 
     # 4) Cloud-tech focus breadth (20)
-    tech_text = " ".join(
-        [body] + [str(i.get("title", "")) + " " + str(i.get("summary", "")) for i in items]
-    )
+    tech_text = " ".join([body] + [
+        str(i.get("title", "")) + " " + str(i.get("summary", "")) for i in items
+    ])
     tech_hits = _keyword_hits(tech_text, _CLOUD_TECH_TERMS)
     cloud_focus_score = min(20, 6 + (2 * len(tech_hits)))
     if len(tech_hits) < 2:
@@ -447,14 +500,17 @@ def score_feedback_rubric(
     action_hits = _keyword_hits(body, _ACTIONABLE_TERMS)
     actionability_score = min(15, 3 + (2 * len(action_hits)))
     if len(action_hits) < 3:
-        notes.append("Low actionability density (few patch/detect/contain cues).")
+        notes.append(
+            "Low actionability density (few patch/detect/contain cues).")
 
     # 6) Writing quality / anti-template style (10)
     writing_score = 10
     if any(p.search(body) for p in _AI_STAMP_PATTERNS):
         writing_score -= 3
         notes.append("Contains AI-stamp phrasing.")
-    if re.search(r"(?im)^\*\*(?:detection|source|threat|response|mitigation|intel)\s*:", body):
+    if re.search(
+            r"(?im)^\*\*(?:detection|source|threat|response|mitigation|intel)\s*:",
+            body):
         writing_score -= 3
         notes.append("Template-style section labels detected.")
     if re.search(r"(?im)^\*?\s*source\s*:", body):
@@ -551,8 +607,10 @@ async def _simulate_briefing_body(
             feedback: list[str] = []
             feedback.extend(gate.get("issues", []))
             feedback.extend([str(i) for i in critique.get("issues", [])])
-            feedback.extend([str(r) for r in critique.get("recommendations", [])])
-            missing_items = writer._missing_items_for_markdown(briefing_body, items)
+            feedback.extend(
+                [str(r) for r in critique.get("recommendations", [])])
+            missing_items = writer._missing_items_for_markdown(
+                briefing_body, items)
             feedback_context = writer._build_rewrite_feedback_context(
                 gate=gate,
                 critique=critique,
@@ -571,7 +629,9 @@ async def _simulate_briefing_body(
                 rewrite_attempt=rewrites + 1,
                 max_rewrites=max_rewrites,
                 selected_items=items,
-                missing_selected_urls=[str(i.get("url", "")) for i in missing_items if i.get("url")],
+                missing_selected_urls=[
+                    str(i.get("url", "")) for i in missing_items if i.get("url")
+                ],
             )
 
             rewrites += 1
@@ -619,7 +679,8 @@ async def simulate_historical_briefings(
     apply_critic_rewrites: bool = False,
 ) -> dict[str, object]:
     """Replay historical distributed briefings and compare simulated output."""
-    briefings = await get_distributed_briefings(limit=limit, since_days=since_days)
+    briefings = await get_distributed_briefings(limit=limit,
+                                                since_days=since_days)
     if not briefings:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -638,7 +699,7 @@ async def simulate_historical_briefings(
     # Replay oldest -> newest for realistic style memory context.
     ordered = sorted(briefings, key=lambda b: b["created_at"])
     writer = WriterExecutor(settings)
-    critic = writer.critic_llm # reuse the critic from the writer
+    critic = writer.critic_llm  # reuse the critic from the writer
     results: list[dict[str, object]] = []
     recurring_notes: Counter[str] = Counter()
 
@@ -652,13 +713,12 @@ async def simulate_historical_briefings(
             continue
 
         history_start = max(0, idx - int(settings.briefing_history_items))
-        history = [
-            {
-                "id": str(prev["id"]),
-                "content_markdown": _strip_cover_image(str(prev.get("content_markdown") or "")),
-            }
-            for prev in ordered[history_start:idx]
-        ]
+        history = [{
+            "id":
+                str(prev["id"]),
+            "content_markdown":
+                _strip_cover_image(str(prev.get("content_markdown") or "")),
+        } for prev in ordered[history_start:idx]]
 
         simulated_body, meta = await _simulate_briefing_body(
             writer,
@@ -666,7 +726,8 @@ async def simulate_historical_briefings(
             history,
             apply_critic_rewrites=apply_critic_rewrites,
         )
-        actual_body = _strip_cover_image(str(briefing.get("content_markdown") or ""))
+        actual_body = _strip_cover_image(
+            str(briefing.get("content_markdown") or ""))
 
         mode = str(meta["mode"])
         min_chars = int(meta["min_chars"])
@@ -702,33 +763,57 @@ async def simulate_historical_briefings(
             hard_max_chars=hard_max_chars,
         )
 
-        actual_critic_eval = await critic.critique_briefing(actual_body, items, mode=mode)
-        simulated_critic_eval = await critic.critique_briefing(simulated_body, items, mode=mode)
-        
-        actual_style_score = actual_critic_eval.get("dimension_scores", {}).get("style", 0)
-        simulated_style_score = simulated_critic_eval.get("dimension_scores", {}).get("style", 0)
+        actual_critic_eval = await critic.critique_briefing(actual_body,
+                                                            items,
+                                                            mode=mode)
+        simulated_critic_eval = await critic.critique_briefing(simulated_body,
+                                                               items,
+                                                               mode=mode)
+
+        actual_style_score = actual_critic_eval.get("dimension_scores",
+                                                    {}).get("style", 0)
+        simulated_style_score = simulated_critic_eval.get(
+            "dimension_scores", {}).get("style", 0)
 
         for note in actual_eval["notes"]:
             recurring_notes[str(note)] += 1
 
         delta = int(simulated_eval["score"]) - int(actual_eval["score"])
         entry: dict[str, object] = {
-            "briefing_id": str(briefing["id"]),
-            "created_at": briefing["created_at"].isoformat(),
-            "item_count": len(items),
-            "mode": mode,
-            "simulated_rewrites": int(meta["rewrites"]),
-            "actual_score": int(actual_eval["score"]),
-            "simulated_score": int(simulated_eval["score"]),
-            "actual_llm_tone_score": int(actual_style_score),
-            "simulated_llm_tone_score": int(simulated_style_score),
-            "delta": delta,
-            "actual_breakdown": actual_eval["breakdown"],
-            "simulated_breakdown": simulated_eval["breakdown"],
-            "actual_notes": actual_eval["notes"],
-            "simulated_notes": simulated_eval["notes"],
-            "actual_gate_hard_issues": [str(i) for i in actual_gate.get("hard_issues", [])],
-            "simulated_gate_hard_issues": [str(i) for i in simulated_gate.get("hard_issues", [])],
+            "briefing_id":
+                str(briefing["id"]),
+            "created_at":
+                briefing["created_at"].isoformat(),
+            "item_count":
+                len(items),
+            "mode":
+                mode,
+            "simulated_rewrites":
+                int(meta["rewrites"]),
+            "actual_score":
+                int(actual_eval["score"]),
+            "simulated_score":
+                int(simulated_eval["score"]),
+            "actual_llm_tone_score":
+                int(actual_style_score),
+            "simulated_llm_tone_score":
+                int(simulated_style_score),
+            "delta":
+                delta,
+            "actual_breakdown":
+                actual_eval["breakdown"],
+            "simulated_breakdown":
+                simulated_eval["breakdown"],
+            "actual_notes":
+                actual_eval["notes"],
+            "simulated_notes":
+                simulated_eval["notes"],
+            "actual_gate_hard_issues": [
+                str(i) for i in actual_gate.get("hard_issues", [])
+            ],
+            "simulated_gate_hard_issues": [
+                str(i) for i in simulated_gate.get("hard_issues", [])
+            ],
         }
         if include_text:
             entry["actual_markdown"] = actual_body
@@ -746,22 +831,38 @@ async def simulate_historical_briefings(
     deltas = [int(r["delta"]) for r in results]
 
     actual_llm_tone_scores = [int(r["actual_llm_tone_score"]) for r in results]
-    simulated_llm_tone_scores = [int(r["simulated_llm_tone_score"]) for r in results]
+    simulated_llm_tone_scores = [
+        int(r["simulated_llm_tone_score"]) for r in results
+    ]
 
     summary = {
-        "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
-        "avg_simulated_score": round(mean(simulated_scores), 2) if simulated_scores else 0.0,
-        "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2) if actual_llm_tone_scores else 0.0,
-        "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2) if simulated_llm_tone_scores else 0.0,
-        "avg_llm_tone_score_change": round(mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores), 2) if simulated_llm_tone_scores and actual_llm_tone_scores else 0.0,
-        "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
-        "improved": sum(1 for d in deltas if d > 0),
-        "regressed": sum(1 for d in deltas if d < 0),
-        "equal": sum(1 for d in deltas if d == 0),
-        "top_actual_feedback_gaps": [
-            {"issue": issue, "count": count}
-            for issue, count in recurring_notes.most_common(8)
-        ],
+        "avg_actual_score":
+            round(mean(actual_scores), 2) if actual_scores else 0.0,
+        "avg_simulated_score":
+            round(mean(simulated_scores), 2) if simulated_scores else 0.0,
+        "avg_actual_llm_tone_score":
+            round(mean(actual_llm_tone_scores), 2)
+            if actual_llm_tone_scores else 0.0,
+        "avg_simulated_llm_tone_score":
+            round(mean(simulated_llm_tone_scores), 2)
+            if simulated_llm_tone_scores else 0.0,
+        "avg_llm_tone_score_change":
+            round(
+                mean(simulated_llm_tone_scores) -
+                mean(actual_llm_tone_scores), 2)
+            if simulated_llm_tone_scores and actual_llm_tone_scores else 0.0,
+        "avg_delta":
+            round(mean(deltas), 2) if deltas else 0.0,
+        "improved":
+            sum(1 for d in deltas if d > 0),
+        "regressed":
+            sum(1 for d in deltas if d < 0),
+        "equal":
+            sum(1 for d in deltas if d == 0),
+        "top_actual_feedback_gaps": [{
+            "issue": issue,
+            "count": count
+        } for issue, count in recurring_notes.most_common(8)],
     }
     summary.update(_build_decision_summary(results))
 
@@ -830,9 +931,12 @@ def compare_simulation_reports(
 
     score_changes: list[tuple[str, int, int, int]] = []
     for briefing_id in overlap:
-        current_score = int(current_results[briefing_id].get("simulated_score", 0))
-        previous_score = int(previous_results[briefing_id].get("simulated_score", 0))
-        score_changes.append((briefing_id, current_score - previous_score, current_score, previous_score))
+        current_score = int(current_results[briefing_id].get(
+            "simulated_score", 0))
+        previous_score = int(previous_results[briefing_id].get(
+            "simulated_score", 0))
+        score_changes.append((briefing_id, current_score - previous_score,
+                              current_score, previous_score))
 
     gains = [row for row in score_changes if row[1] > 0]
     losses = [row for row in score_changes if row[1] < 0]
@@ -843,62 +947,91 @@ def compare_simulation_reports(
     top_losses = sorted(losses, key=lambda row: row[1])[:5]
 
     def _fmt(rows: list[tuple[str, int, int, int]]) -> list[dict[str, object]]:
-        return [
-            {
-                "briefing_id": briefing_id,
-                "score_change": change,
-                "current_simulated_score": current_score,
-                "previous_simulated_score": previous_score,
-            }
-            for briefing_id, change, current_score, previous_score in rows
-        ]
+        return [{
+            "briefing_id": briefing_id,
+            "score_change": change,
+            "current_simulated_score": current_score,
+            "previous_simulated_score": previous_score,
+        } for briefing_id, change, current_score, previous_score in rows]
 
     return {
-        "baseline_generated_at": previous_report.get("generated_at"),
-        "current_generated_at": current_report.get("generated_at"),
-        "baseline_count": int(previous_report.get("count", 0) or 0),
-        "current_count": int(current_report.get("count", 0) or 0),
-        "overlap_count": len(overlap),
-        "new_briefings_in_current": len(current_ids - previous_ids),
-        "missing_briefings_from_previous": len(previous_ids - current_ids),
-        "avg_simulated_score_change": round(mean(score_delta_values), 2) if score_delta_values else 0.0,
-        "avg_delta_change": round(
-            float(current_summary.get("avg_delta", 0) or 0) - float(previous_summary.get("avg_delta", 0) or 0),
-            2,
-        ),
-        "simulated_hard_pass_rate_change": round(
-            float(current_gate.get("simulated_hard_pass_rate", 0) or 0)
-            - float(previous_gate.get("simulated_hard_pass_rate", 0) or 0),
-            3,
-        ),
-        "avg_hard_issue_change_delta": round(
-            float(current_gate.get("avg_hard_issue_change", 0) or 0)
-            - float(previous_gate.get("avg_hard_issue_change", 0) or 0),
-            2,
-        ),
-        "human_writer_pass_rate_change": round(
-            float(current_focus.get("human_writer_pass_rate_simulated", 0) or 0)
-            - float(previous_focus.get("human_writer_pass_rate_simulated", 0) or 0),
-            3,
-        ),
-        "formatting_clean_pass_rate_change": round(
-            float(current_focus.get("formatting_clean_pass_rate_simulated", 0) or 0)
-            - float(previous_focus.get("formatting_clean_pass_rate_simulated", 0) or 0),
-            3,
-        ),
-        "duplicate_link_issue_rate_change": round(
-            float(current_focus.get("duplicate_link_issue_rate_simulated", 0) or 0)
-            - float(previous_focus.get("duplicate_link_issue_rate_simulated", 0) or 0),
-            3,
-        ),
-        "improved_vs_previous": len(gains),
-        "regressed_vs_previous": len(losses),
-        "unchanged_vs_previous": len(equals),
-        "baseline_decision": str(previous_decision.get("recommendation", "") or ""),
-        "current_decision": str(current_decision.get("recommendation", "") or ""),
-        "decision_changed": str(previous_decision.get("recommendation", "") or "") != str(
-            current_decision.get("recommendation", "") or ""
-        ),
-        "top_gains": _fmt(top_gains),
-        "top_losses": _fmt(top_losses),
+        "baseline_generated_at":
+            previous_report.get("generated_at"),
+        "current_generated_at":
+            current_report.get("generated_at"),
+        "baseline_count":
+            int(previous_report.get("count", 0) or 0),
+        "current_count":
+            int(current_report.get("count", 0) or 0),
+        "overlap_count":
+            len(overlap),
+        "new_briefings_in_current":
+            len(current_ids - previous_ids),
+        "missing_briefings_from_previous":
+            len(previous_ids - current_ids),
+        "avg_simulated_score_change":
+            round(mean(score_delta_values), 2) if score_delta_values else 0.0,
+        "avg_delta_change":
+            round(
+                float(current_summary.get("avg_delta", 0) or 0) -
+                float(previous_summary.get("avg_delta", 0) or 0),
+                2,
+            ),
+        "simulated_hard_pass_rate_change":
+            round(
+                float(current_gate.get("simulated_hard_pass_rate", 0) or 0) -
+                float(previous_gate.get("simulated_hard_pass_rate", 0) or 0),
+                3,
+            ),
+        "avg_hard_issue_change_delta":
+            round(
+                float(current_gate.get("avg_hard_issue_change", 0) or 0) -
+                float(previous_gate.get("avg_hard_issue_change", 0) or 0),
+                2,
+            ),
+        "human_writer_pass_rate_change":
+            round(
+                float(
+                    current_focus.get("human_writer_pass_rate_simulated", 0) or
+                    0) -
+                float(
+                    previous_focus.get("human_writer_pass_rate_simulated", 0) or
+                    0),
+                3,
+            ),
+        "formatting_clean_pass_rate_change":
+            round(
+                float(
+                    current_focus.get("formatting_clean_pass_rate_simulated", 0)
+                    or 0) - float(
+                        previous_focus.get(
+                            "formatting_clean_pass_rate_simulated", 0) or 0),
+                3,
+            ),
+        "duplicate_link_issue_rate_change":
+            round(
+                float(
+                    current_focus.get("duplicate_link_issue_rate_simulated", 0)
+                    or 0) - float(
+                        previous_focus.get(
+                            "duplicate_link_issue_rate_simulated", 0) or 0),
+                3,
+            ),
+        "improved_vs_previous":
+            len(gains),
+        "regressed_vs_previous":
+            len(losses),
+        "unchanged_vs_previous":
+            len(equals),
+        "baseline_decision":
+            str(previous_decision.get("recommendation", "") or ""),
+        "current_decision":
+            str(current_decision.get("recommendation", "") or ""),
+        "decision_changed":
+            str(previous_decision.get("recommendation", "") or "") != str(
+                current_decision.get("recommendation", "") or ""),
+        "top_gains":
+            _fmt(top_gains),
+        "top_losses":
+            _fmt(top_losses),
     }

@@ -9,8 +9,10 @@ import hashlib
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlencode, urlparse
+from typing import Any, TYPE_CHECKING
+from urllib.parse import parse_qsl
+from urllib.parse import urlencode
+from urllib.parse import urlparse
 
 import httpx
 
@@ -22,11 +24,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _TRACKING_PARAM_NAMES = frozenset({
-    "fbclid", "gclid", "igshid", "mc_cid", "mc_eid", "mkt_tok",
-    "msclkid", "rb_clickid", "s_cid", "vero_conv", "vero_id", "yclid",
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "msclkid",
+    "rb_clickid",
+    "s_cid",
+    "vero_conv",
+    "vero_id",
+    "yclid",
 })
 
 LLM_ROLES = ("analyst", "writer", "critic", "verifier", "cover")
+
 
 @dataclass(frozen=True)
 class _EndpointConfig:
@@ -34,6 +47,7 @@ class _EndpointConfig:
     model: str
     provider: str = "openai_compat"
     api_key: str = ""
+
 
 class LLMClient:
     """Role-aware LLM client supporting OpenAI-compatible, Gemini, and Vertex AI APIs."""
@@ -46,7 +60,8 @@ class LLMClient:
         *,
         provider: str = "openai_compat",
         api_key: str = "",
-        role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
+        role_overrides: dict[str, dict[str, str] | _EndpointConfig] |
+        None = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.model = model or ""
@@ -63,16 +78,12 @@ class LLMClient:
         for role, override in (role_overrides or {}).items():
             if role not in LLM_ROLES:
                 continue
-            payload = (
-                {
-                    "base_url": override.base_url,
-                    "model": override.model,
-                    "provider": override.provider,
-                    "api_key": override.api_key,
-                }
-                if isinstance(override, _EndpointConfig)
-                else override
-            )
+            payload = ({
+                "base_url": override.base_url,
+                "model": override.model,
+                "provider": override.provider,
+                "api_key": override.api_key,
+            } if isinstance(override, _EndpointConfig) else override)
             resolved = self._resolve_endpoint_override(payload)
             if resolved:
                 self._role_endpoints[role] = resolved
@@ -86,10 +97,14 @@ class LLMClient:
         role_overrides: dict[str, dict[str, str]] = {}
         for role in LLM_ROLES:
             role_overrides[role] = {
-                "provider": cls._resolve_role_value(settings, "llm_provider", role),
-                "base_url": cls._resolve_role_value(settings, "llm_base_url", role),
-                "model": cls._resolve_role_value(settings, "llm_model", role),
-                "api_key": cls._resolve_role_value(settings, "llm_api_key", role),
+                "provider":
+                    cls._resolve_role_value(settings, "llm_provider", role),
+                "base_url":
+                    cls._resolve_role_value(settings, "llm_base_url", role),
+                "model":
+                    cls._resolve_role_value(settings, "llm_model", role),
+                "api_key":
+                    cls._resolve_role_value(settings, "llm_api_key", role),
             }
         return cls(
             base_url=str(settings.llm_base_url or ""),
@@ -115,12 +130,15 @@ class LLMClient:
             return "vertexai"
         return "openai_compat"
 
-    def _resolve_endpoint_override(self, payload: dict[str, str] | None) -> _EndpointConfig | None:
+    def _resolve_endpoint_override(
+            self, payload: dict[str, str] | None) -> _EndpointConfig | None:
         if not payload:
             return None
-        base_url = str(payload.get("base_url", "") or "").strip() or self.base_url
+        base_url = str(payload.get("base_url", "") or
+                       "").strip() or self.base_url
         model = str(payload.get("model", "") or "").strip() or self.model
-        provider = self._normalize_provider(str(payload.get("provider", "") or self.provider))
+        provider = self._normalize_provider(
+            str(payload.get("provider", "") or self.provider))
         api_key = str(payload.get("api_key", "") or "").strip() or self.api_key
         if not base_url or not model:
             return None
@@ -151,7 +169,6 @@ class LLMClient:
             if value.get("api_key"):
                 value["api_key"] = "***"
         return out
-
 
     async def close(self) -> None:
         """Release the underlying HTTP connection pool."""
@@ -207,22 +224,29 @@ class LLMClient:
                     raise
                 last_exc = exc
                 if attempt < retries:
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(
                         "LLM request failed (attempt %d/%d, status=%d), retrying in %ds",
-                        attempt, retries, status, wait,
+                        attempt,
+                        retries,
+                        status,
+                        wait,
                     )
                     await asyncio.sleep(wait)
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt < retries:
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(
                         "LLM request failed (attempt %d/%d, %s), retrying in %ds",
-                        attempt, retries, type(exc).__name__, wait,
+                        attempt,
+                        retries,
+                        type(exc).__name__,
+                        wait,
                     )
                     await asyncio.sleep(wait)
-        raise last_exc if last_exc else RuntimeError("LLM request failed without exception")
+        raise last_exc if last_exc else RuntimeError(
+            "LLM request failed without exception")
 
     async def _chat_openai_compat(
         self,
@@ -233,10 +257,17 @@ class LLMClient:
         json_response: bool = False,
     ) -> str:
         request: dict[str, Any] = {
-            "model": endpoint.model,
+            "model":
+                endpoint.model,
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                },
             ],
         }
         response = await self._client.post(
@@ -263,8 +294,7 @@ class LLMClient:
                     http_options = {"base_url": endpoint.base_url}
             self._genai_clients[key] = genai.Client(
                 api_key=endpoint.api_key or "NO_KEY",
-                http_options=http_options if http_options else None
-            )
+                http_options=http_options if http_options else None)
         return self._genai_clients[key]
 
     async def _chat_gemini(
@@ -279,9 +309,10 @@ class LLMClient:
         from google.genai import types
         client = self._get_genai_client(endpoint)
         response_mime_type = "application/json" if json_response else "text/plain"
-        
+
         # Determine if we should merge prompts to bypass potential Vertex Express issues
-        use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(endpoint)
+        use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(
+            endpoint)
         if use_vertex:
             contents = f"System instructions:\n{system_prompt}\n\nUser request:\n{user_content}"
             config = types.GenerateContentConfig(
@@ -312,22 +343,24 @@ class LLMClient:
     ) -> tuple[str, bytes]:
         from google.genai import types
         client = self._get_genai_client(endpoint)
-        
+
         config = types.GenerateContentConfig(response_modalities=["IMAGE"])
         response = await client.aio.models.generate_content(
             model=endpoint.model,
             contents=prompt_text,
             config=config,
         )
-        
+
         for candidate in response.candidates:
             if candidate.content and candidate.content.parts:
                 part = candidate.content.parts[0]
                 if getattr(part, "inline_data", None) and part.inline_data.data:
-                    mime = getattr(part.inline_data, "mime_type", "image/png") or "image/png"
+                    mime = getattr(part.inline_data, "mime_type",
+                                   "image/png") or "image/png"
                     return mime, part.inline_data.data
-                
-        raise RuntimeError("Gemini image response did not include inline image data")
+
+        raise RuntimeError(
+            "Gemini image response did not include inline image data")
 
     @staticmethod
     def _is_gemini_vertex_endpoint(endpoint: _EndpointConfig) -> bool:
@@ -337,7 +370,8 @@ class LLMClient:
     @staticmethod
     def parse_json_response(raw_text: str) -> Any:
         """Parse JSON from model output with fence stripping and raw-decode fallback."""
-        cleaned = re.sub(r"```json\s*", "", raw_text or "", flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```json\s*", "", raw_text or "",
+                         flags=re.IGNORECASE).strip()
         cleaned = re.sub(r"```\s*", "", cleaned).strip()
         if not cleaned:
             raise json.JSONDecodeError("empty response", cleaned, 0)
@@ -372,9 +406,11 @@ class LLMClient:
             netloc = netloc[4:]
         path = parsed.path.rstrip("/")
         query_params: list[tuple[str, str]] = []
-        for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
+        for raw_key, raw_value in parse_qsl(parsed.query,
+                                            keep_blank_values=True):
             key = raw_key.lower()
-            if key.startswith("utm_") or key.startswith("mc_") or key in _TRACKING_PARAM_NAMES:
+            if key.startswith("utm_") or key.startswith(
+                    "mc_") or key in _TRACKING_PARAM_NAMES:
                 continue
             query_params.append((key, raw_value))
         query_params.sort()
@@ -388,5 +424,3 @@ class LLMClient:
         if endpoint.api_key:
             return {"Authorization": f"Bearer {endpoint.api_key}"}
         return {}
-
-

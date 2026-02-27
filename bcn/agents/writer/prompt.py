@@ -62,8 +62,7 @@ BRIEFING_STORY_CARD_PROMPT = (
     "- Use only facts from provided items and links.\n"
     "- Do not invent claims or URLs.\n"
     "- Keep language extremely specific, blunt, and practitioner-oriented.\n"
-    "- Output ONLY the text blocks separated by `---`.\n"
-)
+    "- Output ONLY the text blocks separated by `---`.\n")
 
 BRIEFING_TIGHTENER_PROMPT = (
     "You are editing a cloud-security digest for Telegram.\n"
@@ -86,8 +85,7 @@ BRIEFING_ENRICHER_PROMPT = (
     "Example:\n"
     "Bad: The [patch](url) is crucial for organizations.\n"
     "Good: Apply the [vendor patch](url) before you get crypto-mined out of existence.\n\n"
-    "Output only the rewritten digest."
-)
+    "Output only the rewritten digest.")
 
 BRIEFING_REWRITE_PROMPT = (
     "You are rewriting a 'Broken Cloud' Telegram draft to satisfy the grumpy staff engineer critic.\n"
@@ -98,5 +96,4 @@ BRIEFING_REWRITE_PROMPT = (
     "- Remove ANY generic corporate AI speak. Be blunt and cynical.\n"
     "- Keep it readable for Telegram (bold **important terms** and use **bold titles** with emojis).\n"
     "- No truncation artifacts (`...;`).\n"
-    "Output only revised digest."
-)
+    "Output only revised digest.")

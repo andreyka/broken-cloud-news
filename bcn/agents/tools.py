@@ -1,9 +1,11 @@
 """Shared tools for agents to use during LLM generation."""
 
 import logging
+
 from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
+
 
 async def fetch_page_content(url: str) -> str:
     """Fetch the actual page content of a provided URL.

@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from datetime import datetime
+from datetime import timezone
 import difflib
 import math
 import re
-from collections import Counter
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from bcn.briefing.text import normalize_url, to_dict
+from bcn.briefing.text import normalize_url
+from bcn.briefing.text import to_dict
 from bcn.common.config import Settings
 
 _TRUSTED_RSS_DOMAINS = frozenset({
@@ -38,14 +40,62 @@ _CSP_SIDE_DOMAINS = frozenset({
     "kubernetes.io",
 })
 
-_ISSUE_ID_RE = re.compile(r"\b(?:cve-\d{4}-\d+|ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b")
+_ISSUE_ID_RE = re.compile(
+    r"\b(?:cve-\d{4}-\d+|ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})\b")
 _TOPIC_STOPWORDS = frozenset({
-    "the", "and", "for", "from", "with", "into", "over", "after", "before", "about", "this",
-    "that", "onto", "cloud", "security", "vulnerability", "vulnerabilities", "issue",
-    "issues", "patch", "patches", "advisory", "advisories", "exploit", "exploits", "fix", "fixes",
-    "update", "updates", "attack", "attacks", "remote", "code", "execution", "allow", "allows",
-    "new", "latest", "reported", "report", "today", "guide", "analysis", "risk", "risks", "zero",
-    "wild", "active", "actively", "campaign", "campaigns", "threat", "threats",
+    "the",
+    "and",
+    "for",
+    "from",
+    "with",
+    "into",
+    "over",
+    "after",
+    "before",
+    "about",
+    "this",
+    "that",
+    "onto",
+    "cloud",
+    "security",
+    "vulnerability",
+    "vulnerabilities",
+    "issue",
+    "issues",
+    "patch",
+    "patches",
+    "advisory",
+    "advisories",
+    "exploit",
+    "exploits",
+    "fix",
+    "fixes",
+    "update",
+    "updates",
+    "attack",
+    "attacks",
+    "remote",
+    "code",
+    "execution",
+    "allow",
+    "allows",
+    "new",
+    "latest",
+    "reported",
+    "report",
+    "today",
+    "guide",
+    "analysis",
+    "risk",
+    "risks",
+    "zero",
+    "wild",
+    "active",
+    "actively",
+    "campaign",
+    "campaigns",
+    "threat",
+    "threats",
 })
 
 
@@ -74,11 +124,9 @@ class BriefingSelector:
             reverse=True,
         )
 
-        max_items = (
-            min(self.settings.briefing_max_items, self.settings.briefing_quiet_day_max_items)
-            if quiet_mode
-            else self.settings.briefing_max_items
-        )
+        max_items = (min(self.settings.briefing_max_items,
+                         self.settings.briefing_quiet_day_max_items)
+                     if quiet_mode else self.settings.briefing_max_items)
         max_ai = self.settings.briefing_max_ai_items
         max_twitter = self.settings.briefing_max_twitter_items
         max_rss = self.settings.briefing_max_rss_items
@@ -101,21 +149,24 @@ class BriefingSelector:
 
             if self.is_duplicate_of(item, selected):
                 return False
-                
+
             if self.is_duplicate_of(item, recent_items):
                 return False
 
             if not self.passes_source_floor(item) and not relax_soft_limits:
                 return False
             source = str(item.get("source_type", "")).lower()
-            if source == "twitter" and source_counts[source] >= max_twitter and not relax_soft_limits:
+            if source == "twitter" and source_counts[
+                    source] >= max_twitter and not relax_soft_limits:
                 return False
             if source == "rss" and source_counts[source] >= max_rss:
                 return False
             domain = self._extract_domain(str(item.get("url", "")))
-            if domain and max_per_domain > 0 and domain_counts[domain] >= max_per_domain:
+            if domain and max_per_domain > 0 and domain_counts[
+                    domain] >= max_per_domain:
                 return False
-            if self.is_ai_heavy(item) and ai_count >= max_ai and not relax_soft_limits:
+            if self.is_ai_heavy(
+                    item) and ai_count >= max_ai and not relax_soft_limits:
                 return False
             return True
 
@@ -214,14 +265,20 @@ class BriefingSelector:
 
         source_limit = self._source_limit(max_items)
         min_selected = max(1, int(self.settings.briefing_min_selected_items))
-        enforce_mix_requirements = (not quiet_mode) and max_items >= 3 and min_selected >= 2 and len(ranked) >= 2
-        require_reddit = bool(self.settings.briefing_selection_require_reddit) and enforce_mix_requirements
-        require_csp = bool(self.settings.briefing_selection_require_csp) and enforce_mix_requirements
+        enforce_mix_requirements = (
+            not quiet_mode
+        ) and max_items >= 3 and min_selected >= 2 and len(ranked) >= 2
+        require_reddit = bool(self.settings.briefing_selection_require_reddit
+                             ) and enforce_mix_requirements
+        require_csp = bool(self.settings.briefing_selection_require_csp
+                          ) and enforce_mix_requirements
 
         out = list(selected[:max_items])
         selected_ids = {str(i.get("id")) for i in out}
-        source_counts = Counter(str(i.get("source_type", "")).lower() for i in out)
-        domain_counts = Counter(self._extract_domain(str(i.get("url", ""))) for i in out)
+        source_counts = Counter(
+            str(i.get("source_type", "")).lower() for i in out)
+        domain_counts = Counter(
+            self._extract_domain(str(i.get("url", ""))) for i in out)
         if "" in domain_counts:
             del domain_counts[""]
 
@@ -240,7 +297,8 @@ class BriefingSelector:
             domain = self._extract_domain(str(item.get("url", "")))
             if source_counts[source] >= source_limit:
                 return False
-            if domain and max_per_domain > 0 and domain_counts[domain] >= max_per_domain:
+            if domain and max_per_domain > 0 and domain_counts[
+                    domain] >= max_per_domain:
                 return False
             return True
 
@@ -275,7 +333,8 @@ class BriefingSelector:
             return sorted(candidates, key=item_rank)[0]
 
         def has_reddit() -> bool:
-            return any(str(i.get("source_type", "")).lower() == "reddit" for i in out)
+            return any(
+                str(i.get("source_type", "")).lower() == "reddit" for i in out)
 
         def has_csp() -> bool:
             return any(self.is_csp_side_item(i) for i in out)
@@ -283,12 +342,16 @@ class BriefingSelector:
         # Enforce per-domain cap strictly.
         while True:
             too_many_domain = next(
-                (d for d, n in domain_counts.items() if max_per_domain > 0 and n > max_per_domain),
+                (d for d, n in domain_counts.items()
+                 if max_per_domain > 0 and n > max_per_domain),
                 None,
             )
             if not too_many_domain:
                 break
-            candidates = [i for i in out if self._extract_domain(str(i.get("url", ""))) == too_many_domain]
+            candidates = [
+                i for i in out if self._extract_domain(str(i.get("url", ""))) ==
+                too_many_domain
+            ]
             victim = weakest(candidates)
             if not victim:
                 break
@@ -296,10 +359,14 @@ class BriefingSelector:
 
         # Enforce source-share cap.
         while True:
-            too_many_source = next((s for s, n in source_counts.items() if n > source_limit), None)
+            too_many_source = next(
+                (s for s, n in source_counts.items() if n > source_limit), None)
             if not too_many_source:
                 break
-            candidates = [i for i in out if str(i.get("source_type", "")).lower() == too_many_source]
+            candidates = [
+                i for i in out
+                if str(i.get("source_type", "")).lower() == too_many_source
+            ]
             victim = weakest(candidates)
             if not victim:
                 break
@@ -309,18 +376,19 @@ class BriefingSelector:
         if require_reddit and not has_reddit():
             reddit_candidates = [
                 i for i in ranked
-                if str(i.get("source_type", "")).lower() == "reddit"
-                and self.passes_source_floor(i)
+                if str(i.get("source_type", "")).lower() == "reddit" and
+                self.passes_source_floor(i)
             ]
             if not reddit_candidates:
                 return []
 
             if len(out) >= max_items:
-                protected_csp = has_csp() and sum(1 for i in out if self.is_csp_side_item(i)) == 1
+                protected_csp = has_csp() and sum(
+                    1 for i in out if self.is_csp_side_item(i)) == 1
                 removable = [
                     i for i in out
-                    if str(i.get("source_type", "")).lower() != "reddit"
-                    and (not protected_csp or not self.is_csp_side_item(i))
+                    if str(i.get("source_type", "")).lower() != "reddit" and
+                    (not protected_csp or not self.is_csp_side_item(i))
                 ]
                 victim = weakest(removable)
                 if victim:
@@ -336,16 +404,22 @@ class BriefingSelector:
 
         # Add required Cloudflare/CSP-side item.
         if require_csp and not has_csp():
-            csp_candidates = [i for i in ranked if self.is_csp_side_item(i) and self.passes_source_floor(i)]
+            csp_candidates = [
+                i for i in ranked
+                if self.is_csp_side_item(i) and self.passes_source_floor(i)
+            ]
             if not csp_candidates:
                 return []
 
             if len(out) >= max_items:
                 removable = [i for i in out if not self.is_csp_side_item(i)]
                 if require_reddit and has_reddit() and sum(
-                    1 for i in out if str(i.get("source_type", "")).lower() == "reddit"
-                ) == 1:
-                    removable = [i for i in removable if str(i.get("source_type", "")).lower() != "reddit"]
+                        1 for i in out if str(i.get(
+                            "source_type", "")).lower() == "reddit") == 1:
+                    removable = [
+                        i for i in removable
+                        if str(i.get("source_type", "")).lower() != "reddit"
+                    ]
                 victim = weakest(removable)
                 if victim:
                     remove(victim)
@@ -371,7 +445,8 @@ class BriefingSelector:
             return []
         if any(n > source_limit for n in source_counts.values()):
             return []
-        if any(max_per_domain > 0 and n > max_per_domain for n in domain_counts.values()):
+        if any(max_per_domain > 0 and n > max_per_domain
+               for n in domain_counts.values()):
             return []
 
         return out
@@ -381,7 +456,9 @@ class BriefingSelector:
         share = min(1.0, max(0.2, share))
         return max(1, int(math.floor(max_items * share)))
 
-    def priority_score(self, item: dict, recent_published: list[dict] | None = None) -> float:
+    def priority_score(self,
+                       item: dict,
+                       recent_published: list[dict] | None = None) -> float:
         """Composite priority from relevance, exploitability, trust, engagement, novelty."""
         relevance = float(int(item.get("relevance_score", 0)))
         score = relevance
@@ -409,7 +486,8 @@ class BriefingSelector:
 
     def engagement_bonus(self, item: dict) -> float:
         """Compute capped source-specific social-proof bonus for ranking."""
-        max_bonus = max(0.0, float(self.settings.briefing_social_proof_max_bonus))
+        max_bonus = max(0.0,
+                        float(self.settings.briefing_social_proof_max_bonus))
         weight = max(0.0, float(self.settings.briefing_social_proof_weight))
         if max_bonus <= 0 or weight <= 0:
             return 0.0
@@ -427,7 +505,8 @@ class BriefingSelector:
         raw = to_dict(item.get("raw_data"))
 
         if source == "twitter":
-            metrics = raw.get("public_metrics", {}) if isinstance(raw, dict) else {}
+            metrics = raw.get("public_metrics", {}) if isinstance(raw,
+                                                                  dict) else {}
             likes = float(metrics.get("like_count") or 0)
             reposts = float(metrics.get("retweet_count") or 0)
             replies = float(metrics.get("reply_count") or 0)
@@ -435,7 +514,8 @@ class BriefingSelector:
             return likes + (2.0 * reposts) + (1.2 * replies) + (2.0 * quotes)
 
         if source == "reddit":
-            engagement = raw.get("engagement", {}) if isinstance(raw, dict) else {}
+            engagement = raw.get("engagement", {}) if isinstance(raw,
+                                                                 dict) else {}
             upvotes = float(engagement.get("upvotes") or 0)
             comments = float(engagement.get("comments") or 0)
             score = upvotes + (2.0 * comments)
@@ -443,10 +523,15 @@ class BriefingSelector:
                 return score
 
             summary = str(raw.get("summary", ""))
-            points_m = re.search(r"(\d+)\s+points?", summary, flags=re.IGNORECASE)
-            comments_m = re.search(r"(\d+)\s+comments?", summary, flags=re.IGNORECASE)
+            points_m = re.search(r"(\d+)\s+points?",
+                                 summary,
+                                 flags=re.IGNORECASE)
+            comments_m = re.search(r"(\d+)\s+comments?",
+                                   summary,
+                                   flags=re.IGNORECASE)
             fallback_points = float(points_m.group(1)) if points_m else 0.0
-            fallback_comments = float(comments_m.group(1)) if comments_m else 0.0
+            fallback_comments = float(
+                comments_m.group(1)) if comments_m else 0.0
             return fallback_points + (2.0 * fallback_comments)
 
         return 0.0
@@ -458,9 +543,12 @@ class BriefingSelector:
         score = 0.0
         if re.search(r"(cve-\d{4}-\d+|ghsa-)", text):
             score += 1.35
-        if re.search(r"(actively exploited|in the wild|zero[-\s]?day|rce|auth bypass|ssrf|privesc|container escape)", text):
+        if re.search(
+                r"(actively exploited|in the wild|zero[-\s]?day|rce|auth bypass|ssrf|privesc|container escape)",
+                text):
             score += 0.95
-        if re.search(r"(patch|fixed|mitigation|detection|ioc|rule|playbook)", text):
+        if re.search(r"(patch|fixed|mitigation|detection|ioc|rule|playbook)",
+                     text):
             score += 0.55
         return min(2.5, score)
 
@@ -485,7 +573,8 @@ class BriefingSelector:
         cur_url = normalize_url(str(item.get("url", "")))
         cur_title = self._normalize_title(str(item.get("title", "")))
         cur_issue_keys = self._issue_keys(item)
-        threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
+        threshold = float(
+            self.settings.briefing_novelty_title_similarity_threshold)
 
         for other in others:
             other_url = normalize_url(str(other.get("url", "")))
@@ -494,18 +583,21 @@ class BriefingSelector:
 
             other_title = self._normalize_title(str(other.get("title", "")))
             if cur_title and other_title:
-                sim = difflib.SequenceMatcher(None, cur_title, other_title).ratio()
+                sim = difflib.SequenceMatcher(None, cur_title,
+                                              other_title).ratio()
                 if sim >= threshold:
                     return True
 
             if cur_issue_keys:
                 other_issue_keys = self._issue_keys(other)
-                if other_issue_keys and len(cur_issue_keys & other_issue_keys) > 0:
+                if other_issue_keys and len(cur_issue_keys &
+                                            other_issue_keys) > 0:
                     return True
 
         return False
 
-    def novelty_penalty(self, item: dict, recent_published: list[dict]) -> float:
+    def novelty_penalty(self, item: dict,
+                        recent_published: list[dict]) -> float:
         """Penalize near-duplicate stories from recent distributed digests."""
         if not recent_published:
             return 0.0
@@ -529,8 +621,10 @@ class BriefingSelector:
                 if prev_issue_keys:
                     overlap = len(cur_issue_keys & prev_issue_keys)
                     if overlap > 0:
-                        norm = max(1, min(len(cur_issue_keys), len(prev_issue_keys)))
-                        best_issue_overlap = max(best_issue_overlap, overlap / norm)
+                        norm = max(
+                            1, min(len(cur_issue_keys), len(prev_issue_keys)))
+                        best_issue_overlap = max(best_issue_overlap,
+                                                 overlap / norm)
 
             prev_title = self._normalize_title(str(prev.get("title", "")))
             if not cur_title or not prev_title:
@@ -542,7 +636,8 @@ class BriefingSelector:
         if same_url_seen:
             return 3.0
 
-        threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
+        threshold = float(
+            self.settings.briefing_novelty_title_similarity_threshold)
         similarity_penalty = 0.0
         if best_title_similarity >= threshold:
             span = max(0.01, 1.0 - threshold)
@@ -565,7 +660,8 @@ class BriefingSelector:
 
     def _issue_keys(self, item: dict) -> set[str]:
         """Extract recurrence keys for duplicate-topic suppression."""
-        text = self._normalize_title(f"{item.get('title', '')} {item.get('summary', '')}")
+        text = self._normalize_title(
+            f"{item.get('title', '')} {item.get('summary', '')}")
         if not text:
             return set()
 
@@ -595,26 +691,24 @@ class BriefingSelector:
     @staticmethod
     def classify_bucket(item: dict) -> str:
         """Map an item into editorial mix buckets."""
-        text = (
-            f"{item.get('title', '')} {item.get('summary', '')} "
-            f"{' '.join(item.get('ai_tags') or [])}"
-        ).lower()
+        text = (f"{item.get('title', '')} {item.get('summary', '')} "
+                f"{' '.join(item.get('ai_tags') or [])}").lower()
 
         if re.search(
-            r"(cve-\d{4}-\d+|ghsa-|actively exploited|in the wild|incident|breach|"
-            r"rce|auth bypass|ssrf|container escape|ddos|exploit|malware)",
-            text,
+                r"(cve-\d{4}-\d+|ghsa-|actively exploited|in the wild|incident|breach|"
+                r"rce|auth bypass|ssrf|container escape|ddos|exploit|malware)",
+                text,
         ):
             return "urgent_threats"
         if re.search(
-            r"(law|regulat|compliance|pci|dora|nis2|sec\b|gdpr|privacy act|order|mandate)",
-            text,
+                r"(law|regulat|compliance|pci|dora|nis2|sec\b|gdpr|privacy act|order|mandate)",
+                text,
         ):
             return "regulatory_legal"
         if re.search(
-            r"(aws|azure|gcp|cloudflare|kubernetes|k8s|iam|terraform|serverless|"
-            r"envoy|postgres|clickhouse|redis|qemu|kvm|load balancer|control plane)",
-            text,
+                r"(aws|azure|gcp|cloudflare|kubernetes|k8s|iam|terraform|serverless|"
+                r"envoy|postgres|clickhouse|redis|qemu|kvm|load balancer|control plane)",
+                text,
         ):
             return "platform_changes"
         return "tooling_use_case"
@@ -623,21 +717,21 @@ class BriefingSelector:
         """Drop weak social/untrusted items unless relevance is very high."""
         source = str(item.get("source_type", "")).lower()
         relevance = int(item.get("relevance_score", 0))
-        if relevance >= int(self.settings.briefing_social_floor_exempt_relevance):
+        if relevance >= int(
+                self.settings.briefing_social_floor_exempt_relevance):
             return True
 
         if source == "reddit":
             return self.engagement_raw_score(item) >= float(
-                self.settings.briefing_min_reddit_engagement_score
-            )
+                self.settings.briefing_min_reddit_engagement_score)
 
         if source == "twitter":
             return self.engagement_raw_score(item) >= float(
-                self.settings.briefing_min_twitter_engagement_score
-            )
+                self.settings.briefing_min_twitter_engagement_score)
 
         if source == "rss" and not self.is_trusted_rss_item(item):
-            return relevance >= int(self.settings.briefing_untrusted_rss_min_score)
+            return relevance >= int(
+                self.settings.briefing_untrusted_rss_min_score)
 
         return True
 
@@ -649,18 +743,21 @@ class BriefingSelector:
         for domain in (url_domain, feed_domain):
             if not domain:
                 continue
-            if any(domain == d or domain.endswith(f".{d}") for d in _TRUSTED_RSS_DOMAINS):
+            if any(domain == d or domain.endswith(f".{d}")
+                   for d in _TRUSTED_RSS_DOMAINS):
                 return True
         return False
 
     def is_csp_side_item(self, item: dict) -> bool:
         """Return whether item appears to originate from Cloudflare/CSP-side signal."""
         domain = self._extract_domain(str(item.get("url", "")))
-        if domain and any(domain == d or domain.endswith(f".{d}") for d in _CSP_SIDE_DOMAINS):
+        if domain and any(domain == d or domain.endswith(f".{d}")
+                          for d in _CSP_SIDE_DOMAINS):
             return True
 
         text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
-        return bool(re.search(r"\b(cloudflare|aws|azure|gcp|google cloud)\b", text))
+        return bool(
+            re.search(r"\b(cloudflare|aws|azure|gcp|google cloud)\b", text))
 
     def is_quiet_day(self, items: list[dict]) -> bool:
         """Detect low-signal days and switch to deeper fewer-item mode."""
@@ -678,28 +775,31 @@ class BriefingSelector:
             relevance = int(item.get("relevance_score", 0))
             if relevance < threshold:
                 continue
-            if self.is_actionable(item) or str(item.get("source_type", "")).lower() == "ghsa":
+            if self.is_actionable(item) or str(item.get("source_type",
+                                                        "")).lower() == "ghsa":
                 high_signal += 1
         return high_signal
 
     @staticmethod
     def is_actionable(item: dict) -> bool:
         text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
-        return bool(re.search(
-            r"(cve-\d{4}-\d+|ghsa-|rce|exploit|bypass|patch|fix|advisory|"
-            r"incident|breach|credential|auth|ssrf|privesc|container escape)",
-            text,
-        ))
+        return bool(
+            re.search(
+                r"(cve-\d{4}-\d+|ghsa-|rce|exploit|bypass|patch|fix|advisory|"
+                r"incident|breach|credential|auth|ssrf|privesc|container escape)",
+                text,
+            ))
 
     @staticmethod
     def is_ai_heavy(item: dict) -> bool:
         text = f"{item.get('title', '')} {item.get('summary', '')}".lower()
         has_ai = bool(re.search(r"\b(ai|llm|agentic|model|prompt)\b", text))
-        has_cloud_security = bool(re.search(
-            r"(cloud|kubern|k8s|container|iam|terraform|aws|azure|gcp|"
-            r"serverless|envoy|postgres|clickhouse|redis|qemu|kvm|cve|ghsa)",
-            text,
-        ))
+        has_cloud_security = bool(
+            re.search(
+                r"(cloud|kubern|k8s|container|iam|terraform|aws|azure|gcp|"
+                r"serverless|envoy|postgres|clickhouse|redis|qemu|kvm|cve|ghsa)",
+                text,
+            ))
         return has_ai and not has_cloud_security
 
     @staticmethod

@@ -5,17 +5,18 @@ from __future__ import annotations
 import json
 import logging
 
-from typing_extensions import override
-
-from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
+from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.briefing.verifier import BriefingFactVerifier
 from bcn.common.config import Settings
-from bcn.common.db import get_items_by_ids, get_latest_any_briefing
+from bcn.common.db import get_items_by_ids
+from bcn.common.db import get_latest_any_briefing
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,8 @@ SKILLS = [
     AgentSkill(
         id="verify_briefing",
         name="Verify Briefing",
-        description="Verify briefing facts, top-story quality, and link liveness",
+        description=
+        "Verify briefing facts, top-story quality, and link liveness",
         tags=["briefing", "verifier", "factual"],
         examples=["verify_latest", "verify_markdown::<text>"],
     ),
@@ -84,7 +86,9 @@ class VerifierExecutor(AgentExecutor):
             "verifier_passed": bool(report.get("passed", False)),
             "verifier_score": int(report.get("score", 0) or 0),
             "issues": [str(i) for i in report.get("issues", [])],
-            "recommendations": [str(i) for i in report.get("recommendations", [])],
+            "recommendations": [
+                str(i) for i in report.get("recommendations", [])
+            ],
             "dead_urls": [str(i) for i in report.get("dead_urls", [])],
             "top_story_ok": bool(report.get("top_story_ok", True)),
         }
@@ -96,7 +100,8 @@ class VerifierExecutor(AgentExecutor):
         )
         await enqueue_event_safe(
             event_queue,
-            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2)),
+            new_agent_text_message(
+                json.dumps(response, ensure_ascii=False, indent=2)),
         )
 
     @override

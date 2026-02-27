@@ -6,7 +6,8 @@ import json
 from typing import Any
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
+from pydantic_settings import SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -19,8 +20,12 @@ class Settings(BaseSettings):
     )
 
     @field_validator(
-        "twitter_handles", "rss_feeds", "ghsa_severities",
-        "ghsa_keywords", "email_recipients", "reddit_subreddits",
+        "twitter_handles",
+        "rss_feeds",
+        "ghsa_severities",
+        "ghsa_keywords",
+        "email_recipients",
+        "reddit_subreddits",
         "twitter_required_keywords",
         mode="before",
     )
@@ -139,19 +144,52 @@ class Settings(BaseSettings):
     # X API (Twitter)
     twitter_bearer_token: str = ""
     twitter_handles: list[str] = [
-        "GoogleVRP", "anton_chuvakin", "AISecHub",
-        "_JohnHammond", "lauriewired", "chompie1337", "Steph3nSims",
-        "KimZetter", "argvee", "avkovaleff", "tom_doerr",
-        "gadievron", "Dinosn", "steipete", "philvenables",
-        "Fox0x01", "Laughing_Mantis", "virusbtn", "thegrugq",
+        "GoogleVRP",
+        "anton_chuvakin",
+        "AISecHub",
+        "_JohnHammond",
+        "lauriewired",
+        "chompie1337",
+        "Steph3nSims",
+        "KimZetter",
+        "argvee",
+        "avkovaleff",
+        "tom_doerr",
+        "gadievron",
+        "Dinosn",
+        "steipete",
+        "philvenables",
+        "Fox0x01",
+        "Laughing_Mantis",
+        "virusbtn",
+        "thegrugq",
         "lukOlejnik",
     ]
     twitter_max_items: int = 20
     twitter_required_keywords: list[str] = [
-        "cloud", "aws", "azure", "gcp", "kubernetes", "k8s",
-        "container", "docker", "terraform", "iam", "cve", "vuln",
-        "exploit", "rce", "advisory", "serverless", "cloudflare",
-        "envoy", "qemu", "kvm", "postgres", "clickhouse", "redis",
+        "cloud",
+        "aws",
+        "azure",
+        "gcp",
+        "kubernetes",
+        "k8s",
+        "container",
+        "docker",
+        "terraform",
+        "iam",
+        "cve",
+        "vuln",
+        "exploit",
+        "rce",
+        "advisory",
+        "serverless",
+        "cloudflare",
+        "envoy",
+        "qemu",
+        "kvm",
+        "postgres",
+        "clickhouse",
+        "redis",
         "load balancer",
     ]
 
@@ -179,10 +217,24 @@ class Settings(BaseSettings):
     # GHSA filter
     ghsa_severities: list[str] = ["CRITICAL", "HIGH"]
     ghsa_keywords: list[str] = [
-        "kubernetes", "k8s", "docker", "container",
-        "aws", "azure", "gcp", "cloud", "terraform", "iam",
-        "envoy", "qemu", "kvm", "postgres", "clickhouse",
-        "redis", "cloudflare", "load balancer",
+        "kubernetes",
+        "k8s",
+        "docker",
+        "container",
+        "aws",
+        "azure",
+        "gcp",
+        "cloud",
+        "terraform",
+        "iam",
+        "envoy",
+        "qemu",
+        "kvm",
+        "postgres",
+        "clickhouse",
+        "redis",
+        "cloudflare",
+        "load balancer",
     ]
 
     # Distribution: Telegram

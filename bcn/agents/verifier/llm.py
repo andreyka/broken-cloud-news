@@ -4,12 +4,14 @@ import json
 import logging
 from typing import Any
 
-from bcn.common.llm import LLMClient
 from bcn.agents.verifier.prompt import BRIEFING_FACT_VERIFIER_PROMPT
+from bcn.common.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
+
 class VerifierLLM:
+
     def __init__(self, client: LLMClient):
         self.client = client
 
@@ -23,24 +25,18 @@ class VerifierLLM:
     ) -> dict[str, Any]:
         """Verify factual grounding of a draft against provided items."""
         item_lines = [
-            (
-                f"- [{item.get('source_type', '')}] {item.get('title', '')}\n"
-                f"  URL: {item.get('url', '')}\n"
-                f"  Summary: {item.get('summary', '')}"
-            )
-            for item in items
+            (f"- [{item.get('source_type', '')}] {item.get('title', '')}\n"
+             f"  URL: {item.get('url', '')}\n"
+             f"  Summary: {item.get('summary', '')}") for item in items
         ]
         mode_text = "quiet_day" if mode == "quiet_day" else "standard"
-        det = "\n".join(f"- {line}" for line in (deterministic_issues or [])) or "- none"
-        user_msg = (
-            f"Mode: {mode_text}\n\n"
-            f"Selected items ({len(items)}):\n"
-            + "\n".join(item_lines)
-            + "\n\nDeterministic verifier findings:\n"
-            + det
-            + "\n\nDraft:\n"
-            + draft_markdown
-        )
+        det = "\n".join(
+            f"- {line}" for line in (deterministic_issues or [])) or "- none"
+        user_msg = (f"Mode: {mode_text}\n\n"
+                    f"Selected items ({len(items)}):\n" +
+                    "\n".join(item_lines) +
+                    "\n\nDeterministic verifier findings:\n" + det +
+                    "\n\nDraft:\n" + draft_markdown)
         raw = await self.client.chat_for_role(
             role="verifier",
             system_prompt=BRIEFING_FACT_VERIFIER_PROMPT,
@@ -70,9 +66,13 @@ class VerifierLLM:
         except Exception:
             logger.warning("Failed to parse verifier JSON, using fallback")
             return {
-                "passed": False,
-                "score": 0,
+                "passed":
+                    False,
+                "score":
+                    0,
                 "hard_issues": ["Verifier response parsing failed"],
                 "soft_issues": [],
-                "recommendations": ["Re-run factual verification and tighten claims to source evidence."],
+                "recommendations": [
+                    "Re-run factual verification and tighten claims to source evidence."
+                ],
             }

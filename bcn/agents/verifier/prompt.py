@@ -12,5 +12,4 @@ BRIEFING_FACT_VERIFIER_PROMPT = (
     '  "hard_issues": ["blocking issue"],\n'
     '  "soft_issues": ["non-blocking issue"],\n'
     '  "recommendations": ["fix action"]\n'
-    "}\n"
-)
+    "}\n")

@@ -5,18 +5,19 @@ from __future__ import annotations
 import json
 import logging
 
-from typing_extensions import override
-
-from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
+from typing_extensions import override
 
+from bcn.agents.analyst.llm import AnalystLLM
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
-from bcn.common.db import get_new_items, update_item_analyzed
+from bcn.common.db import get_new_items
+from bcn.common.db import update_item_analyzed
 from bcn.common.llm import LLMClient
-from bcn.agents.analyst.llm import AnalystLLM
 from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,8 @@ SKILLS = [
     AgentSkill(
         id="analyze_new_items",
         name="Analyze New Items",
-        description="Analyze unprocessed news items using Qwen LLM for relevance scoring",
+        description=
+        "Analyze unprocessed news items using Qwen LLM for relevance scoring",
         tags=["analysis", "llm"],
         examples=["analyze", "analyze_new_items"],
     ),
@@ -53,9 +55,7 @@ class AnalystExecutor(AgentExecutor):
         items = await get_new_items()
         if not items:
             await enqueue_event_safe(
-                event_queue,
-                new_agent_text_message("No new items to analyze")
-            )
+                event_queue, new_agent_text_message("No new items to analyze"))
             return
 
         analyzed = 0
@@ -69,11 +69,8 @@ class AnalystExecutor(AgentExecutor):
 
             if item["source_type"] == "ghsa":
                 try:
-                    raw = (
-                        json.loads(item["raw_data"])
-                        if isinstance(item["raw_data"], str)
-                        else item["raw_data"]
-                    )
+                    raw = (json.loads(item["raw_data"]) if isinstance(
+                        item["raw_data"], str) else item["raw_data"])
                     desc = raw.get("description", "")
                     severity = raw.get("severity", "")
                     if desc and (not content or len(content) < 200):
@@ -85,15 +82,17 @@ class AnalystExecutor(AgentExecutor):
                 content = title
 
             try:
-                result = await self.analyst_llm.analyze_item(title, content, url=item["url"] or "")
+                result = await self.analyst_llm.analyze_item(title,
+                                                             content,
+                                                             url=item["url"] or
+                                                             "")
                 await update_item_analyzed(
                     item_id=item["id"],
                     summary=result.summary,
                     relevance_score=result.relevance_score,
                     ai_tags=result.tags,
-                    full_content=(
-                        content if content != title else item["full_content"]
-                    ),
+                    full_content=(content if content != title else
+                                  item["full_content"]),
                     image_prompt=result.image_prompt,
                 )
                 analyzed += 1
