@@ -6,26 +6,29 @@ import logging
 import re
 from typing import Any
 
-from bcn.common.llm import LLMClient
 from bcn.agents.tools import fetch_page_content
-from bcn.agents.writer.prompt import (
-    BRIEFING_SYSTEM_PROMPT,
-    BRIEFING_STORY_CARD_PROMPT,
-    BRIEFING_TIGHTENER_PROMPT,
-    BRIEFING_ENRICHER_PROMPT,
-    BRIEFING_REWRITE_PROMPT,
-    COVER_ART_SYSTEM_PROMPT,
-)
+from bcn.agents.writer.prompt import BRIEFING_ENRICHER_PROMPT
+from bcn.agents.writer.prompt import BRIEFING_REWRITE_PROMPT
+from bcn.agents.writer.prompt import BRIEFING_STORY_CARD_PROMPT
+from bcn.agents.writer.prompt import BRIEFING_SYSTEM_PROMPT
+from bcn.agents.writer.prompt import BRIEFING_TIGHTENER_PROMPT
+from bcn.agents.writer.prompt import COVER_ART_SYSTEM_PROMPT
+from bcn.common.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 _SKIP_DOMAINS = frozenset({
-    "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com",
+    "nvd.nist.gov",
+    "cve.mitre.org",
+    "cve.org",
+    "access.redhat.com",
 })
 
 from bcn.common.scraper import Scraper
 
+
 class WriterLLM:
+
     def __init__(self, client: LLMClient):
         self.client = client
         self.scraper = Scraper()
@@ -49,23 +52,18 @@ class WriterLLM:
             "- Fewer stories are acceptable.\n"
             "- Add deeper operator guidance and telemetry checks per item.\n"
             "- Explain tradeoffs clearly.\n"
-            if mode == "quiet_day"
-            else "Mode: standard daily briefing."
-        )
-        user_msg = (
-            f"{mode_block}\n\nStory cards ({len(story_cards)} total). "
-            "Use every `URL` exactly once in the final briefing.\n\n"
-            + cards_text
-        )
+            if mode == "quiet_day" else "Mode: standard daily briefing.")
+        user_msg = (f"{mode_block}\n\nStory cards ({len(story_cards)} total). "
+                    "Use every `URL` exactly once in the final briefing.\n\n" +
+                    cards_text)
         if style_memory:
             user_msg += "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
-        
+
         return await self.client.chat_for_role(
             role="writer",
             system_prompt=BRIEFING_SYSTEM_PROMPT,
             user_content=user_msg,
-            tools=[fetch_page_content]
-        )
+            tools=[fetch_page_content])
 
     async def tighten_briefing(
         self,
@@ -76,8 +74,7 @@ class WriterLLM:
         """Compress briefing text while preserving links and practical meaning."""
         user_msg = (
             f"Target length: <= {target_chars} chars (hard max {hard_max_chars}).\n\n"
-            f"Digest:\n{markdown}"
-        )
+            f"Digest:\n{markdown}")
         tightened = await self.client.chat_for_role(
             role="writer",
             system_prompt=BRIEFING_TIGHTENER_PROMPT,
@@ -105,17 +102,13 @@ class WriterLLM:
 
         mode_hint = (
             "quiet_day: deepen practical guidance per item and include concrete playbook flavor."
-            if mode == "quiet_day"
-            else "standard: balanced actionable digest."
-        )
+            if mode == "quiet_day" else "standard: balanced actionable digest.")
         user_msg = (
             f"Length goal: {min_chars}-{hard_max_chars} chars (target ~{target_chars}).\n"
             f"Mode: {mode_hint}\n"
             f"Current draft length: {len(draft_markdown)} chars.\n\n"
             f"Current draft:\n{draft_markdown}\n\n"
-            f"Story cards ({len(story_cards)} total):\n\n"
-            + cards_text
-        )
+            f"Story cards ({len(story_cards)} total):\n\n" + cards_text)
         if missing_urls:
             missing = "\n".join(f"- {u}" for u in missing_urls)
             user_msg += "\n\nRequired URLs currently missing and must be included exactly once:\n" + missing
@@ -124,8 +117,7 @@ class WriterLLM:
             role="writer",
             system_prompt=BRIEFING_ENRICHER_PROMPT,
             user_content=user_msg,
-            tools=[fetch_page_content]
-        )
+            tools=[fetch_page_content])
         return rewritten.strip()
 
     async def revise_briefing(
@@ -147,14 +139,13 @@ class WriterLLM:
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
 
-        fb = "\n".join(f"- {line}" for line in feedback[:40]) or "- improve overall quality"
+        fb = "\n".join(f"- {line}"
+                       for line in feedback[:40]) or "- improve overall quality"
         structured = feedback_context or {}
         structured_json = json.dumps(structured, ensure_ascii=False, indent=2)
         mode_text = (
             "quiet_day: deeper practical guidance with fewer items accepted"
-            if mode == "quiet_day"
-            else "standard daily briefing"
-        )
+            if mode == "quiet_day" else "standard daily briefing")
         user_msg = (
             f"Mode: {mode_text}\n"
             f"Target length: {min_chars}-{hard_max_chars} chars (ideal ~{target_chars}).\n\n"
@@ -164,15 +155,12 @@ class WriterLLM:
             f"{fb}\n\n"
             "Current draft:\n"
             f"{draft_markdown}\n\n"
-            "Story cards:\n\n"
-            + cards_text
-        )
+            "Story cards:\n\n" + cards_text)
         revised = await self.client.chat_for_role(
             role="writer",
             system_prompt=BRIEFING_REWRITE_PROMPT,
             user_content=user_msg,
-            tools=[fetch_page_content]
-        )
+            tools=[fetch_page_content])
         return revised.strip()
 
     async def generate_cover_prompt(self, topics: str) -> str:
@@ -191,12 +179,14 @@ class WriterLLM:
         model = (endpoint.model or "").lower()
         return endpoint.provider in {"gemini", "vertexai"} and "image" in model
 
-    async def generate_cover_image_data_url(self, prompt_text: str) -> str | None:
+    async def generate_cover_image_data_url(self,
+                                            prompt_text: str) -> str | None:
         """Generate cover image bytes via Gemini and return a data URL."""
         endpoint = self.client._endpoint("cover")
         if endpoint.provider not in {"gemini", "vertexai"}:
             return None
-        mime_type, image_bytes = await self.client.generate_gemini_image(endpoint, prompt_text)
+        mime_type, image_bytes = await self.client.generate_gemini_image(
+            endpoint, prompt_text)
         encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{mime_type};base64,{encoded}"
 
@@ -234,27 +224,33 @@ class WriterLLM:
 
         return "\n".join(snippets)
 
-    async def _build_story_cards_markdown(self, entries: list[str], items: list[dict]) -> list[str]:
+    async def _build_story_cards_markdown(self, entries: list[str],
+                                          items: list[dict]) -> list[str]:
         """Generate unstructured markdown story cards before prose generation."""
-        user_msg = (
-            f"Candidate items ({len(entries)} total):\n\n"
-            + "\n\n".join(entries)
-        )
+        user_msg = (f"Candidate items ({len(entries)} total):\n\n" +
+                    "\n\n".join(entries))
         raw = await self.client.chat_for_role(
             role="writer",
             system_prompt=BRIEFING_STORY_CARD_PROMPT,
             user_content=user_msg,
             json_response=False,
         )
-        blocks = [b.strip() for b in re.split(r"^---\s*$", raw, flags=re.MULTILINE) if b.strip()]
+        blocks = [
+            b.strip()
+            for b in re.split(r"^---\s*$", raw, flags=re.MULTILINE)
+            if b.strip()
+        ]
         if blocks:
             return blocks
-        
-        logger.warning("Failed to parse markdown story cards; using deterministic fallback cards")
+
+        logger.warning(
+            "Failed to parse markdown story cards; using deterministic fallback cards"
+        )
         out: list[str] = []
         for item in items:
             url = str(item.get("url") or "").strip()
-            summary = str(item.get("summary") or item.get("title") or "").strip()
+            summary = str(item.get("summary") or item.get("title") or
+                          "").strip()
             if not url:
                 continue
             card = (
@@ -274,20 +270,20 @@ class WriterLLM:
         ref_urls = self._extract_reference_urls(item.get("raw_data"), main_url)
         ref_urls = await self._filter_live_reference_urls(ref_urls)
 
-        entry = (
-            f"- Title: {item.get('title', '')}\n"
-            f"  URL: {main_url}\n"
-            f"  Summary: {item.get('summary', '')}\n"
-            f"  Score: {item.get('relevance_score', 0)}/10\n"
-            f"  Source: {item.get('source_type', '')}"
-        )
+        entry = (f"- Title: {item.get('title', '')}\n"
+                 f"  URL: {main_url}\n"
+                 f"  Summary: {item.get('summary', '')}\n"
+                 f"  Score: {item.get('relevance_score', 0)}/10\n"
+                 f"  Source: {item.get('source_type', '')}")
         if ref_urls:
-            entry += "\n  Reference links:\n" + "\n".join(f"    - {u}" for u in ref_urls[:3])
+            entry += "\n  Reference links:\n" + "\n".join(
+                f"    - {u}" for u in ref_urls[:3])
         else:
             entry += "\n  Reference links: none"
         return entry
 
-    def _extract_reference_urls(self, raw_data: Any, main_url: str) -> list[str]:
+    def _extract_reference_urls(self, raw_data: Any,
+                                main_url: str) -> list[str]:
         """Extract and de-duplicate candidate reference URLs from raw source payload."""
         raw: dict[str, Any] = {}
         if isinstance(raw_data, str):
@@ -305,12 +301,8 @@ class WriterLLM:
         for ref in refs:
             url = ref.get("url", "") if isinstance(ref, dict) else str(ref)
             url = url.strip()
-            if (
-                not url
-                or url in seen
-                or url == main_url
-                or any(domain in url for domain in _SKIP_DOMAINS)
-            ):
+            if (not url or url in seen or url == main_url or
+                    any(domain in url for domain in _SKIP_DOMAINS)):
                 continue
             seen.add(url)
             out.append(url)
@@ -337,7 +329,9 @@ class WriterLLM:
             return self.client._url_status_cache[url]
 
         try:
-            status, _ = await self.scraper.fetch_text(url, method="HEAD", timeout_ms=10000)
+            status, _ = await self.scraper.fetch_text(url,
+                                                      method="HEAD",
+                                                      timeout_ms=10000)
             alive = status in {200, 401, 403, 405, 429}
         except Exception:
             alive = False

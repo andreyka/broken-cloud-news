@@ -4,12 +4,14 @@ import json
 import logging
 from typing import Any
 
-from bcn.common.llm import LLMClient
 from bcn.agents.critic.prompt import BRIEFING_CRITIC_PROMPT
+from bcn.common.llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
+
 class CriticLLM:
+
     def __init__(self, client: LLMClient):
         self.client = client
 
@@ -27,20 +29,17 @@ class CriticLLM:
             f"- [{item.get('source_type', '')}] {item.get('title', '')} :: {item.get('url', '')}"
             for item in items
         ]
-        hard_text = "\n".join(f"- {issue}" for issue in (gate_hard_issues or [])) or "- none"
-        soft_text = "\n".join(f"- {issue}" for issue in (gate_soft_issues or [])) or "- none"
+        hard_text = "\n".join(
+            f"- {issue}" for issue in (gate_hard_issues or [])) or "- none"
+        soft_text = "\n".join(
+            f"- {issue}" for issue in (gate_soft_issues or [])) or "- none"
         mode_text = "quiet_day" if mode == "quiet_day" else "standard"
-        user_msg = (
-            f"Mode: {mode_text}\n"
-            f"Selected items ({len(items)}):\n"
-            + "\n".join(item_lines)
-            + "\n\nLocal quality-gate findings (HARD):\n"
-            + hard_text
-            + "\n\nLocal quality-gate findings (SOFT):\n"
-            + soft_text
-            + "\n\nDraft:\n"
-            + draft_markdown
-        )
+        user_msg = (f"Mode: {mode_text}\n"
+                    f"Selected items ({len(items)}):\n" +
+                    "\n".join(item_lines) +
+                    "\n\nLocal quality-gate findings (HARD):\n" + hard_text +
+                    "\n\nLocal quality-gate findings (SOFT):\n" + soft_text +
+                    "\n\nDraft:\n" + draft_markdown)
         raw = await self.client.chat_for_role(
             role="critic",
             system_prompt=BRIEFING_CRITIC_PROMPT,
@@ -57,11 +56,28 @@ class CriticLLM:
             if not isinstance(dimension_scores, dict):
                 dimension_scores = {}
             dims = {
-                "actionability": max(0, min(100, int(dimension_scores.get("actionability", score)))),
-                "source_diversity": max(0, min(100, int(dimension_scores.get("source_diversity", score)))),
-                "link_hygiene": max(0, min(100, int(dimension_scores.get("link_hygiene", score)))),
-                "clarity": max(0, min(100, int(dimension_scores.get("clarity", score)))),
-                "style": max(0, min(100, int(dimension_scores.get("style", score)))),
+                "actionability":
+                    max(
+                        0,
+                        min(100,
+                            int(dimension_scores.get("actionability", score)))),
+                "source_diversity":
+                    max(
+                        0,
+                        min(
+                            100,
+                            int(dimension_scores.get("source_diversity",
+                                                     score)))),
+                "link_hygiene":
+                    max(
+                        0,
+                        min(100,
+                            int(dimension_scores.get("link_hygiene", score)))),
+                "clarity":
+                    max(0, min(100, int(dimension_scores.get("clarity",
+                                                             score)))),
+                "style":
+                    max(0, min(100, int(dimension_scores.get("style", score)))),
             }
             issues = parsed.get("issues", [])
             recommendations = parsed.get("recommendations", [])
@@ -77,10 +93,13 @@ class CriticLLM:
                 "recommendations": [str(r) for r in recommendations[:12]],
             }
         except Exception:
-            logger.warning("Failed to parse briefing critique JSON, using fallback")
+            logger.warning(
+                "Failed to parse briefing critique JSON, using fallback")
             return {
-                "passed": False,
-                "score": 0,
+                "passed":
+                    False,
+                "score":
+                    0,
                 "dimension_scores": {
                     "actionability": 0,
                     "source_diversity": 0,
@@ -89,5 +108,7 @@ class CriticLLM:
                     "style": 0,
                 },
                 "issues": ["Critic response parsing failed"],
-                "recommendations": ["Regenerate briefing with stricter structure and actionable guidance"],
+                "recommendations": [
+                    "Regenerate briefing with stricter structure and actionable guidance"
+                ],
             }

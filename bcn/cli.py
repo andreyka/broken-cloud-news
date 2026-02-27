@@ -20,15 +20,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bcn")
 
-
 # Module-level settings reference (set by the ``run`` command for scheduler jobs).
 _settings: Settings | None = None
+
 
 # ---------------------------------------------------------------------------
 # A2A client helpers
 # ---------------------------------------------------------------------------
-
-
 async def _send_to_agent(port: int, skill: str) -> str:
     """Send a JSON-RPC message to a local A2A agent and return its reply.
 
@@ -40,7 +38,10 @@ async def _send_to_agent(port: int, skill: str) -> str:
         The text content extracted from the agent's response.
     """
     from a2a.client import A2AClient
-    from a2a.types import MessageSendParams, SendMessageRequest, Message, TextPart
+    from a2a.types import Message
+    from a2a.types import MessageSendParams
+    from a2a.types import SendMessageRequest
+    from a2a.types import TextPart
 
     timeout = (_settings.a2a_request_timeout_seconds if _settings else 180)
     async with httpx.AsyncClient(timeout=timeout) as http_client:
@@ -126,13 +127,16 @@ async def _run_agent_directly(
     Returns:
         Concatenated text output from the executor.
     """
-    from bcn.common.db import get_pool, close_pool
+    from bcn.common.db import close_pool
+    from bcn.common.db import get_pool
 
     await get_pool(settings)
     executor = executor_cls(settings)
 
     from a2a.server.agent_execution import RequestContext
-    from a2a.types import MessageSendParams, Message, TextPart
+    from a2a.types import Message
+    from a2a.types import MessageSendParams
+    from a2a.types import TextPart
 
     class ResultCapture:
         """Lightweight event-queue stand-in that captures agent text output."""
@@ -172,6 +176,7 @@ async def _run_agent_directly(
 # CLI Commands
 # ---------------------------------------------------------------------------
 
+
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 def cli(verbose: bool) -> None:
@@ -182,7 +187,8 @@ def cli(verbose: bool) -> None:
 
 @cli.command()
 @click.option(
-    "--source", "-s",
+    "--source",
+    "-s",
     type=click.Choice(["all", "ghsa", "rss", "twitter", "reddit"]),
     default="all",
 )
@@ -192,7 +198,8 @@ def collect(source: str) -> None:
 
     async def _run():
         from bcn.agents.collector.agent import CollectorExecutor
-        from bcn.common.db import get_pool, close_pool
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
 
         await get_pool(settings)
         executor = CollectorExecutor(settings)
@@ -211,10 +218,8 @@ def collect(source: str) -> None:
             click.echo(f"Reddit: collected {count} items")
         else:
             counts = await executor._collect_all()
-            click.echo(
-                f"All: GHSA={counts[0]}, RSS={counts[1]}, "
-                f"Twitter={counts[2]}, Reddit={counts[3]}"
-            )
+            click.echo(f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                       f"Twitter={counts[2]}, Reddit={counts[3]}")
 
         await close_pool()
 
@@ -258,10 +263,18 @@ def write() -> None:
 
 
 @cli.command()
-@click.option("--latest", is_flag=True, help="Critique the latest stored briefing")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False))
-@click.option("--text", "text_input", type=str, help="Inline markdown text to critique")
-def critique(latest: bool, file_path: str | None, text_input: str | None) -> None:
+@click.option("--latest",
+              is_flag=True,
+              help="Critique the latest stored briefing")
+@click.option("--file",
+              "file_path",
+              type=click.Path(exists=True, dir_okay=False))
+@click.option("--text",
+              "text_input",
+              type=str,
+              help="Inline markdown text to critique")
+def critique(latest: bool, file_path: str | None,
+             text_input: str | None) -> None:
     """Run the critic against latest briefing or provided markdown text."""
     settings = Settings()
 
@@ -276,7 +289,8 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
             skill = f"critique_markdown::{body}"
         else:
             # Default to latest briefing to make this command useful out-of-the-box.
-            skill = "critique_latest" if latest or (not file_path and not text_input) else ""
+            skill = "critique_latest" if latest or (not file_path and
+                                                    not text_input) else ""
 
         result = await _run_agent_directly(
             executor_cls=CriticExecutor,
@@ -289,9 +303,16 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
 
 
 @cli.command()
-@click.option("--latest", is_flag=True, help="Verify the latest stored briefing")
-@click.option("--file", "file_path", type=click.Path(exists=True, dir_okay=False))
-@click.option("--text", "text_input", type=str, help="Inline markdown text to verify")
+@click.option("--latest",
+              is_flag=True,
+              help="Verify the latest stored briefing")
+@click.option("--file",
+              "file_path",
+              type=click.Path(exists=True, dir_okay=False))
+@click.option("--text",
+              "text_input",
+              type=str,
+              help="Inline markdown text to verify")
 def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
     """Run factual verifier against latest briefing or provided markdown text."""
     settings = Settings()
@@ -306,7 +327,8 @@ def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
             body = Path(file_path).read_text(encoding="utf-8")
             skill = f"verify_markdown::{body}"
         else:
-            skill = "verify_latest" if latest or (not file_path and not text_input) else ""
+            skill = "verify_latest" if latest or (not file_path and
+                                                  not text_input) else ""
 
         result = await _run_agent_directly(
             executor_cls=VerifierExecutor,
@@ -369,15 +391,14 @@ def simulate(
     settings = Settings()
 
     async def _run():
-        from bcn.common.db import (
-            close_pool,
-            count_simulation_runs,
-            ensure_simulation_tables,
-            get_latest_simulation_report,
-            get_pool,
-            insert_simulation_report,
-        )
-        from bcn.simulation import compare_simulation_reports, simulate_historical_briefings
+        from bcn.common.db import close_pool
+        from bcn.common.db import count_simulation_runs
+        from bcn.common.db import ensure_simulation_tables
+        from bcn.common.db import get_latest_simulation_report
+        from bcn.common.db import get_pool
+        from bcn.common.db import insert_simulation_report
+        from bcn.simulation import compare_simulation_reports
+        from bcn.simulation import simulate_historical_briefings
 
         await get_pool(settings)
         out_file = Path(output_path)
@@ -388,17 +409,24 @@ def simulate(
             existing_runs = await count_simulation_runs()
             if existing_runs == 0 and out_file.exists():
                 try:
-                    previous_payload = json.loads(out_file.read_text(encoding="utf-8"))
-                    if isinstance(previous_payload, dict) and isinstance(previous_payload.get("results"), list):
+                    previous_payload = json.loads(
+                        out_file.read_text(encoding="utf-8"))
+                    if isinstance(previous_payload, dict) and isinstance(
+                            previous_payload.get("results"), list):
                         imported_id = await insert_simulation_report(
                             previous_payload,
                             report_path=str(out_file),
                             source="imported_file",
-                            notes="Imported from existing simulation output file.",
+                            notes=
+                            "Imported from existing simulation output file.",
                         )
-                        click.echo(f"Imported baseline simulation from {output_path} (run_id={imported_id})")
+                        click.echo(
+                            f"Imported baseline simulation from {output_path} (run_id={imported_id})"
+                        )
                 except Exception as exc:
-                    click.echo(f"Skipped baseline import from {output_path}: {exc}", err=True)
+                    click.echo(
+                        f"Skipped baseline import from {output_path}: {exc}",
+                        err=True)
             baseline_report = await get_latest_simulation_report()
 
         report = await simulate_historical_briefings(
@@ -418,7 +446,8 @@ def simulate(
             report["db_run_id"] = str(run_id)
             if baseline_report:
                 comparison = compare_simulation_reports(report, baseline_report)
-                comparison["baseline_db_run_id"] = baseline_report.get("db_run_id")
+                comparison["baseline_db_run_id"] = baseline_report.get(
+                    "db_run_id")
                 report["comparison_to_previous_run"] = comparison
 
         out_file.write_text(
@@ -427,28 +456,25 @@ def simulate(
         )
 
         summary = report.get("summary", {}) if isinstance(report, dict) else {}
-        click.echo(
-            "Simulation complete: "
-            f"count={report.get('count', 0)} "
-            f"avg_actual={summary.get('avg_actual_score', 0)} "
-            f"avg_simulated={summary.get('avg_simulated_score', 0)} "
-            f"avg_delta={summary.get('avg_delta', 0)}"
-        )
-        click.echo(
-            "Outcome split: "
-            f"improved={summary.get('improved', 0)} "
-            f"regressed={summary.get('regressed', 0)} "
-            f"equal={summary.get('equal', 0)}"
-        )
-        gate_quality = summary.get("gate_quality", {}) if isinstance(summary, dict) else {}
+        click.echo("Simulation complete: "
+                   f"count={report.get('count', 0)} "
+                   f"avg_actual={summary.get('avg_actual_score', 0)} "
+                   f"avg_simulated={summary.get('avg_simulated_score', 0)} "
+                   f"avg_delta={summary.get('avg_delta', 0)}")
+        click.echo("Outcome split: "
+                   f"improved={summary.get('improved', 0)} "
+                   f"regressed={summary.get('regressed', 0)} "
+                   f"equal={summary.get('equal', 0)}")
+        gate_quality = summary.get("gate_quality", {}) if isinstance(
+            summary, dict) else {}
         if isinstance(gate_quality, dict):
             click.echo(
                 "Hard-gate pass rate: "
                 f"actual={gate_quality.get('actual_hard_pass_rate', 0)} "
                 f"simulated={gate_quality.get('simulated_hard_pass_rate', 0)} "
-                f"change={gate_quality.get('hard_pass_rate_change', 0)}"
-            )
-        focus_metrics = summary.get("focus_metrics", {}) if isinstance(summary, dict) else {}
+                f"change={gate_quality.get('hard_pass_rate_change', 0)}")
+        focus_metrics = summary.get("focus_metrics", {}) if isinstance(
+            summary, dict) else {}
         if isinstance(focus_metrics, dict):
             click.echo(
                 "Human-writer pass rate: "
@@ -468,13 +494,12 @@ def simulate(
                 f"simulated={focus_metrics.get('duplicate_link_issue_rate_simulated', 0)} "
                 f"change={focus_metrics.get('duplicate_link_issue_rate_change', 0)}"
             )
-        decision = summary.get("decision", {}) if isinstance(summary, dict) else {}
+        decision = summary.get("decision", {}) if isinstance(summary,
+                                                             dict) else {}
         if isinstance(decision, dict) and decision:
-            click.echo(
-                "Recommendation: "
-                f"{decision.get('recommendation', 'hold')} "
-                f"(confidence={decision.get('confidence', 'low')})"
-            )
+            click.echo("Recommendation: "
+                       f"{decision.get('recommendation', 'hold')} "
+                       f"(confidence={decision.get('confidence', 'low')})")
             rationale = str(decision.get("rationale", "") or "").strip()
             if rationale:
                 click.echo(f"Decision rationale: {rationale}")
@@ -487,13 +512,11 @@ def simulate(
                     f"overlap={comparison.get('overlap_count', 0)} "
                     f"avg_sim_score_change={comparison.get('avg_simulated_score_change', 0)} "
                     f"improved={comparison.get('improved_vs_previous', 0)} "
-                    f"regressed={comparison.get('regressed_vs_previous', 0)}"
-                )
+                    f"regressed={comparison.get('regressed_vs_previous', 0)}")
                 click.echo(
                     "Decision shift: "
                     f"{comparison.get('baseline_decision', '')} -> {comparison.get('current_decision', '')} "
-                    f"(changed={comparison.get('decision_changed', False)})"
-                )
+                    f"(changed={comparison.get('decision_changed', False)})")
                 click.echo(
                     "Quality-focus shift: "
                     f"human_writer={comparison.get('human_writer_pass_rate_change', 0)} "
@@ -501,7 +524,8 @@ def simulate(
                     f"dup_link_issue={comparison.get('duplicate_link_issue_rate_change', 0)}"
                 )
             else:
-                click.echo("No previous simulation run available for comparison.")
+                click.echo(
+                    "No previous simulation run available for comparison.")
         click.echo(f"Report written to {output_path}")
         click.echo("No distribution action was performed.")
         await close_pool()
@@ -515,18 +539,18 @@ def distribute() -> None:
     settings = Settings()
 
     async def _run():
-        from bcn.common.db import (
-            close_pool,
-            get_latest_briefing,
-            get_pool,
-            mark_briefing_distributed,
-            mark_items_published,
-            upsert_distribution_outcome,
-        )
-        from bcn.distributors.telegram import TelegramDistributor
+        from datetime import datetime
+        from datetime import timezone
+
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_latest_briefing
+        from bcn.common.db import get_pool
+        from bcn.common.db import mark_briefing_distributed
+        from bcn.common.db import mark_items_published
+        from bcn.common.db import upsert_distribution_outcome
         from bcn.distributors.email import EmailDistributor
         from bcn.distributors.slack import SlackDistributor
-        from datetime import datetime, timezone
+        from bcn.distributors.telegram import TelegramDistributor
 
         await get_pool(settings)
         briefing = await get_latest_briefing()
@@ -535,7 +559,8 @@ def distribute() -> None:
             await close_pool()
             return
 
-        channels: list[tuple[str, TelegramDistributor | EmailDistributor | SlackDistributor]] = []
+        channels: list[tuple[str, TelegramDistributor | EmailDistributor |
+                             SlackDistributor]] = []
         if settings.telegram_bot_token and settings.telegram_chat_id:
             channels.append((
                 "telegram",
@@ -546,12 +571,18 @@ def distribute() -> None:
                 ),
             ))
         if settings.smtp_host and settings.email_recipients:
-            channels.append(("email", EmailDistributor(
-                settings.smtp_host, settings.smtp_port, settings.smtp_user,
-                settings.smtp_password, settings.email_from, settings.email_recipients,
-            )))
+            channels.append(("email",
+                             EmailDistributor(
+                                 settings.smtp_host,
+                                 settings.smtp_port,
+                                 settings.smtp_user,
+                                 settings.smtp_password,
+                                 settings.email_from,
+                                 settings.email_recipients,
+                             )))
         if settings.slack_webhook_url:
-            channels.append(("slack", SlackDistributor(settings.slack_webhook_url)))
+            channels.append(
+                ("slack", SlackDistributor(settings.slack_webhook_url)))
 
         if not channels:
             click.echo("No distribution channels configured")
@@ -567,8 +598,10 @@ def distribute() -> None:
             external_message_id: str | None = None
             try:
                 if name == "telegram":
-                    ok = await channel.send(briefing["content_markdown"], briefing["cover_image_url"])
-                    if hasattr(channel, "last_result") and isinstance(channel.last_result, dict):
+                    ok = await channel.send(briefing["content_markdown"],
+                                            briefing["cover_image_url"])
+                    if hasattr(channel, "last_result") and isinstance(
+                            channel.last_result, dict):
                         metadata = dict(channel.last_result)
                         msg_id = metadata.get("primary_message_id")
                         if msg_id is not None:
@@ -576,14 +609,21 @@ def distribute() -> None:
                 elif name == "email":
                     ok = await channel.send(
                         f"Broken Cloud News - {today}",
-                        briefing["content_html"] or briefing["content_markdown"],
+                        briefing["content_html"] or
+                        briefing["content_markdown"],
                     )
-                    metadata = {"recipient_count": len(getattr(channel, "recipients", []))}
-                elif name == "slack":
-                    ok = await channel.send(briefing["content_markdown"], briefing["cover_image_url"])
                     metadata = {
-                        "cover_image": bool(briefing["cover_image_url"]),
-                        "markdown_chars": len(str(briefing["content_markdown"] or "")),
+                        "recipient_count":
+                            len(getattr(channel, "recipients", []))
+                    }
+                elif name == "slack":
+                    ok = await channel.send(briefing["content_markdown"],
+                                            briefing["cover_image_url"])
+                    metadata = {
+                        "cover_image":
+                            bool(briefing["cover_image_url"]),
+                        "markdown_chars":
+                            len(str(briefing["content_markdown"] or "")),
                     }
                 else:
                     ok = False
@@ -621,14 +661,19 @@ def distribute() -> None:
 
 
 @cli.command("review")
-@click.option("--briefing-id", type=str, help="Briefing UUID to review (defaults to latest).")
+@click.option("--briefing-id",
+              type=str,
+              help="Briefing UUID to review (defaults to latest).")
 @click.option(
     "--decision",
     type=click.Choice(["accept", "reject", "edit", "needs_work"]),
     required=True,
     help="Human review decision label.",
 )
-@click.option("--issue-tag", "issue_tags", multiple=True, help="Issue tag (repeatable).")
+@click.option("--issue-tag",
+              "issue_tags",
+              multiple=True,
+              help="Issue tag (repeatable).")
 @click.option("--edited-file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--edited-text", type=str, help="Edited markdown text.")
 @click.option("--notes", type=str, help="Free-form reviewer notes.")
@@ -648,24 +693,24 @@ def review(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.common.db import (
-            close_pool,
-            get_briefing_by_id,
-            get_latest_any_briefing,
-            get_latest_generation_run_for_briefing,
-            get_pool,
-            insert_human_review,
-        )
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_briefing_by_id
+        from bcn.common.db import get_latest_any_briefing
+        from bcn.common.db import get_latest_generation_run_for_briefing
+        from bcn.common.db import get_pool
+        from bcn.common.db import insert_human_review
 
         if edited_file and edited_text:
-            raise click.ClickException("Use either --edited-file or --edited-text, not both.")
+            raise click.ClickException(
+                "Use either --edited-file or --edited-text, not both.")
 
         parsed_id = None
         if briefing_id:
             try:
                 parsed_id = UUID(briefing_id)
             except ValueError as exc:
-                raise click.ClickException(f"Invalid briefing UUID: {briefing_id}") from exc
+                raise click.ClickException(
+                    f"Invalid briefing UUID: {briefing_id}") from exc
 
         await get_pool(settings)
         briefing = None
@@ -694,10 +739,8 @@ def review(
             edited_markdown=edited_markdown,
             notes=notes,
         )
-        click.echo(
-            f"Stored review {review_id} for briefing {briefing['id']} "
-            f"(decision={decision}, tags={len(issue_tags)})"
-        )
+        click.echo(f"Stored review {review_id} for briefing {briefing['id']} "
+                   f"(decision={decision}, tags={len(issue_tags)})")
         await close_pool()
 
     asyncio.run(_run())
@@ -705,16 +748,21 @@ def review(
 
 @cli.command("review-queue")
 @click.option("--limit", type=int, default=20, show_default=True)
-@click.option("--only-unreviewed", is_flag=True, help="Show only briefings without reviews.")
+@click.option("--only-unreviewed",
+              is_flag=True,
+              help="Show only briefings without reviews.")
 def review_queue(limit: int, only_unreviewed: bool) -> None:
     """List recent briefings and review status."""
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool, get_pool, get_review_queue
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.common.db import get_review_queue
 
         await get_pool(settings)
-        rows = await get_review_queue(limit=max(1, int(limit)), only_unreviewed=only_unreviewed)
+        rows = await get_review_queue(limit=max(1, int(limit)),
+                                      only_unreviewed=only_unreviewed)
         if not rows:
             click.echo("No briefings in review queue")
             await close_pool()
@@ -736,14 +784,18 @@ def review_queue(limit: int, only_unreviewed: bool) -> None:
 
 @cli.command("record-outcome")
 @click.option("--briefing-id", required=True, help="Briefing UUID.")
-@click.option("--channel", required=True, help="Channel name (telegram/email/slack/etc).")
+@click.option("--channel",
+              required=True,
+              help="Channel name (telegram/email/slack/etc).")
 @click.option("--status", default="ok", show_default=True)
 @click.option("--message-id", type=str, help="External message/post id.")
 @click.option("--post-url", type=str, help="External post URL.")
 @click.option("--views", type=int, help="View count metric.")
 @click.option("--reactions", type=int, help="Reaction count metric.")
 @click.option("--clicks", type=int, help="Click count metric.")
-@click.option("--link-clicks", type=str, help="JSON object with per-link clicks.")
+@click.option("--link-clicks",
+              type=str,
+              help="JSON object with per-link clicks.")
 @click.option("--metadata", type=str, help="JSON object with extra metadata.")
 def record_outcome(
     briefing_id: str,
@@ -763,19 +815,23 @@ def record_outcome(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.common.db import close_pool, get_pool, upsert_distribution_outcome
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.common.db import upsert_distribution_outcome
 
         try:
             parsed_id = UUID(briefing_id)
         except ValueError as exc:
-            raise click.ClickException(f"Invalid briefing UUID: {briefing_id}") from exc
+            raise click.ClickException(
+                f"Invalid briefing UUID: {briefing_id}") from exc
 
         link_clicks_payload: dict[str, Any] = {}
         if link_clicks:
             try:
                 parsed_clicks = json.loads(link_clicks)
             except json.JSONDecodeError as exc:
-                raise click.ClickException(f"--link-clicks must be valid JSON: {exc}") from exc
+                raise click.ClickException(
+                    f"--link-clicks must be valid JSON: {exc}") from exc
             if isinstance(parsed_clicks, dict):
                 link_clicks_payload = parsed_clicks
 
@@ -784,7 +840,8 @@ def record_outcome(
             try:
                 parsed_meta = json.loads(metadata)
             except json.JSONDecodeError as exc:
-                raise click.ClickException(f"--metadata must be valid JSON: {exc}") from exc
+                raise click.ClickException(
+                    f"--metadata must be valid JSON: {exc}") from exc
             if isinstance(parsed_meta, dict):
                 metadata_payload = parsed_meta
 
@@ -818,8 +875,16 @@ def record_outcome(
 
 @cli.command("export-training")
 @click.option("--output-dir", default="training_export", show_default=True)
-@click.option("--limit", type=int, default=0, show_default=True, help="Max runs to export (0=all).")
-@click.option("--since-days", type=int, default=0, show_default=True, help="Only runs from last N days.")
+@click.option("--limit",
+              type=int,
+              default=0,
+              show_default=True,
+              help="Max runs to export (0=all).")
+@click.option("--since-days",
+              type=int,
+              default=0,
+              show_default=True,
+              help="Only runs from last N days.")
 @click.option(
     "--include-blocked/--published-only",
     default=False,
@@ -839,15 +904,13 @@ def export_training(
         from datetime import datetime
         from uuid import UUID
 
-        from bcn.common.db import (
-            close_pool,
-            get_distribution_outcomes,
-            get_generation_preference_pairs_for_runs,
-            get_generation_rounds_for_runs,
-            get_generation_runs_for_export,
-            get_human_reviews,
-            get_pool,
-        )
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_distribution_outcomes
+        from bcn.common.db import get_generation_preference_pairs_for_runs
+        from bcn.common.db import get_generation_rounds_for_runs
+        from bcn.common.db import get_generation_runs_for_export
+        from bcn.common.db import get_human_reviews
+        from bcn.common.db import get_pool
 
         def _iso(value: Any) -> str | None:
             if hasattr(value, "isoformat"):
@@ -878,11 +941,14 @@ def export_training(
             return
 
         run_ids: list[UUID] = [row["id"] for row in runs]
-        briefing_ids: list[UUID] = [row["briefing_id"] for row in runs if row["briefing_id"]]
+        briefing_ids: list[UUID] = [
+            row["briefing_id"] for row in runs if row["briefing_id"]
+        ]
         rounds = await get_generation_rounds_for_runs(run_ids)
         prefs = await get_generation_preference_pairs_for_runs(run_ids)
         reviews = await get_human_reviews(run_ids=run_ids)
-        outcomes = await get_distribution_outcomes(briefing_ids=briefing_ids) if briefing_ids else []
+        outcomes = await get_distribution_outcomes(
+            briefing_ids=briefing_ids) if briefing_ids else []
 
         rounds_by_run: dict[str, list[dict[str, Any]]] = {}
         for row in rounds:
@@ -894,7 +960,8 @@ def export_training(
         for row in reviews:
             payload = dict(row)
             run_key = str(payload["run_id"]) if payload.get("run_id") else ""
-            briefing_key = str(payload["briefing_id"]) if payload.get("briefing_id") else ""
+            briefing_key = str(
+                payload["briefing_id"]) if payload.get("briefing_id") else ""
             if run_key:
                 reviews_by_run.setdefault(run_key, []).append(payload)
             if briefing_key:
@@ -905,10 +972,13 @@ def export_training(
             raw_payload = dict(row)
             payload: dict[str, Any] = {}
             for key, value in raw_payload.items():
-                payload[key] = _iso(value) if hasattr(value, "isoformat") else value
-            briefing_key = str(payload["briefing_id"]) if payload.get("briefing_id") else ""
+                payload[key] = _iso(value) if hasattr(value,
+                                                      "isoformat") else value
+            briefing_key = str(
+                payload["briefing_id"]) if payload.get("briefing_id") else ""
             if briefing_key:
-                outcomes_by_briefing.setdefault(briefing_key, []).append(payload)
+                outcomes_by_briefing.setdefault(briefing_key,
+                                                []).append(payload)
 
         for payloads in reviews_by_run.values():
             payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
@@ -927,10 +997,12 @@ def export_training(
         for run in runs:
             run_dict = dict(run)
             run_key = str(run_dict["id"])
-            briefing_key = str(run_dict["briefing_id"]) if run_dict.get("briefing_id") else ""
+            briefing_key = str(
+                run_dict["briefing_id"]) if run_dict.get("briefing_id") else ""
             selected_items = _normalize_json(run_dict.get("selected_items"), [])
             prompts = _normalize_json(run_dict.get("prompts"), {})
-            config_snapshot = _normalize_json(run_dict.get("config_snapshot"), {})
+            config_snapshot = _normalize_json(run_dict.get("config_snapshot"),
+                                              {})
             run_reviews = reviews_by_run.get(run_key, [])
             briefing_reviews = reviews_by_briefing.get(briefing_key, [])
             latest_review = (run_reviews or briefing_reviews or [None])[0]
@@ -939,71 +1011,107 @@ def export_training(
             if latest_review and latest_review.get("edited_markdown"):
                 decision = str(latest_review.get("decision") or "").lower()
                 if decision in {"edit", "accept"}:
-                    target_markdown = str(latest_review["edited_markdown"]).strip() or target_markdown
+                    target_markdown = str(latest_review["edited_markdown"]
+                                         ).strip() or target_markdown
 
             if target_markdown:
-                sft_rows.append(
-                    {
-                        "id": run_key,
-                        "briefing_id": briefing_key or None,
-                        "decision": str(run_dict.get("decision") or ""),
-                        "mode": str(run_dict.get("mode") or "standard"),
-                        "input": {
-                            "selected_items": selected_items,
-                            "prompt_versions": prompts,
-                        },
-                        "output_markdown": target_markdown,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": json.dumps(
+                sft_rows.append({
+                    "id": run_key,
+                    "briefing_id": briefing_key or None,
+                    "decision": str(run_dict.get("decision") or ""),
+                    "mode": str(run_dict.get("mode") or "standard"),
+                    "input": {
+                        "selected_items": selected_items,
+                        "prompt_versions": prompts,
+                    },
+                    "output_markdown": target_markdown,
+                    "messages": [
+                        {
+                            "role":
+                                "user",
+                            "content":
+                                json.dumps(
                                     {
-                                        "mode": str(run_dict.get("mode") or "standard"),
-                                        "selected_items": selected_items,
-                                        "prompt_versions": prompts,
+                                        "mode":
+                                            str(
+                                                run_dict.get("mode") or
+                                                "standard"),
+                                        "selected_items":
+                                            selected_items,
+                                        "prompt_versions":
+                                            prompts,
                                     },
                                     ensure_ascii=False,
                                 ),
-                            },
-                            {"role": "assistant", "content": target_markdown},
-                        ],
-                        "metadata": {
-                            "created_at": _iso(run_dict.get("created_at")),
-                            "rewrite_count": int(run_dict.get("rewrite_count") or 0),
-                            "llm_model": run_dict.get("llm_model"),
-                            "llm_model_version": run_dict.get("llm_model_version"),
-                            "git_sha": run_dict.get("git_sha"),
-                            "review_decision": latest_review.get("decision") if latest_review else None,
-                            "distribution_outcomes": outcomes_by_briefing.get(briefing_key, []),
-                            "config_snapshot": config_snapshot,
                         },
-                    }
-                )
+                        {
+                            "role": "assistant",
+                            "content": target_markdown
+                        },
+                    ],
+                    "metadata": {
+                        "created_at":
+                            _iso(run_dict.get("created_at")),
+                        "rewrite_count":
+                            int(run_dict.get("rewrite_count") or 0),
+                        "llm_model":
+                            run_dict.get("llm_model"),
+                        "llm_model_version":
+                            run_dict.get("llm_model_version"),
+                        "git_sha":
+                            run_dict.get("git_sha"),
+                        "review_decision":
+                            latest_review.get("decision")
+                            if latest_review else None,
+                        "distribution_outcomes":
+                            outcomes_by_briefing.get(briefing_key, []),
+                        "config_snapshot":
+                            config_snapshot,
+                    },
+                })
 
-            trace_rows.append(
-                {
-                    "run_id": run_key,
-                    "briefing_id": briefing_key or None,
-                    "created_at": _iso(run_dict.get("created_at")),
-                    "decision": run_dict.get("decision"),
-                    "decision_reason": run_dict.get("decision_reason"),
-                    "rewrite_count": int(run_dict.get("rewrite_count") or 0),
-                    "llm_model": run_dict.get("llm_model"),
-                    "llm_model_version": run_dict.get("llm_model_version"),
-                    "git_sha": run_dict.get("git_sha"),
-                    "selected_items": selected_items,
-                    "prompt_versions": prompts,
-                    "config_snapshot": config_snapshot,
-                    "initial_draft": run_dict.get("initial_draft"),
-                    "final_draft": run_dict.get("final_draft"),
-                    "final_gate": _normalize_json(run_dict.get("final_gate"), {}),
-                    "final_critique": _normalize_json(run_dict.get("final_critique"), {}),
-                    "final_verifier": _normalize_json(run_dict.get("final_verifier"), {}),
-                    "rounds": rounds_by_run.get(run_key, []),
-                    "human_reviews": run_reviews or briefing_reviews,
-                    "distribution_outcomes": outcomes_by_briefing.get(briefing_key, []),
-                }
-            )
+            trace_rows.append({
+                "run_id":
+                    run_key,
+                "briefing_id":
+                    briefing_key or None,
+                "created_at":
+                    _iso(run_dict.get("created_at")),
+                "decision":
+                    run_dict.get("decision"),
+                "decision_reason":
+                    run_dict.get("decision_reason"),
+                "rewrite_count":
+                    int(run_dict.get("rewrite_count") or 0),
+                "llm_model":
+                    run_dict.get("llm_model"),
+                "llm_model_version":
+                    run_dict.get("llm_model_version"),
+                "git_sha":
+                    run_dict.get("git_sha"),
+                "selected_items":
+                    selected_items,
+                "prompt_versions":
+                    prompts,
+                "config_snapshot":
+                    config_snapshot,
+                "initial_draft":
+                    run_dict.get("initial_draft"),
+                "final_draft":
+                    run_dict.get("final_draft"),
+                "final_gate":
+                    _normalize_json(run_dict.get("final_gate"), {}),
+                "final_critique":
+                    _normalize_json(run_dict.get("final_critique"), {}),
+                "final_verifier":
+                    _normalize_json(run_dict.get("final_verifier"), {}),
+                "rounds":
+                    rounds_by_run.get(run_key, []),
+                "human_reviews":
+                    run_reviews or briefing_reviews,
+                "distribution_outcomes":
+                    outcomes_by_briefing.get(briefing_key, []),
+            })
 
         pref_rows: list[dict[str, Any]] = []
         run_lookup = {str(dict(run)["id"]): dict(run) for run in runs}
@@ -1011,30 +1119,29 @@ def export_training(
             payload = dict(row)
             run_key = str(payload["run_id"])
             run_context = run_lookup.get(run_key, {})
-            pref_rows.append(
-                {
-                    "id": int(payload["id"]),
-                    "run_id": run_key,
-                    "source": str(payload.get("source") or "auto_writer_loop"),
-                    "round_index": int(payload.get("round_index") or 0),
-                    "chosen": str(payload.get("chosen_text") or ""),
-                    "rejected": str(payload.get("rejected_text") or ""),
-                    "rationale": str(payload.get("rationale") or ""),
-                    "context": {
-                        "mode": str(run_context.get("mode") or "standard"),
-                        "selected_items": _normalize_json(run_context.get("selected_items"), []),
-                        "prompt_versions": _normalize_json(run_context.get("prompts"), {}),
-                    },
-                    "metadata": {
-                        "created_at": _iso(payload.get("created_at")),
-                        "briefing_id": (
-                            str(run_context.get("briefing_id"))
-                            if run_context.get("briefing_id")
-                            else None
-                        ),
-                    },
-                }
-            )
+            pref_rows.append({
+                "id": int(payload["id"]),
+                "run_id": run_key,
+                "source": str(payload.get("source") or "auto_writer_loop"),
+                "round_index": int(payload.get("round_index") or 0),
+                "chosen": str(payload.get("chosen_text") or ""),
+                "rejected": str(payload.get("rejected_text") or ""),
+                "rationale": str(payload.get("rationale") or ""),
+                "context": {
+                    "mode":
+                        str(run_context.get("mode") or "standard"),
+                    "selected_items":
+                        _normalize_json(run_context.get("selected_items"), []),
+                    "prompt_versions":
+                        _normalize_json(run_context.get("prompts"), {}),
+                },
+                "metadata": {
+                    "created_at":
+                        _iso(payload.get("created_at")),
+                    "briefing_id": (str(run_context.get("briefing_id")) if
+                                    run_context.get("briefing_id") else None),
+                },
+            })
 
         # Add human-edited preference pairs where edits differ from final output.
         for review_list in reviews_by_run.values():
@@ -1051,26 +1158,37 @@ def export_training(
                 decision = str(review_row.get("decision") or "").lower()
                 if decision not in {"edit", "accept"}:
                     continue
-                pref_rows.append(
-                    {
-                        "id": f"human-{review_row.get('id')}",
-                        "run_id": run_key,
-                        "source": "human_review",
-                        "round_index": -1,
-                        "chosen": edited,
-                        "rejected": final,
-                        "rationale": str(review_row.get("notes") or "human edited preferred variant"),
-                        "context": {
-                            "mode": str(run_context.get("mode") or "standard"),
-                            "selected_items": _normalize_json(run_context.get("selected_items"), []),
-                            "prompt_versions": _normalize_json(run_context.get("prompts"), {}),
-                        },
-                        "metadata": {
-                            "review_id": str(review_row.get("id")),
-                            "created_at": _iso(review_row.get("created_at")),
-                        },
-                    }
-                )
+                pref_rows.append({
+                    "id":
+                        f"human-{review_row.get('id')}",
+                    "run_id":
+                        run_key,
+                    "source":
+                        "human_review",
+                    "round_index":
+                        -1,
+                    "chosen":
+                        edited,
+                    "rejected":
+                        final,
+                    "rationale":
+                        str(
+                            review_row.get("notes") or
+                            "human edited preferred variant"),
+                    "context": {
+                        "mode":
+                            str(run_context.get("mode") or "standard"),
+                        "selected_items":
+                            _normalize_json(run_context.get("selected_items"),
+                                            []),
+                        "prompt_versions":
+                            _normalize_json(run_context.get("prompts"), {}),
+                    },
+                    "metadata": {
+                        "review_id": str(review_row.get("id")),
+                        "created_at": _iso(review_row.get("created_at")),
+                    },
+                })
 
         with sft_path.open("w", encoding="utf-8") as handle:
             for row in sft_rows:
@@ -1080,7 +1198,8 @@ def export_training(
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         with trace_path.open("w", encoding="utf-8") as handle:
             for row in trace_rows:
-                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+                handle.write(
+                    json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
         manifest = {
             "generated_at": datetime.utcnow().isoformat() + "Z",
@@ -1099,12 +1218,14 @@ def export_training(
                 "trace_jsonl": str(trace_path),
             },
         }
-        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest,
+                                            ensure_ascii=False,
+                                            indent=2),
+                                 encoding="utf-8")
 
         click.echo(
             f"Export complete: runs={len(runs)} sft_rows={len(sft_rows)} "
-            f"preference_rows={len(pref_rows)}"
-        )
+            f"preference_rows={len(pref_rows)}")
         click.echo(f"  SFT: {sft_path}")
         click.echo(f"  Preference: {pref_path}")
         click.echo(f"  Traces: {trace_path}")
@@ -1139,17 +1260,25 @@ def run() -> None:
     _settings = settings
 
     async def _daemon():
-        from bcn.agents.base import build_agent_card, serve_agent
-        from bcn.agents.collector.agent import CollectorExecutor, SKILLS as COLL_SKILLS
-        from bcn.agents.analyst.agent import AnalystExecutor, SKILLS as ANAL_SKILLS
-        from bcn.agents.writer.agent import WriterExecutor, SKILLS as WRIT_SKILLS
-        from bcn.agents.distributor.agent import DistributorExecutor, SKILLS as DIST_SKILLS
-        from bcn.agents.critic.agent import CriticExecutor, SKILLS as CRIT_SKILLS
-        from bcn.agents.verifier.agent import VerifierExecutor, SKILLS as VERI_SKILLS
-        from bcn.common.db import get_pool
         from apscheduler import AsyncScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
         from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        from bcn.agents.analyst.agent import AnalystExecutor
+        from bcn.agents.analyst.agent import SKILLS as ANAL_SKILLS
+        from bcn.agents.base import build_agent_card
+        from bcn.agents.base import serve_agent
+        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.agent import SKILLS as COLL_SKILLS
+        from bcn.agents.critic.agent import CriticExecutor
+        from bcn.agents.critic.agent import SKILLS as CRIT_SKILLS
+        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.distributor.agent import SKILLS as DIST_SKILLS
+        from bcn.agents.verifier.agent import SKILLS as VERI_SKILLS
+        from bcn.agents.verifier.agent import VerifierExecutor
+        from bcn.agents.writer.agent import SKILLS as WRIT_SKILLS
+        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.common.db import get_pool
 
         await get_pool(settings)
 
@@ -1157,28 +1286,40 @@ def run() -> None:
 
         # Build agent cards
         collector_card = build_agent_card(
-            "BCN Collector", "Collects cloud security news from GHSA, Twitter, RSS, Reddit",
-            f"http://localhost:{settings.collector_port}/", COLL_SKILLS,
+            "BCN Collector",
+            "Collects cloud security news from GHSA, Twitter, RSS, Reddit",
+            f"http://localhost:{settings.collector_port}/",
+            COLL_SKILLS,
         )
         analyst_card = build_agent_card(
-            "BCN Analyst", "Analyzes news items for relevance scoring",
-            f"http://localhost:{settings.analyst_port}/", ANAL_SKILLS,
+            "BCN Analyst",
+            "Analyzes news items for relevance scoring",
+            f"http://localhost:{settings.analyst_port}/",
+            ANAL_SKILLS,
         )
         writer_card = build_agent_card(
-            "BCN Writer", "Generates security briefings with cover images",
-            f"http://localhost:{settings.writer_port}/", WRIT_SKILLS,
+            "BCN Writer",
+            "Generates security briefings with cover images",
+            f"http://localhost:{settings.writer_port}/",
+            WRIT_SKILLS,
         )
         distributor_card = build_agent_card(
-            "BCN Distributor", "Distributes briefings to Telegram, Email, Slack",
-            f"http://localhost:{settings.distributor_port}/", DIST_SKILLS,
+            "BCN Distributor",
+            "Distributes briefings to Telegram, Email, Slack",
+            f"http://localhost:{settings.distributor_port}/",
+            DIST_SKILLS,
         )
         critic_card = build_agent_card(
-            "BCN Critic", "Critiques briefing quality and provides recommendations",
-            f"http://localhost:{settings.critic_port}/", CRIT_SKILLS,
+            "BCN Critic",
+            "Critiques briefing quality and provides recommendations",
+            f"http://localhost:{settings.critic_port}/",
+            CRIT_SKILLS,
         )
         verifier_card = build_agent_card(
-            "BCN Verifier", "Verifies briefing facts, links, and top-story quality",
-            f"http://localhost:{settings.verifier_port}/", VERI_SKILLS,
+            "BCN Verifier",
+            "Verifies briefing facts, links, and top-story quality",
+            f"http://localhost:{settings.verifier_port}/",
+            VERI_SKILLS,
         )
 
         # Create executors
@@ -1191,12 +1332,21 @@ def run() -> None:
 
         # Launch agent servers
         tasks = [
-            asyncio.create_task(serve_agent(collector_card, collector_exec, settings.collector_port)),
-            asyncio.create_task(serve_agent(analyst_card, analyst_exec, settings.analyst_port)),
-            asyncio.create_task(serve_agent(writer_card, writer_exec, settings.writer_port)),
-            asyncio.create_task(serve_agent(distributor_card, distributor_exec, settings.distributor_port)),
-            asyncio.create_task(serve_agent(critic_card, critic_exec, settings.critic_port)),
-            asyncio.create_task(serve_agent(verifier_card, verifier_exec, settings.verifier_port)),
+            asyncio.create_task(
+                serve_agent(collector_card, collector_exec,
+                            settings.collector_port)),
+            asyncio.create_task(
+                serve_agent(analyst_card, analyst_exec, settings.analyst_port)),
+            asyncio.create_task(
+                serve_agent(writer_card, writer_exec, settings.writer_port)),
+            asyncio.create_task(
+                serve_agent(distributor_card, distributor_exec,
+                            settings.distributor_port)),
+            asyncio.create_task(
+                serve_agent(critic_card, critic_exec, settings.critic_port)),
+            asyncio.create_task(
+                serve_agent(verifier_card, verifier_exec,
+                            settings.verifier_port)),
         ]
 
         click.echo(f"  Collector on :{settings.collector_port}")
@@ -1240,7 +1390,8 @@ def run() -> None:
             # Daily digest: write + distribute
             await scheduler.add_schedule(
                 _job_daily_digest,
-                CronTrigger(hour=settings.distribute_hour, minute=settings.distribute_minute),
+                CronTrigger(hour=settings.distribute_hour,
+                            minute=settings.distribute_minute),
                 id="daily_digest",
             )
 

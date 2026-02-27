@@ -68,7 +68,8 @@ class ComfyUIClient:
         """
         while True:
             await asyncio.sleep(self.poll_interval)
-            resp = await self._client.get(f"{self.base_url}/history/{prompt_id}")
+            resp = await self._client.get(f"{self.base_url}/history/{prompt_id}"
+                                         )
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
 
@@ -116,15 +117,24 @@ class ComfyUIClient:
                 "class_type": "KSampler",
             },
             "4": {
-                "inputs": {"ckpt_name": "flux1-schnell.safetensors"},
+                "inputs": {
+                    "ckpt_name": "flux1-schnell.safetensors"
+                },
                 "class_type": "CheckpointLoaderSimple",
             },
             "5": {
-                "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+                "inputs": {
+                    "width": 1024,
+                    "height": 1024,
+                    "batch_size": 1
+                },
                 "class_type": "EmptyLatentImage",
             },
             "6": {
-                "inputs": {"text": prompt_text, "clip": ["4", 1]},
+                "inputs": {
+                    "text": prompt_text,
+                    "clip": ["4", 1]
+                },
                 "class_type": "CLIPTextEncode",
             },
             "7": {
@@ -135,7 +145,10 @@ class ComfyUIClient:
                 "class_type": "CLIPTextEncode",
             },
             "8": {
-                "inputs": {"samples": ["3", 0], "vae": ["4", 2]},
+                "inputs": {
+                    "samples": ["3", 0],
+                    "vae": ["4", 2]
+                },
                 "class_type": "VAEDecode",
             },
             "9": {

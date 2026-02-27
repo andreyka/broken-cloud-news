@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 import logging
-from datetime import datetime, timedelta, timezone
 
-from typing_extensions import override
-
-from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
+from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
-from bcn.common.db import (
-    get_latest_briefing,
-    mark_briefing_distributed,
-    mark_items_published,
-    upsert_distribution_outcome,
-)
+from bcn.common.db import get_latest_briefing
+from bcn.common.db import mark_briefing_distributed
+from bcn.common.db import mark_items_published
+from bcn.common.db import upsert_distribution_outcome
 from bcn.distributors.email import EmailDistributor
 from bcn.distributors.slack import SlackDistributor
 from bcn.distributors.telegram import TelegramDistributor
@@ -30,7 +30,8 @@ SKILLS = [
     AgentSkill(
         id="distribute_briefing",
         name="Distribute Briefing",
-        description="Distribute the latest briefing to Telegram, Email, and Slack",
+        description=
+        "Distribute the latest briefing to Telegram, Email, and Slack",
         tags=["distribute", "publish"],
         examples=["distribute", "distribute_briefing", "publish"],
     ),
@@ -42,7 +43,8 @@ class DistributorExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.channels: list[tuple[str, TelegramDistributor | EmailDistributor | SlackDistributor]] = []
+        self.channels: list[tuple[str, TelegramDistributor | EmailDistributor |
+                                  SlackDistributor]] = []
 
         if settings.telegram_bot_token and settings.telegram_chat_id:
             self.channels.append((
@@ -84,18 +86,16 @@ class DistributorExecutor(AgentExecutor):
         if not briefing:
             await enqueue_event_safe(
                 event_queue,
-                new_agent_text_message("No new briefing to distribute")
-            )
+                new_agent_text_message("No new briefing to distribute"))
             return
-        max_age_minutes = max(0, int(self.settings.briefing_distribution_max_draft_age_minutes))
+        max_age_minutes = max(
+            0, int(self.settings.briefing_distribution_max_draft_age_minutes))
         if max_age_minutes > 0:
             created_at = briefing.get("created_at")
             if isinstance(created_at, datetime):
-                created_utc = (
-                    created_at.astimezone(timezone.utc)
-                    if created_at.tzinfo is not None
-                    else created_at.replace(tzinfo=timezone.utc)
-                )
+                created_utc = (created_at.astimezone(timezone.utc)
+                               if created_at.tzinfo is not None else
+                               created_at.replace(tzinfo=timezone.utc))
                 age = datetime.now(timezone.utc) - created_utc
                 if age > timedelta(minutes=max_age_minutes):
                     age_minutes = int(age.total_seconds() // 60)
@@ -110,8 +110,7 @@ class DistributorExecutor(AgentExecutor):
         if not self.channels:
             await enqueue_event_safe(
                 event_queue,
-                new_agent_text_message("No distribution channels configured")
-            )
+                new_agent_text_message("No distribution channels configured"))
             return
 
         results: dict[str, str] = {}
@@ -127,17 +126,16 @@ class DistributorExecutor(AgentExecutor):
                         markdown=briefing["content_markdown"],
                         cover_image_url=briefing["cover_image_url"],
                     )
-                    metadata = dict(channel.last_result) if isinstance(channel.last_result, dict) else {}
+                    metadata = dict(channel.last_result) if isinstance(
+                        channel.last_result, dict) else {}
                     msg_id = metadata.get("primary_message_id")
                     if msg_id is not None:
                         external_message_id = str(msg_id)
                 elif isinstance(channel, EmailDistributor):
                     ok = await channel.send(
                         subject=f"Broken Cloud News - {today}",
-                        html_body=(
-                            briefing["content_html"]
-                            or briefing["content_markdown"]
-                        ),
+                        html_body=(briefing["content_html"] or
+                                   briefing["content_markdown"]),
                     )
                     metadata = {"recipient_count": len(channel.recipients)}
                 elif isinstance(channel, SlackDistributor):
@@ -146,8 +144,10 @@ class DistributorExecutor(AgentExecutor):
                         cover_image_url=briefing["cover_image_url"],
                     )
                     metadata = {
-                        "cover_image": bool(briefing["cover_image_url"]),
-                        "markdown_chars": len(str(briefing["content_markdown"] or "")),
+                        "cover_image":
+                            bool(briefing["cover_image_url"]),
+                        "markdown_chars":
+                            len(str(briefing["content_markdown"] or "")),
                     }
                 else:
                     ok = False
@@ -170,7 +170,8 @@ class DistributorExecutor(AgentExecutor):
                     metadata=metadata,
                 )
             except Exception:
-                logger.exception("Failed to persist distribution outcome for %s", name)
+                logger.exception(
+                    "Failed to persist distribution outcome for %s", name)
 
         await mark_briefing_distributed(briefing["id"], results)
         item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []

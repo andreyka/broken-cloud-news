@@ -72,7 +72,8 @@ class SlackDistributor:
         """
         blocks: list[dict[str, object]] = []
 
-        if cover_image_url and cover_image_url.startswith(("http://", "https://")):
+        if cover_image_url and cover_image_url.startswith(
+            ("http://", "https://")):
             blocks.append({
                 "type": "image",
                 "image_url": cover_image_url,
@@ -95,7 +96,10 @@ class SlackDistributor:
         for chunk in chunks:
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": chunk},
+                "text": {
+                    "type": "mrkdwn",
+                    "text": chunk
+                },
             })
 
         return blocks

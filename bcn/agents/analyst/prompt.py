@@ -44,5 +44,4 @@ ANALYZER_SYSTEM_PROMPT = (
     "Silent self-check before finalizing:\n"
     "- Is every claim grounded?\n"
     "- Is the score aligned to the rubric?\n"
-    "- Is the summary specific and blunt?"
-)
+    "- Is the summary specific and blunt?")

@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from datetime import timezone
 import html
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-import feedparser
-import httpx
-from typing_extensions import override
-
-from a2a.server.agent_execution import AgentExecutor, RequestContext
+from a2a.server.agent_execution import AgentExecutor
+from a2a.server.agent_execution import RequestContext
 from a2a.server.events import EventQueue
 from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
+import feedparser
+import httpx
+from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
@@ -30,7 +31,8 @@ SKILLS = [
     AgentSkill(
         id="collect_ghsa",
         name="Collect GHSA",
-        description="Collect GitHub Security Advisories (CRITICAL/HIGH, cloud-related)",
+        description=
+        "Collect GitHub Security Advisories (CRITICAL/HIGH, cloud-related)",
         tags=["ghsa", "github"],
         examples=["collect ghsa"],
     ),
@@ -83,7 +85,10 @@ query {
 """
 
 _SKIP_SCRAPE_DOMAINS = frozenset({
-    "nvd.nist.gov", "cve.mitre.org", "cve.org", "access.redhat.com/errata",
+    "nvd.nist.gov",
+    "cve.mitre.org",
+    "cve.org",
+    "access.redhat.com/errata",
 })
 
 
@@ -122,10 +127,8 @@ class CollectorExecutor(AgentExecutor):
             result = f"Reddit: collected {count} items"
         else:
             counts = await self._collect_all()
-            result = (
-                f"All: GHSA={counts[0]}, RSS={counts[1]}, "
-                f"Twitter={counts[2]}, Reddit={counts[3]}"
-            )
+            result = (f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                      f"Twitter={counts[2]}, Reddit={counts[3]}")
 
         logger.info(result)
         await enqueue_event_safe(event_queue, new_agent_text_message(result))
@@ -162,8 +165,8 @@ class CollectorExecutor(AgentExecutor):
 
         # Drop mostly social/noise posts from handle streams.
         if "ctf" in normalized and not any(
-            t in normalized for t in ("cloud", "k8s", "container", "cve", "vuln")
-        ):
+                t in normalized
+                for t in ("cloud", "k8s", "container", "cve", "vuln")):
             return False
         if normalized.startswith("rt @"):
             return False
@@ -228,7 +231,8 @@ class CollectorExecutor(AgentExecutor):
             Number of newly inserted items.
         """
         if not self.settings.github_token:
-            logger.warning("No GitHub token configured, skipping GHSA collection")
+            logger.warning(
+                "No GitHub token configured, skipping GHSA collection")
             return 0
 
         resp = await self._http.post(
@@ -243,11 +247,8 @@ class CollectorExecutor(AgentExecutor):
         resp.raise_for_status()
         data = resp.json()
 
-        nodes: list[dict] = (
-            data.get("data", {})
-            .get("securityAdvisories", {})
-            .get("nodes", [])
-        )
+        nodes: list[dict] = (data.get("data", {}).get("securityAdvisories",
+                                                      {}).get("nodes", []))
 
         keyword_patterns = [
             re.compile(kw, re.IGNORECASE) for kw in self.settings.ghsa_keywords
@@ -266,7 +267,8 @@ class CollectorExecutor(AgentExecutor):
             refs = [r["url"] for r in item.get("references", [])]
 
             url = next(
-                (u for u in refs if "github.com" not in u and "nist.gov" not in u),
+                (u for u in refs
+                 if "github.com" not in u and "nist.gov" not in u),
                 item.get("permalink", ""),
             )
 
@@ -277,9 +279,8 @@ class CollectorExecutor(AgentExecutor):
                 source_id=item["ghsaId"],
                 url=url,
                 title=item.get("summary"),
-                published_at=item.get(
-                    "publishedAt", datetime.now(timezone.utc).isoformat()
-                ),
+                published_at=item.get("publishedAt",
+                                      datetime.now(timezone.utc).isoformat()),
                 raw_data=item,
                 full_content=full_content or None,
             )
@@ -339,13 +340,11 @@ class CollectorExecutor(AgentExecutor):
                 if scraped and len(scraped) >= self.scraper.min_content_length:
                     label = "GitHub" if "github.com" in ref_url else "Blog/Write-up"
                     parts.append(f"[{label}: {ref_url}]\n{scraped[:3000]}")
-                    logger.info(
-                        "GHSA enrichment: scraped %s (%d chars)", ref_url, len(scraped)
-                    )
+                    logger.info("GHSA enrichment: scraped %s (%d chars)",
+                                ref_url, len(scraped))
             except Exception as exc:
-                logger.warning(
-                    "GHSA enrichment: failed to scrape %s: %s", ref_url, exc
-                )
+                logger.warning("GHSA enrichment: failed to scrape %s: %s",
+                               ref_url, exc)
 
         return "\n\n---\n\n".join(parts) if parts else ""
 
@@ -369,14 +368,13 @@ class CollectorExecutor(AgentExecutor):
                 continue
 
             for entry in feed.entries:
-                source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
+                source_id = getattr(entry, "id", None) or getattr(
+                    entry, "link", "")
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
                 summary = self._clean_summary(getattr(entry, "summary", ""))
-                published = (
-                    getattr(entry, "published", None)
-                    or datetime.now(timezone.utc).isoformat()
-                )
+                published = (getattr(entry, "published", None) or
+                             datetime.now(timezone.utc).isoformat())
 
                 if not self._is_cloud_security_relevant(f"{title} {summary}"):
                     continue
@@ -417,8 +415,7 @@ class CollectorExecutor(AgentExecutor):
         """
         if not self.settings.twitter_bearer_token:
             logger.warning(
-                "No X API bearer token configured, skipping Twitter collection"
-            )
+                "No X API bearer token configured, skipping Twitter collection")
             return 0
 
         from_clauses = [f"from:{h}" for h in self.settings.twitter_handles]
@@ -432,11 +429,16 @@ class CollectorExecutor(AgentExecutor):
 
         while remaining > 0:
             params: dict[str, str | int] = {
-                "query": query,
-                "max_results": max(10, min(remaining, 100)),
-                "tweet.fields": "id,text,created_at,author_id,public_metrics,entities",
-                "expansions": "author_id",
-                "user.fields": "username",
+                "query":
+                    query,
+                "max_results":
+                    max(10, min(remaining, 100)),
+                "tweet.fields":
+                    "id,text,created_at,author_id,public_metrics,entities",
+                "expansions":
+                    "author_id",
+                "user.fields":
+                    "username",
             }
             if next_token:
                 params["next_token"] = next_token
@@ -444,7 +446,8 @@ class CollectorExecutor(AgentExecutor):
             resp = await self._http.get(
                 "https://api.x.com/2/tweets/search/recent",
                 headers={
-                    "Authorization": f"Bearer {self.settings.twitter_bearer_token}",
+                    "Authorization":
+                        f"Bearer {self.settings.twitter_bearer_token}",
                 },
                 params=params,
                 timeout=30,
@@ -459,17 +462,13 @@ class CollectorExecutor(AgentExecutor):
                 source_id = tweet["id"]
                 author_id = tweet.get("author_id", "")
                 username = users_by_id.get(author_id, "")
-                url = (
-                    f"https://x.com/{username}/status/{source_id}"
-                    if username
-                    else ""
-                )
+                url = (f"https://x.com/{username}/status/{source_id}"
+                       if username else "")
                 title = tweet.get("text", "")
                 if not self._is_cloud_security_relevant(title):
                     continue
-                published = tweet.get(
-                    "created_at", datetime.now(timezone.utc).isoformat()
-                )
+                published = tweet.get("created_at",
+                                      datetime.now(timezone.utc).isoformat())
                 references = self._extract_tweet_reference_urls(tweet)
                 full_content = self._build_tweet_full_content(title, references)
 
@@ -482,7 +481,9 @@ class CollectorExecutor(AgentExecutor):
                     raw_data={
                         **tweet,
                         "username": username,
-                        "references": [{"url": ref} for ref in references],
+                        "references": [{
+                            "url": ref
+                        } for ref in references],
                     },
                     full_content=full_content,
                 )
@@ -512,13 +513,15 @@ class CollectorExecutor(AgentExecutor):
                 feed_text = await self._fetch_text_with_fallback(
                     feed_url,
                     headers={
-                        "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
+                        "User-Agent":
+                            "BrokenCloudNews/1.0 (cloud-security digest bot)"
                     },
                     timeout=30,
                 )
                 feed = feedparser.parse(feed_text)
             except Exception as exc:
-                logger.warning("Failed to fetch Reddit feed %s: %s", feed_url, exc)
+                logger.warning("Failed to fetch Reddit feed %s: %s", feed_url,
+                               exc)
                 continue
 
             per_sub = 0
@@ -526,14 +529,13 @@ class CollectorExecutor(AgentExecutor):
                 if per_sub >= self.settings.reddit_max_items_per_subreddit:
                     break
 
-                source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
+                source_id = getattr(entry, "id", None) or getattr(
+                    entry, "link", "")
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
                 summary = self._clean_summary(getattr(entry, "summary", ""))
-                published = (
-                    getattr(entry, "published", None)
-                    or datetime.now(timezone.utc).isoformat()
-                )
+                published = (getattr(entry, "published", None) or
+                             datetime.now(timezone.utc).isoformat())
 
                 text_for_filter = f"{title} {summary} r/{subreddit}"
                 if not self._is_cloud_security_relevant(text_for_filter):
@@ -564,14 +566,16 @@ class CollectorExecutor(AgentExecutor):
 
         return count
 
-    async def _fetch_reddit_engagement(self, subreddit: str) -> dict[str, dict[str, float]]:
+    async def _fetch_reddit_engagement(
+            self, subreddit: str) -> dict[str, dict[str, float]]:
         """Fetch engagement metrics for recent subreddit posts via Reddit JSON API."""
         url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
         try:
             payload = await self._fetch_json_with_fallback(
                 url,
                 headers={
-                    "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
+                    "User-Agent":
+                        "BrokenCloudNews/1.0 (cloud-security digest bot)"
                 },
                 timeout=20,
             )
@@ -600,7 +604,9 @@ class CollectorExecutor(AgentExecutor):
         if sid.startswith("t3_"):
             return sid[3:]
 
-        match = re.search(r"/comments/([a-z0-9]+)/", url or "", flags=re.IGNORECASE)
+        match = re.search(r"/comments/([a-z0-9]+)/",
+                          url or "",
+                          flags=re.IGNORECASE)
         if match:
             return match.group(1).lower()
         return ""
@@ -649,7 +655,8 @@ class CollectorExecutor(AgentExecutor):
         return host in {"x.com", "twitter.com", "mobile.twitter.com", "t.co"}
 
     @staticmethod
-    def _build_tweet_full_content(tweet_text: str, references: list[str]) -> str | None:
+    def _build_tweet_full_content(tweet_text: str,
+                                  references: list[str]) -> str | None:
         """Compose analysis-friendly tweet content with extracted references."""
         text = (tweet_text or "").strip()
         if not references:

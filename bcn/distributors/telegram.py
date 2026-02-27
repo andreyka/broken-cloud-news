@@ -78,7 +78,8 @@ class TelegramDistributor:
             if cover_image_url:
                 caption = self._truncate_caption(clean_text)
                 try:
-                    filename, mime_type, img_bytes = await self._load_cover_image_bytes(cover_image_url)
+                    filename, mime_type, img_bytes = await self._load_cover_image_bytes(
+                        cover_image_url)
                     resp = await self._client.post(
                         f"{self.api}/sendPhoto",
                         data={
@@ -100,7 +101,8 @@ class TelegramDistributor:
 
             if photo_msg_id is not None:
                 # Send overflow text (beyond caption limit) as a reply
-                overflow = clean_text[len(self._truncate_caption(clean_text)):].lstrip("\n")
+                overflow = clean_text[len(self._truncate_caption(clean_text)
+                                         ):].lstrip("\n")
                 if overflow and self._should_send_overflow(overflow):
                     result["overflow_sent"] = True
                     for chunk in self._split_message(overflow):
@@ -117,12 +119,14 @@ class TelegramDistributor:
                         resp.raise_for_status()
                         payload = resp.json()
                         msg_id = payload.get("result", {}).get("message_id")
-                        if msg_id is not None and isinstance(result["message_ids"], list):
+                        if msg_id is not None and isinstance(
+                                result["message_ids"], list):
                             result["message_ids"].append(msg_id)
                 elif overflow:
                     logger.info(
                         "Telegram overflow omitted by '%s' mode (%d chars)",
-                        self.overflow_mode, len(overflow),
+                        self.overflow_mode,
+                        len(overflow),
                     )
                     result["overflow_omitted"] = True
             else:
@@ -157,14 +161,16 @@ class TelegramDistributor:
             self.last_result = result
             return False
 
-    async def _load_cover_image_bytes(self, cover_image_url: str) -> tuple[str, str, bytes]:
+    async def _load_cover_image_bytes(
+            self, cover_image_url: str) -> tuple[str, str, bytes]:
         """Load image bytes from an HTTP URL or data URI."""
         if cover_image_url.startswith("data:image/"):
             return self._decode_data_image_uri(cover_image_url)
 
         img_resp = await self._client.get(cover_image_url, timeout=30)
         img_resp.raise_for_status()
-        content_type = img_resp.headers.get("content-type", "image/png").split(";")[0].strip() or "image/png"
+        content_type = img_resp.headers.get(
+            "content-type", "image/png").split(";")[0].strip() or "image/png"
         ext = content_type.rsplit("/", 1)[-1] if "/" in content_type else "png"
         filename = f"cover.{ext}"
         return filename, content_type, img_resp.content
@@ -175,7 +181,8 @@ class TelegramDistributor:
         header, sep, payload = value.partition(",")
         if not sep or ";base64" not in header:
             raise ValueError("Unsupported data URI format for cover image")
-        mime_type = header[5:header.index(";")] if header.startswith("data:") else "image/png"
+        mime_type = header[5:header.index(";")] if header.startswith(
+            "data:") else "image/png"
         raw = base64.b64decode(payload)
         ext = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
         return f"cover.{ext}", mime_type, raw
@@ -195,7 +202,8 @@ class TelegramDistributor:
         """
         if len(text) <= TELEGRAM_MAX_CAPTION:
             return text
-        split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_CAPTION)
+        split_at = TelegramDistributor._find_split_at(text,
+                                                      TELEGRAM_MAX_CAPTION)
         return text[:split_at].rstrip("\n")
 
     @staticmethod
@@ -220,7 +228,8 @@ class TelegramDistributor:
                 chunks.append(text)
                 break
 
-            split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_MESSAGE)
+            split_at = TelegramDistributor._find_split_at(
+                text, TELEGRAM_MAX_MESSAGE)
             if split_at <= 0:
                 split_at = TELEGRAM_MAX_MESSAGE
 
@@ -299,7 +308,8 @@ class TelegramDistributor:
 
         if re.search(r"https?://", overflow):
             return True
-        if re.search(r"(cve-\d{4}-\d+|ghsa-|patch|fix|exploit|advisory)", overflow, re.I):
+        if re.search(r"(cve-\d{4}-\d+|ghsa-|patch|fix|exploit|advisory)",
+                     overflow, re.I):
             return True
 
         # Drop short trailing remarks to avoid needless second messages.

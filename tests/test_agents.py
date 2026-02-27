@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-import json
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+import json
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from unittest.mock import patch
 from urllib.parse import urlparse
-from unittest.mock import AsyncMock, patch, MagicMock
 from uuid import uuid4
 
 import httpx
@@ -28,6 +32,7 @@ def _make_settings(**overrides) -> Settings:
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+
 class FakeEventQueue:
     """Minimal stand-in for EventQueue that captures messages."""
 
@@ -50,17 +55,24 @@ class FakeAsyncEventQueue:
 
 def _fake_context(text: str = "collect_all"):
     """Build a minimal RequestContext."""
-    from a2a.server.agent_execution import RequestContext
-    from a2a.types import MessageSendParams, Message, TextPart
     from uuid import uuid4
 
-    msg = Message(role="user", parts=[TextPart(text=text)], message_id=uuid4().hex)
+    from a2a.server.agent_execution import RequestContext
+    from a2a.types import Message
+    from a2a.types import MessageSendParams
+    from a2a.types import TextPart
+
+    msg = Message(role="user",
+                  parts=[TextPart(text=text)],
+                  message_id=uuid4().hex)
     return RequestContext(request=MessageSendParams(message=msg))
 
 
 # ── Collector tests ──────────────────────────────────────────────────────
 
+
 class TestCollectorExecutor:
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa(self):
@@ -70,28 +82,38 @@ class TestCollectorExecutor:
         executor = CollectorExecutor(settings)
 
         # Mock GHSA GraphQL endpoint
-        respx.post("https://api.github.com/graphql").mock(
-            return_value=httpx.Response(200, json={
+        respx.post(
+            "https://api.github.com/graphql"
+        ).mock(return_value=httpx.Response(
+            200,
+            json={
                 "data": {
                     "securityAdvisories": {
-                        "nodes": [
-                            {
-                                "ghsaId": "GHSA-test-0001",
-                                "summary": "Critical kubernetes vuln",
-                                "description": "A container escape in kubernetes allows...",
-                                "permalink": "https://github.com/advisories/GHSA-test-0001",
-                                "severity": "CRITICAL",
-                                "publishedAt": "2026-01-01T00:00:00Z",
-                                "references": [],
-                                "identifiers": [{"type": "CVE", "value": "CVE-2026-0001"}],
-                            },
-                        ]
+                        "nodes": [{
+                            "ghsaId":
+                                "GHSA-test-0001",
+                            "summary":
+                                "Critical kubernetes vuln",
+                            "description":
+                                "A container escape in kubernetes allows...",
+                            "permalink":
+                                "https://github.com/advisories/GHSA-test-0001",
+                            "severity":
+                                "CRITICAL",
+                            "publishedAt":
+                                "2026-01-01T00:00:00Z",
+                            "references": [],
+                            "identifiers": [{
+                                "type": "CVE",
+                                "value": "CVE-2026-0001"
+                            }],
+                        },]
                     }
                 }
-            })
-        )
+            }))
 
-        with patch("bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock) as mock_insert:
+        with patch("bcn.agents.collector.agent.insert_news_item",
+                   new_callable=AsyncMock) as mock_insert:
             from uuid import uuid4
             mock_insert.return_value = uuid4()
             count = await executor._collect_ghsa()
@@ -110,28 +132,35 @@ class TestCollectorExecutor:
         settings = _make_settings()
         executor = CollectorExecutor(settings)
 
-        respx.post("https://api.github.com/graphql").mock(
-            return_value=httpx.Response(200, json={
+        respx.post(
+            "https://api.github.com/graphql"
+        ).mock(return_value=httpx.Response(
+            200,
+            json={
                 "data": {
                     "securityAdvisories": {
-                        "nodes": [
-                            {
-                                "ghsaId": "GHSA-low-0001",
-                                "summary": "Low severity kubernetes issue",
-                                "description": "Minor kubernetes thing",
-                                "permalink": "https://github.com/advisories/GHSA-low-0001",
-                                "severity": "LOW",
-                                "publishedAt": "2026-01-01T00:00:00Z",
-                                "references": [],
-                                "identifiers": [],
-                            },
-                        ]
+                        "nodes": [{
+                            "ghsaId":
+                                "GHSA-low-0001",
+                            "summary":
+                                "Low severity kubernetes issue",
+                            "description":
+                                "Minor kubernetes thing",
+                            "permalink":
+                                "https://github.com/advisories/GHSA-low-0001",
+                            "severity":
+                                "LOW",
+                            "publishedAt":
+                                "2026-01-01T00:00:00Z",
+                            "references": [],
+                            "identifiers": [],
+                        },]
                     }
                 }
-            })
-        )
+            }))
 
-        with patch("bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock) as mock_insert:
+        with patch("bcn.agents.collector.agent.insert_news_item",
+                   new_callable=AsyncMock) as mock_insert:
             count = await executor._collect_ghsa()
 
         assert count == 0
@@ -139,8 +168,9 @@ class TestCollectorExecutor:
 
     @pytest.mark.asyncio
     async def test_collect_reddit(self):
-        from bcn.agents.collector.agent import CollectorExecutor
         import json
+
+        from bcn.agents.collector.agent import CollectorExecutor
 
         settings = _make_settings(
             reddit_subreddits=["netsec"],
@@ -161,16 +191,14 @@ class TestCollectorExecutor:
         '''
         json_body = json.dumps({
             "data": {
-                "children": [
-                    {
-                        "data": {
-                            "id": "abc123",
-                            "ups": 120,
-                            "num_comments": 42,
-                            "upvote_ratio": 0.97,
-                        }
+                "children": [{
+                    "data": {
+                        "id": "abc123",
+                        "ups": 120,
+                        "num_comments": 42,
+                        "upvote_ratio": 0.97,
                     }
-                ]
+                }]
             }
         })
 
@@ -183,7 +211,8 @@ class TestCollectorExecutor:
 
         executor.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
 
-        with patch("bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock) as mock_insert:
+        with patch("bcn.agents.collector.agent.insert_news_item",
+                   new_callable=AsyncMock) as mock_insert:
             from uuid import uuid4
             mock_insert.return_value = uuid4()
             count = await executor._collect_reddit()
@@ -193,7 +222,6 @@ class TestCollectorExecutor:
         raw = mock_insert.call_args.kwargs["raw_data"]
         assert raw["engagement"]["upvotes"] == 120
         assert raw["engagement"]["comments"] == 42
-
 
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
         from bcn.agents.collector.agent import CollectorExecutor
@@ -206,12 +234,16 @@ class TestCollectorExecutor:
                         "expanded_url": "https://x.com/someone/status/123",
                     },
                     {
-                        "url": "https://t.co/def",
-                        "expanded_url": "https://github.com/org/repo/security/advisories/GHSA-ab12-cd34-ef56",
+                        "url":
+                            "https://t.co/def",
+                        "expanded_url":
+                            "https://github.com/org/repo/security/advisories/GHSA-ab12-cd34-ef56",
                     },
                     {
-                        "url": "https://t.co/ghi",
-                        "unwound_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                        "url":
+                            "https://t.co/ghi",
+                        "unwound_url":
+                            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
                     },
                 ]
             }
@@ -245,37 +277,41 @@ class TestCollectorExecutor:
         settings = _make_settings()
         executor = CollectorExecutor(settings)
 
-        with patch.object(executor, "_collect_all", new_callable=AsyncMock, return_value=(1, 2, 3, 4)):
+        with patch.object(executor,
+                          "_collect_all",
+                          new_callable=AsyncMock,
+                          return_value=(1, 2, 3, 4)):
             eq = FakeAsyncEventQueue()
             ctx = _fake_context("collect")
             await executor.execute(ctx, eq)
 
-        assert any("All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e) for e in eq.events)
+        assert any("All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e)
+                   for e in eq.events)
 
 
 # ── Analyst tests ────────────────────────────────────────────────────────
 
+
 class TestAnalystExecutor:
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_analyze_items(self):
-        from bcn.common.models import AnalysisResult
         from bcn.agents.analyst.agent import AnalystExecutor
+        from bcn.common.models import AnalysisResult
 
         settings = _make_settings()
         executor = AnalystExecutor(settings)
 
-        fake_items = [
-            {
-                "id": "11111111-1111-1111-1111-111111111111",
-                "title": "K8s escape",
-                "full_content": "A container escape vulnerability...",
-                "url": "https://example.com",
-                "source_type": "ghsa",
-                "source_id": "GHSA-test",
-                "raw_data": {},
-            }
-        ]
+        fake_items = [{
+            "id": "11111111-1111-1111-1111-111111111111",
+            "title": "K8s escape",
+            "full_content": "A container escape vulnerability...",
+            "url": "https://example.com",
+            "source_type": "ghsa",
+            "source_id": "GHSA-test",
+            "raw_data": {},
+        }]
 
         analysis_json = json.dumps({
             "summary": "Container escape in k8s",
@@ -285,9 +321,19 @@ class TestAnalystExecutor:
         })
 
         with (
-            patch("bcn.agents.analyst.agent.get_new_items", new_callable=AsyncMock, return_value=fake_items),
-            patch("bcn.agents.analyst.agent.update_item_analyzed", new_callable=AsyncMock) as mock_update,
-            patch.object(executor.analyst_llm, "analyze_item", new_callable=AsyncMock, return_value=AnalysisResult(summary="Container escape in k8s", relevance_score=9, tags=["k8s"], image_prompt="cyberpunk")),
+                patch("bcn.agents.analyst.agent.get_new_items",
+                      new_callable=AsyncMock,
+                      return_value=fake_items),
+                patch("bcn.agents.analyst.agent.update_item_analyzed",
+                      new_callable=AsyncMock) as mock_update,
+                patch.object(executor.analyst_llm,
+                             "analyze_item",
+                             new_callable=AsyncMock,
+                             return_value=AnalysisResult(
+                                 summary="Container escape in k8s",
+                                 relevance_score=9,
+                                 tags=["k8s"],
+                                 image_prompt="cyberpunk")),
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("analyze_new_items")
@@ -304,7 +350,9 @@ class TestAnalystExecutor:
         settings = _make_settings()
         executor = AnalystExecutor(settings)
 
-        with patch("bcn.agents.analyst.agent.get_new_items", new_callable=AsyncMock, return_value=[]):
+        with patch("bcn.agents.analyst.agent.get_new_items",
+                   new_callable=AsyncMock,
+                   return_value=[]):
             eq = FakeEventQueue()
             ctx = _fake_context("analyze")
             await executor.execute(ctx, eq)
@@ -318,7 +366,9 @@ class TestAnalystExecutor:
         settings = _make_settings()
         executor = AnalystExecutor(settings)
 
-        with patch("bcn.agents.analyst.agent.get_new_items", new_callable=AsyncMock, return_value=[]):
+        with patch("bcn.agents.analyst.agent.get_new_items",
+                   new_callable=AsyncMock,
+                   return_value=[]):
             eq = FakeAsyncEventQueue()
             ctx = _fake_context("analyze")
             await executor.execute(ctx, eq)
@@ -328,7 +378,9 @@ class TestAnalystExecutor:
 
 # ── Writer tests ─────────────────────────────────────────────────────────
 
+
 class TestWriterExecutor:
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_no_items(self):
@@ -337,7 +389,9 @@ class TestWriterExecutor:
         settings = _make_settings()
         executor = WriterExecutor(settings)
 
-        with patch("bcn.agents.writer.agent.get_analyzed_items", new_callable=AsyncMock, return_value=[]):
+        with patch("bcn.agents.writer.agent.get_analyzed_items",
+                   new_callable=AsyncMock,
+                   return_value=[]):
             eq = FakeEventQueue()
             ctx = _fake_context("generate_briefing")
             await executor.execute(ctx, eq)
@@ -355,49 +409,83 @@ class TestWriterExecutor:
         )
         executor = WriterExecutor(settings)
 
-        selected = [
-            {
-                "id": str(uuid4()),
-                "title": "Cloud issue",
-                "summary": "Patch guidance",
-                "relevance_score": 9,
-                "source_type": "rss",
-                "url": "https://example.com/advisory",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
+        selected = [{
+            "id": str(uuid4()),
+            "title": "Cloud issue",
+            "summary": "Patch guidance",
+            "relevance_score": 9,
+            "source_type": "rss",
+            "url": "https://example.com/advisory",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }]
 
         with (
-            patch("bcn.agents.writer.agent.get_analyzed_items", new_callable=AsyncMock, return_value=selected),
-            patch("bcn.agents.writer.agent.get_recent_published_items", new_callable=AsyncMock, return_value=[]),
-            patch("bcn.agents.writer.agent.get_recent_briefings", new_callable=AsyncMock, return_value=[]),
-            patch("bcn.agents.writer.agent.insert_briefing", new_callable=AsyncMock, return_value=uuid4()),
-            patch("bcn.agents.writer.agent.create_generation_run", new_callable=AsyncMock, return_value=uuid4()),
-            patch("bcn.agents.writer.agent.append_generation_round", new_callable=AsyncMock),
-            patch("bcn.agents.writer.agent.insert_generation_preference_pair", new_callable=AsyncMock),
-            patch("bcn.agents.writer.agent.finalize_generation_run", new_callable=AsyncMock),
-            patch.object(executor, "_select_items_for_briefing", return_value=selected),
-            patch.object(executor, "_postprocess_briefing", new_callable=AsyncMock, side_effect=lambda **kw: kw["briefing_body"]),
-            patch.object(
-                executor,
-                "_quality_gate",
-                return_value={"passed": True, "hard_issues": [], "soft_issues": [], "issues": []},
-            ),
-            patch.object(executor.writer_llm, "generate_briefing", new_callable=AsyncMock, return_value="Initial draft"),
-            patch.object(
-                executor.critic_llm,
-                "critique_briefing",
-                new_callable=AsyncMock,
-                return_value={
-                    "passed": False,
-                    "score": 40,
-                    "issues": ["Needs improvements"],
-                    "recommendations": ["Make it stronger"],
-                },
-            ) as mock_critique,
-            patch.object(executor.writer_llm, "revise_briefing", new_callable=AsyncMock, return_value="Rewritten draft") as mock_revise,
-            patch.object(executor.writer_llm, "generate_cover_prompt", new_callable=AsyncMock, return_value="cover prompt"),
-            patch.object(executor.comfyui, "generate_image", new_callable=AsyncMock, return_value=""),
+                patch("bcn.agents.writer.agent.get_analyzed_items",
+                      new_callable=AsyncMock,
+                      return_value=selected),
+                patch("bcn.agents.writer.agent.get_recent_published_items",
+                      new_callable=AsyncMock,
+                      return_value=[]),
+                patch("bcn.agents.writer.agent.get_recent_briefings",
+                      new_callable=AsyncMock,
+                      return_value=[]),
+                patch("bcn.agents.writer.agent.insert_briefing",
+                      new_callable=AsyncMock,
+                      return_value=uuid4()),
+                patch("bcn.agents.writer.agent.create_generation_run",
+                      new_callable=AsyncMock,
+                      return_value=uuid4()),
+                patch("bcn.agents.writer.agent.append_generation_round",
+                      new_callable=AsyncMock),
+                patch(
+                    "bcn.agents.writer.agent.insert_generation_preference_pair",
+                    new_callable=AsyncMock),
+                patch("bcn.agents.writer.agent.finalize_generation_run",
+                      new_callable=AsyncMock),
+                patch.object(executor,
+                             "_select_items_for_briefing",
+                             return_value=selected),
+                patch.object(executor,
+                             "_postprocess_briefing",
+                             new_callable=AsyncMock,
+                             side_effect=lambda **kw: kw["briefing_body"]),
+                patch.object(
+                    executor,
+                    "_quality_gate",
+                    return_value={
+                        "passed": True,
+                        "hard_issues": [],
+                        "soft_issues": [],
+                        "issues": []
+                    },
+                ),
+                patch.object(executor.writer_llm,
+                             "generate_briefing",
+                             new_callable=AsyncMock,
+                             return_value="Initial draft"),
+                patch.object(
+                    executor.critic_llm,
+                    "critique_briefing",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "passed": False,
+                        "score": 40,
+                        "issues": ["Needs improvements"],
+                        "recommendations": ["Make it stronger"],
+                    },
+                ) as mock_critique,
+                patch.object(executor.writer_llm,
+                             "revise_briefing",
+                             new_callable=AsyncMock,
+                             return_value="Rewritten draft") as mock_revise,
+                patch.object(executor.writer_llm,
+                             "generate_cover_prompt",
+                             new_callable=AsyncMock,
+                             return_value="cover prompt"),
+                patch.object(executor.comfyui,
+                             "generate_image",
+                             new_callable=AsyncMock,
+                             return_value=""),
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("generate_briefing")
@@ -426,27 +514,31 @@ class TestWriterExecutor:
         )
         executor = WriterExecutor(settings)
 
-        items = [
-            {
-                "id": str(uuid4()),
-                "title": f"Unit42 item {i}",
-                "summary": "Cloud exploit write-up",
-                "relevance_score": 10 - i,
-                "source_type": "rss",
-                "url": f"https://unit42.paloaltonetworks.com/post-{i}/",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-            }
-            for i in range(4)
-        ]
+        items = [{
+            "id": str(uuid4()),
+            "title": f"Unit42 item {i}",
+            "summary": "Cloud exploit write-up",
+            "relevance_score": 10 - i,
+            "source_type": "rss",
+            "url": f"https://unit42.paloaltonetworks.com/post-{i}/",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        } for i in range(4)]
         items.extend([
             {
-                "id": str(uuid4()),
-                "title": "Reddit k8s security thread",
-                "summary": "Kubernetes hardening discussion",
-                "relevance_score": 8,
-                "source_type": "reddit",
-                "url": "https://www.reddit.com/r/kubernetes/comments/abc123/thread/",
-                "published_at": datetime.now(timezone.utc).isoformat(),
+                "id":
+                    str(uuid4()),
+                "title":
+                    "Reddit k8s security thread",
+                "summary":
+                    "Kubernetes hardening discussion",
+                "relevance_score":
+                    8,
+                "source_type":
+                    "reddit",
+                "url":
+                    "https://www.reddit.com/r/kubernetes/comments/abc123/thread/",
+                "published_at":
+                    datetime.now(timezone.utc).isoformat(),
             },
             {
                 "id": str(uuid4()),
@@ -471,8 +563,14 @@ class TestWriterExecutor:
         settings = _make_settings()
         executor = WriterExecutor(settings)
         items = [
-            {"url": "https://example.com/one", "title": "one"},
-            {"url": "https://example.com/two", "title": "two"},
+            {
+                "url": "https://example.com/one",
+                "title": "one"
+            },
+            {
+                "url": "https://example.com/two",
+                "title": "two"
+            },
         ]
         markdown = "[One](https://example.com/one)\n\nText only."
 
@@ -483,7 +581,8 @@ class TestWriterExecutor:
     def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
         from bcn.agents.writer.agent import WriterExecutor
 
-        settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
+        settings = _make_settings(
+            briefing_novelty_title_similarity_threshold=0.99)
         executor = WriterExecutor(settings)
         item = {
             "id": str(uuid4()),
@@ -493,23 +592,24 @@ class TestWriterExecutor:
             "source_type": "rss",
             "url": "https://example.com/vertex-issue",
         }
-        recent_same_issue = [
-            {
-                "title": "Google advisory for GHSA-ab12-cd34-ef56 in Vertex workflows",
-                "summary": "Mitigation guidance for enterprise teams",
-                "url": "https://security.example.com/google-vertex-advisory",
-            }
-        ]
-        recent_other_issue = [
-            {
-                "title": "AWS GuardDuty release improves findings triage",
-                "summary": "Platform update with operational notes",
-                "url": "https://aws.amazon.com/security/new-feature",
-            }
-        ]
+        recent_same_issue = [{
+            "title":
+                "Google advisory for GHSA-ab12-cd34-ef56 in Vertex workflows",
+            "summary":
+                "Mitigation guidance for enterprise teams",
+            "url":
+                "https://security.example.com/google-vertex-advisory",
+        }]
+        recent_other_issue = [{
+            "title": "AWS GuardDuty release improves findings triage",
+            "summary": "Platform update with operational notes",
+            "url": "https://aws.amazon.com/security/new-feature",
+        }]
 
-        overlap_penalty = executor.selector.novelty_penalty(item, recent_same_issue)
-        other_penalty = executor.selector.novelty_penalty(item, recent_other_issue)
+        overlap_penalty = executor.selector.novelty_penalty(
+            item, recent_same_issue)
+        other_penalty = executor.selector.novelty_penalty(
+            item, recent_other_issue)
         assert overlap_penalty > 0.0
         assert overlap_penalty > other_penalty
 
@@ -521,8 +621,7 @@ class TestWriterExecutor:
         markdown = (
             "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)\n"
             "[Duplicate](https://example.com/path?b=1)\n"
-            "[Other](https://example.com/path?b=2)"
-        )
+            "[Other](https://example.com/path?b=2)")
 
         deduped = executor._dedupe_markdown_links(markdown)
         assert "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)" in deduped
@@ -547,7 +646,12 @@ class TestWriterExecutor:
             "source_type": "reddit",
             "url": "https://www.reddit.com/r/netsec/comments/aaa111/post/",
             "published_at": datetime.now(timezone.utc).isoformat(),
-            "raw_data": {"engagement": {"upvotes": 2, "comments": 0}},
+            "raw_data": {
+                "engagement": {
+                    "upvotes": 2,
+                    "comments": 0
+                }
+            },
         }
         high_tweet = {
             "id": str(uuid4()),
@@ -567,7 +671,8 @@ class TestWriterExecutor:
             },
         }
 
-        assert executor._priority_score(high_tweet) > executor._priority_score(low_reddit)
+        assert executor._priority_score(high_tweet) > executor._priority_score(
+            low_reddit)
 
     def test_source_floor_filters_low_social_noise(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -586,7 +691,12 @@ class TestWriterExecutor:
             "relevance_score": 7,
             "source_type": "reddit",
             "url": "https://www.reddit.com/r/netsec/comments/aaa111/post/",
-            "raw_data": {"engagement": {"upvotes": 2, "comments": 1}},
+            "raw_data": {
+                "engagement": {
+                    "upvotes": 2,
+                    "comments": 1
+                }
+            },
         }
         high_tweet = {
             "id": str(uuid4()),
@@ -611,7 +721,12 @@ class TestWriterExecutor:
             "relevance_score": 9,
             "source_type": "reddit",
             "url": "https://www.reddit.com/r/netsec/comments/bbb222/post/",
-            "raw_data": {"engagement": {"upvotes": 1, "comments": 0}},
+            "raw_data": {
+                "engagement": {
+                    "upvotes": 1,
+                    "comments": 0
+                }
+            },
         }
 
         assert executor._passes_source_floor(low_reddit) is False
@@ -624,15 +739,19 @@ class TestWriterExecutor:
         settings = _make_settings()
         executor = WriterExecutor(settings)
         selected = [
-            {"url": "https://example.com/one", "source_type": "ghsa"},
-            {"url": "https://example.com/two", "source_type": "rss"},
+            {
+                "url": "https://example.com/one",
+                "source_type": "ghsa"
+            },
+            {
+                "url": "https://example.com/two",
+                "source_type": "rss"
+            },
         ]
-        markdown = (
-            "**Threat Radar**\n"
-            "- [One](https://example.com/one) has exploit details.\n\n"
-            "**Operator Moves (next 24h)**\n"
-            "- Patch now"
-        )
+        markdown = ("**Threat Radar**\n"
+                    "- [One](https://example.com/one) has exploit details.\n\n"
+                    "**Operator Moves (next 24h)**\n"
+                    "- Patch now")
 
         gate = executor._quality_gate(
             markdown=markdown,
@@ -671,8 +790,14 @@ class TestWriterExecutor:
         settings = _make_settings(briefing_gate_mode="strict")
         executor = WriterExecutor(settings)
         selected = [
-            {"url": "https://example.com/one", "source_type": "rss"},
-            {"url": "https://example.com/two", "source_type": "ghsa"},
+            {
+                "url": "https://example.com/one",
+                "source_type": "rss"
+            },
+            {
+                "url": "https://example.com/two",
+                "source_type": "ghsa"
+            },
         ]
         markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
 
@@ -737,7 +862,9 @@ class TestWriterExecutor:
         executor = WriterExecutor(settings)
 
         selected = [
-            {"url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4"},
+            {
+                "url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4"
+            },
         ]
         markdown = (
             "Bad ref [GHSA-78q6-223p-8x4q](https://github.com/advisories/GHSA-78q6-223p-8x4q)\n\n"
@@ -745,7 +872,8 @@ class TestWriterExecutor:
             "Good ref [GHSA-w6x6-9fp7-fqm4](https://github.com/advisories/GHSA-w6x6-9fp7-fqm4)"
         )
 
-        out = executor._strip_unselected_github_advisory_links(markdown, selected)
+        out = executor._strip_unselected_github_advisory_links(
+            markdown, selected)
         assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
         assert "https://github.com/craftcms/cms/security/advisories/GHSA-9c6g-9j6q-6w4w" not in out
         assert "GHSA-78q6-223p-8x4q" in out
@@ -851,8 +979,14 @@ class TestWriterExecutor:
         draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
 
         with (
-            patch.object(executor.writer_llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft) as mock_enrich,
-            patch.object(executor, "_priority_score", side_effect=lambda item: 0 if item["id"] == "two" else 1),
+                patch.object(executor.writer_llm,
+                             "enrich_briefing",
+                             new_callable=AsyncMock,
+                             return_value=draft) as mock_enrich,
+                patch.object(executor,
+                             "_priority_score",
+                             side_effect=lambda item: 0
+                             if item["id"] == "two" else 1),
         ):
             out = await executor._postprocess_briefing(
                 briefing_body=draft,
@@ -870,12 +1004,11 @@ class TestWriterExecutor:
         assert selected[0]["id"] == "one"
 
     @pytest.mark.asyncio
-    async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(self):
+    async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(
+            self):
         from bcn.agents.writer.agent import WriterExecutor
 
-        settings = _make_settings(
-            briefing_missing_coverage_max_drops=0,
-        )
+        settings = _make_settings(briefing_missing_coverage_max_drops=0,)
         executor = WriterExecutor(settings)
         selected = [
             {
@@ -897,7 +1030,10 @@ class TestWriterExecutor:
         ]
         draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
 
-        with patch.object(executor.writer_llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft) as mock_enrich:
+        with patch.object(executor.writer_llm,
+                          "enrich_briefing",
+                          new_callable=AsyncMock,
+                          return_value=draft) as mock_enrich:
             out = await executor._postprocess_briefing(
                 briefing_body=draft,
                 selected_items=selected,
@@ -912,12 +1048,11 @@ class TestWriterExecutor:
         assert "https://example.com/two" in out
 
     @pytest.mark.asyncio
-    async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(self):
+    async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(
+            self):
         from bcn.agents.writer.agent import WriterExecutor
 
-        settings = _make_settings(
-            briefing_missing_coverage_max_drops=0,
-        )
+        settings = _make_settings(briefing_missing_coverage_max_drops=0,)
         executor = WriterExecutor(settings)
         selected = [
             {
@@ -940,10 +1075,12 @@ class TestWriterExecutor:
         draft = (
             "**Threat Radar**\n"
             "Incorrect link [GHSA-78q6-223p-8x4q](https://github.com/advisories/GHSA-78q6-223p-8x4q)\n\n"
-            "Action now."
-        )
+            "Action now.")
 
-        with patch.object(executor.writer_llm, "enrich_briefing", new_callable=AsyncMock, return_value=draft):
+        with patch.object(executor.writer_llm,
+                          "enrich_briefing",
+                          new_callable=AsyncMock,
+                          return_value=draft):
             out = await executor._postprocess_briefing(
                 briefing_body=draft,
                 selected_items=selected,
@@ -961,30 +1098,36 @@ class TestWriterExecutor:
     async def test_verifier_llm_hard_issues_block_when_configured(self):
         from bcn.briefing.verifier import BriefingFactVerifier
 
-        settings = _make_settings(
-            briefing_verifier_block_on_llm_hard=True,
-        )
+        settings = _make_settings(briefing_verifier_block_on_llm_hard=True,)
         verifier = BriefingFactVerifier(settings)
         try:
             with (
-                patch.object(verifier, "_find_dead_urls", new_callable=AsyncMock, return_value=[]),
-                patch.object(verifier, "_top_story_is_ctf_or_event", return_value=False),
-                patch.object(
-                    verifier.verifier_llm,
-                    "verify_briefing_facts",
-                    new_callable=AsyncMock,
-                    return_value={
-                        "passed": False,
-                        "score": 42,
-                        "hard_issues": ["Subjective top-story preference"],
-                        "soft_issues": ["Tone could be tighter"],
-                        "recommendations": ["Reorder first section"],
-                    },
-                ),
+                    patch.object(verifier,
+                                 "_find_dead_urls",
+                                 new_callable=AsyncMock,
+                                 return_value=[]),
+                    patch.object(verifier,
+                                 "_top_story_is_ctf_or_event",
+                                 return_value=False),
+                    patch.object(
+                        verifier.verifier_llm,
+                        "verify_briefing_facts",
+                        new_callable=AsyncMock,
+                        return_value={
+                            "passed": False,
+                            "score": 42,
+                            "hard_issues": ["Subjective top-story preference"],
+                            "soft_issues": ["Tone could be tighter"],
+                            "recommendations": ["Reorder first section"],
+                        },
+                    ),
             ):
                 report = await verifier.evaluate(
                     markdown="**Threat Radar**\n[One](https://example.com/one)",
-                    items=[{"url": "https://example.com/one", "title": "One"}],
+                    items=[{
+                        "url": "https://example.com/one",
+                        "title": "One"
+                    }],
                 )
         finally:
             await verifier.close()
@@ -999,54 +1142,54 @@ class TestWriterExecutor:
     async def test_verifier_blocks_unselected_advisory_mentions(self):
         from bcn.briefing.verifier import BriefingFactVerifier
 
-        settings = _make_settings(
-            briefing_verifier_block_on_llm_hard=False,
-        )
+        settings = _make_settings(briefing_verifier_block_on_llm_hard=False,)
         verifier = BriefingFactVerifier(settings)
         try:
             with (
-                patch.object(verifier, "_find_dead_urls", new_callable=AsyncMock, return_value=[]),
-                patch.object(verifier, "_top_story_is_ctf_or_event", return_value=False),
-                patch.object(
-                    verifier.verifier_llm,
-                    "verify_briefing_facts",
-                    new_callable=AsyncMock,
-                    return_value={
-                        "passed": True,
-                        "score": 90,
-                        "hard_issues": [],
-                        "soft_issues": [],
-                        "recommendations": [],
-                    },
-                ),
+                    patch.object(verifier,
+                                 "_find_dead_urls",
+                                 new_callable=AsyncMock,
+                                 return_value=[]),
+                    patch.object(verifier,
+                                 "_top_story_is_ctf_or_event",
+                                 return_value=False),
+                    patch.object(
+                        verifier.verifier_llm,
+                        "verify_briefing_facts",
+                        new_callable=AsyncMock,
+                        return_value={
+                            "passed": True,
+                            "score": 90,
+                            "hard_issues": [],
+                            "soft_issues": [],
+                            "recommendations": [],
+                        },
+                    ),
             ):
                 report = await verifier.evaluate(
                     markdown=(
                         "**Threat Radar**\n"
                         "- Wrong reference [GHSA-ab12-cd34-ef56]"
-                        "(https://github.com/advisories/GHSA-ab12-cd34-ef56)"
-                    ),
-                    items=[
-                        {
-                            "url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4",
-                            "title": "GHSA-w6x6-9fp7-fqm4",
-                            "summary": "Selected advisory",
-                        }
-                    ],
+                        "(https://github.com/advisories/GHSA-ab12-cd34-ef56)"),
+                    items=[{
+                        "url":
+                            "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4",
+                        "title":
+                            "GHSA-w6x6-9fp7-fqm4",
+                        "summary":
+                            "Selected advisory",
+                    }],
                 )
         finally:
             await verifier.close()
 
         assert report["passed"] is False
         assert report["llm_hard_blocking"] is False
+        assert any("not present in selected items" in issue
+                   for issue in report["blocking_hard_issues"])
         assert any(
-            "not present in selected items" in issue
-            for issue in report["blocking_hard_issues"]
-        )
-        assert any(
-            "Remove references to advisories not present in selected items."
-            in rec for rec in report["recommendations"]
-        )
+            "Remove references to advisories not present in selected items." in
+            rec for rec in report["recommendations"])
 
     def test_passes_critic_thresholds_blocks_critical_issue_terms(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -1071,7 +1214,9 @@ class TestWriterExecutor:
 
 # ── Distributor tests ────────────────────────────────────────────────────
 
+
 class TestDistributorExecutor:
+
     @pytest.mark.asyncio
     async def test_no_briefing(self):
         from bcn.agents.distributor.agent import DistributorExecutor
@@ -1079,7 +1224,9 @@ class TestDistributorExecutor:
         settings = _make_settings()
         executor = DistributorExecutor(settings)
 
-        with patch("bcn.agents.distributor.agent.get_latest_briefing", new_callable=AsyncMock, return_value=None):
+        with patch("bcn.agents.distributor.agent.get_latest_briefing",
+                   new_callable=AsyncMock,
+                   return_value=None):
             eq = FakeEventQueue()
             ctx = _fake_context("distribute")
             await executor.execute(ctx, eq)
@@ -1107,13 +1254,15 @@ class TestDistributorExecutor:
         }
 
         with (
-            patch(
-                "bcn.agents.distributor.agent.get_latest_briefing",
-                new_callable=AsyncMock,
-                return_value=stale_briefing,
-            ),
-            patch("bcn.agents.distributor.agent.mark_briefing_distributed", new_callable=AsyncMock) as mock_mark,
-            patch("bcn.agents.distributor.agent.mark_items_published", new_callable=AsyncMock) as mock_publish,
+                patch(
+                    "bcn.agents.distributor.agent.get_latest_briefing",
+                    new_callable=AsyncMock,
+                    return_value=stale_briefing,
+                ),
+                patch("bcn.agents.distributor.agent.mark_briefing_distributed",
+                      new_callable=AsyncMock) as mock_mark,
+                patch("bcn.agents.distributor.agent.mark_items_published",
+                      new_callable=AsyncMock) as mock_publish,
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("distribute")

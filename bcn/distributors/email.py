@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import logging
 
 import aiosmtplib
 
