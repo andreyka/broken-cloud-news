@@ -13,10 +13,10 @@ Four A2A agents work together, coordinated by an internal scheduler. Each agent 
 ```mermaid
 flowchart TB
     subgraph Sources["Data Sources"]
-        GHSA["GitHub Security\nAdvisories"]
-        RSS["RSS Feeds\n(CISA, AWS, Cloudflare)"]
-        Reddit["Reddit RSS\n(r/netsec + cloud subreddits)"]
-        Twitter["Twitter/X\n(X API v2)"]
+        GHSA["GitHub Security Advisories"]
+        RSS["RSS Feeds (CISA, AWS, Cloudflare)"]
+        Reddit["Reddit RSS (r/netsec + cloud subreddits)"]
+        Twitter["Twitter/X (X API v2)"]
     end
 
     subgraph BCN["Broken Cloud News Agents"]
