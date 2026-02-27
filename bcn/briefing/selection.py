@@ -99,6 +99,12 @@ class BriefingSelector:
             if item_id in selected_ids:
                 return False
 
+            if self.is_duplicate_of(item, selected):
+                return False
+                
+            if self.is_duplicate_of(item, recent_items):
+                return False
+
             if not self.passes_source_floor(item) and not relax_soft_limits:
                 return False
             source = str(item.get("source_type", "")).lower()
@@ -470,6 +476,34 @@ class BriefingSelector:
         if source == "twitter":
             return 0.2
         return 0.0
+
+    def is_duplicate_of(self, item: dict, others: list[dict]) -> bool:
+        """Strictly determine if an item is a duplicate of other items."""
+        if not others:
+            return False
+
+        cur_url = normalize_url(str(item.get("url", "")))
+        cur_title = self._normalize_title(str(item.get("title", "")))
+        cur_issue_keys = self._issue_keys(item)
+        threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
+
+        for other in others:
+            other_url = normalize_url(str(other.get("url", "")))
+            if cur_url and other_url and cur_url == other_url:
+                return True
+
+            other_title = self._normalize_title(str(other.get("title", "")))
+            if cur_title and other_title:
+                sim = difflib.SequenceMatcher(None, cur_title, other_title).ratio()
+                if sim >= threshold:
+                    return True
+
+            if cur_issue_keys:
+                other_issue_keys = self._issue_keys(other)
+                if other_issue_keys and len(cur_issue_keys & other_issue_keys) > 0:
+                    return True
+
+        return False
 
     def novelty_penalty(self, item: dict, recent_published: list[dict]) -> float:
         """Penalize near-duplicate stories from recent distributed digests."""
