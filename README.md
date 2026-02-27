@@ -21,43 +21,43 @@ flowchart TB
 
     subgraph BCN["Broken Cloud News Agents"]
         direction TB
-        Collector["Collector\n:9001"]
-        DB[("PostgreSQL\nnews_items\nbriefings")]
-        Analyst["Analyst\n:9002"]
-        Writer["Writer\n:9003"]
-        Critic["Critic\n:9005"]
-        Distributor["Distributor\n:9004"]
+        Collector["Collector"]
+        DB[("PostgreSQL")]
+        Analyst["Analyst"]
+        Writer["Writer"]
+        Critic["Critic"]
+        Distributor["Distributor"]
     end
 
     subgraph AI["AI Models"]
-        LLM["LLM API\n(Gemini, OpenAI-compat, etc)"]
-        ImageGen["Image Generator\n(Flux, Gemini Image, etc)"]
+        LLM["Large Language Model"]
+        ImageGen["Image Generator"]
     end
 
     subgraph Channels["Distribution"]
-        TG["Telegram\nChannel"]
-        Email["Email\n(SMTP)"]
-        Slack["Slack\n(Webhook)"]
+        TG["Telegram"]
+        Email["Email"]
+        Slack["Slack"]
     end
 
     GHSA --> Collector
     RSS --> Collector
     Reddit --> Collector
     Twitter --> Collector
-    Collector -- "store items" --> DB
-    DB -- "unanalyzed items" --> Analyst
-    Analyst -- "score & summarize" --> LLM
-    LLM -- "analysis result" --> Analyst
-    Analyst -- "update scores/tags" --> DB
-    DB -- "top scored items" --> Writer
-    Writer -- "generate briefing" --> LLM
-    Writer -- "draft" --> Critic
-    Critic -- "quality feedback" --> Writer
-    Writer -- "generate cover" --> ImageGen
-    LLM -- "briefing text" --> Writer
-    ImageGen -- "cover image" --> Writer
-    Writer -- "store briefing" --> DB
-    DB -- "latest briefing" --> Distributor
+    Collector -- "Store Items" --> DB
+    DB -- "Unanalyzed Items" --> Analyst
+    Analyst -- "Score & Summarize" --> LLM
+    LLM -- "Analysis Result" --> Analyst
+    Analyst -- "Update Scores/Tags" --> DB
+    DB -- "Top Scored Items" --> Writer
+    Writer -- "Draft Briefing" --> LLM
+    Writer -- "Draft" --> Critic
+    Critic -- "Quality Feedback" --> Writer
+    Writer -- "Generate Cover" --> ImageGen
+    LLM -- "Briefing Text" --> Writer
+    ImageGen -- "Cover Image" --> Writer
+    Writer -- "Store Briefing" --> DB
+    DB -- "Latest Briefing" --> Distributor
     Distributor --> TG
     Distributor -.-> Email
     Distributor -.-> Slack
