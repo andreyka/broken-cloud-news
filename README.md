@@ -51,9 +51,9 @@ flowchart TB
     Writer -- "generate briefing" --> Qwen
     Writer -- "draft" --> Critic
     Critic -- "quality feedback" --> Writer
-    Writer -- "generate cover" --> Flux/Gemini Image
-    Qwen/Gemini -- "briefing text" --> Writer
-    Flux/Gemini Image -- "cover image" --> Writer
+    Writer -- "generate cover" --> FluxGemini["Flux/Gemini Image"]
+    QwenGemini["Qwen/Gemini"] -- "briefing text" --> Writer
+    FluxGemini["Flux/Gemini Image"] -- "cover image" --> Writer
     Writer -- "store briefing" --> DB
     DB -- "latest briefing" --> Distributor
     Distributor --> TG
