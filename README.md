@@ -12,32 +12,38 @@ Four A2A agents work together, coordinated by an internal scheduler. Each agent 
 
 ```mermaid
 flowchart TB
+    classDef source fill:#f9f2f4,stroke:#d04376,stroke-width:2px,color:#d04376
+    classDef agent fill:#e1f5fe,stroke:#0288d1,stroke-width:2px,color:#01579b
+    classDef db fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px,color:#4a148c
+    classDef ai fill:#e8f5e9,stroke:#388e3c,stroke-width:2px,color:#1b5e20
+    classDef channel fill:#fff3e0,stroke:#f57c00,stroke-width:2px,color:#e65100
+
     subgraph Sources["Data Sources"]
-        GHSA["GitHub Security Advisories"]
-        RSS["RSS Feeds (CISA, AWS, Cloudflare)"]
-        Reddit["Reddit RSS (r/netsec + cloud subreddits)"]
-        Twitter["Twitter/X (X API v2)"]
+        GHSA["GitHub Security Advisories"]:::source
+        RSS["RSS Feeds (CISA, AWS, Cloudflare)"]:::source
+        Reddit["Reddit RSS (r/netsec + cloud subreddits)"]:::source
+        Twitter["Twitter/X (X API v2)"]:::source
     end
 
     subgraph BCN["Broken Cloud News Agents"]
         direction TB
-        Collector["Collector"]
-        DB[("PostgreSQL")]
-        Analyst["Analyst"]
-        Writer["Writer"]
-        Critic["Critic"]
-        Distributor["Distributor"]
+        Collector["Collector"]:::agent
+        DB[("PostgreSQL")]:::db
+        Analyst["Analyst"]:::agent
+        Writer["Writer"]:::agent
+        Critic["Critic"]:::agent
+        Distributor["Distributor"]:::agent
     end
 
     subgraph AI["AI Models"]
-        LLM["Large Language Model"]
-        ImageGen["Image Generator"]
+        LLM["Large Language Model"]:::ai
+        ImageGen["Image Generator"]:::ai
     end
 
     subgraph Channels["Distribution"]
-        TG["Telegram"]
-        Email["Email"]
-        Slack["Slack"]
+        TG["Telegram"]:::channel
+        Email["Email"]:::channel
+        Slack["Slack"]:::channel
     end
 
     GHSA --> Collector
