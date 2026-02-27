@@ -8,6 +8,8 @@
 
 Four A2A agents work together, coordinated by an internal scheduler. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
 
+<div align="center">
+
 ```mermaid
 flowchart TB
     subgraph Sources["Data Sources"]
@@ -60,6 +62,8 @@ flowchart TB
     Distributor -.-> Email
     Distributor -.-> Slack
 ```
+
+</div>
 
 ### Agent Details
 
