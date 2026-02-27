@@ -50,20 +50,20 @@ flowchart TB
     RSS --> Collector
     Reddit --> Collector
     Twitter --> Collector
-    Collector -- "Store Items" --> DB
-    DB -- "Unanalyzed Items" --> Analyst
-    Analyst -- "Score & Summarize" --> LLM
-    LLM -- "Analysis Result" --> Analyst
-    Analyst -- "Update Scores/Tags" --> DB
-    DB -- "Top Scored Items" --> Writer
-    Writer -- "Draft Briefing" --> LLM
-    Writer -- "Draft" --> Critic
-    Critic -- "Quality Feedback" --> Writer
-    Writer -- "Generate Cover" --> ImageGen
-    LLM -- "Briefing Text" --> Writer
-    ImageGen -- "Cover Image" --> Writer
-    Writer -- "Store Briefing" --> DB
-    DB -- "Latest Briefing" --> Distributor
+    Collector -->|Store Items| DB
+    DB -->|Unanalyzed Items| Analyst
+    Analyst -->|Score & Summarize| LLM
+    LLM -->|Analysis Result| Analyst
+    Analyst -->|Update Scores/Tags| DB
+    DB -->|Top Scored Items| Writer
+    Writer -->|Draft Briefing| LLM
+    Writer -->|Draft| Critic
+    Critic -->|Quality Feedback| Writer
+    Writer -->|Generate Cover| ImageGen
+    LLM -->|Briefing Text| Writer
+    ImageGen -->|Cover Image| Writer
+    Writer -->|Store Briefing| DB
+    DB -->|Latest Briefing| Distributor
     Distributor --> TG
     Distributor -.-> Email
     Distributor -.-> Slack
