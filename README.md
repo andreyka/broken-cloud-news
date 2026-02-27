@@ -29,9 +29,9 @@ flowchart TB
         Distributor["Distributor\n:9004"]
     end
 
-    subgraph AI["DGX Spark"]
-        Qwen["Qwen3-VL\n(vLLM :8000)"]
-        Flux["Flux.1-schnell\n(ComfyUI :8188)"]
+    subgraph AI["AI Models"]
+        LLM["LLM API\n(Gemini, OpenAI-compat, etc)"]
+        ImageGen["Image Generator\n(Flux, Gemini Image, etc)"]
     end
 
     subgraph Channels["Distribution"]
@@ -46,16 +46,16 @@ flowchart TB
     Twitter --> Collector
     Collector -- "store items" --> DB
     DB -- "unanalyzed items" --> Analyst
-    Analyst -- "score & summarize" --> Qwen
-    Qwen -- "analysis result" --> Analyst
+    Analyst -- "score & summarize" --> LLM
+    LLM -- "analysis result" --> Analyst
     Analyst -- "update scores/tags" --> DB
     DB -- "top scored items" --> Writer
-    Writer -- "generate briefing" --> Qwen
+    Writer -- "generate briefing" --> LLM
     Writer -- "draft" --> Critic
     Critic -- "quality feedback" --> Writer
-    Writer -- "generate cover" --> FluxGemini["Flux/Gemini Image"]
-    QwenGemini["Qwen/Gemini"] -- "briefing text" --> Writer
-    FluxGemini["Flux/Gemini Image"] -- "cover image" --> Writer
+    Writer -- "generate cover" --> ImageGen
+    LLM -- "briefing text" --> Writer
+    ImageGen -- "cover image" --> Writer
     Writer -- "store briefing" --> DB
     DB -- "latest briefing" --> Distributor
     Distributor --> TG
