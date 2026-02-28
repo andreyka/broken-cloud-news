@@ -180,6 +180,9 @@ async def get_analyzed_items(
         WHERE status = 'ANALYZED'
           AND relevance_score >= $1
           AND published_at > NOW() - make_interval(hours => $2)
+          AND NOT EXISTS (
+              SELECT 1 FROM briefings WHERE news_items.id = ANY(briefings.item_ids)
+          )
         ORDER BY relevance_score DESC
         """,
         min_score,
