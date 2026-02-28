@@ -361,23 +361,23 @@ class LLMClient:
         from google.genai import types
         client = self._get_genai_client(endpoint)
 
-        config = types.GenerateContentConfig(response_modalities=["IMAGE"])
-        response = await client.aio.models.generate_content(
+        config = types.GenerateImagesConfig(
+            number_of_images=1,
+            output_mime_type="image/png",
+            aspect_ratio="16:9",
+        )
+        response = await client.aio.models.generate_images(
             model=endpoint.model,
-            contents=prompt_text,
+            prompt=prompt_text,
             config=config,
         )
 
-        for candidate in response.candidates:
-            if candidate.content and candidate.content.parts:
-                part = candidate.content.parts[0]
-                if getattr(part, "inline_data", None) and part.inline_data.data:
-                    mime = getattr(part.inline_data, "mime_type",
-                                   "image/png") or "image/png"
-                    return mime, part.inline_data.data
+        for generated_image in response.generated_images:
+            if getattr(generated_image, "image", None) and getattr(generated_image.image, "image_bytes", None):
+                return "image/png", generated_image.image.image_bytes
 
         raise RuntimeError(
-            "Gemini image response did not include inline image data")
+            "Gemini image response did not include image bytes")
 
     @staticmethod
     def _is_gemini_vertex_endpoint(endpoint: _EndpointConfig) -> bool:
