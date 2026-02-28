@@ -376,7 +376,8 @@ def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
 @click.option(
     "--reanalyze-items",
     is_flag=True,
-    help="Re-run the Analyst LLM on historical items to capture new logic (e.g. canonical URLs) before Writer simulation.",
+    help=
+    "Re-run the Analyst LLM on historical items to capture new logic (e.g. canonical URLs) before Writer simulation.",
 )
 @click.option(
     "--store-db/--no-store-db",

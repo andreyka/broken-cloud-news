@@ -96,7 +96,8 @@ class AnalystExecutor(AgentExecutor):
                         if scraped_ref:
                             content += f"\n\n--- Scraped content from {ref['url']} ---\n{scraped_ref[:3000]}"
             except Exception as exc:
-                logger.warning("Failed to scrape tweet references for %s: %s", item["id"], exc)
+                logger.warning("Failed to scrape tweet references for %s: %s",
+                               item["id"], exc)
 
         if not content:
             content = title
@@ -104,15 +105,14 @@ class AnalystExecutor(AgentExecutor):
         try:
             result = await self.analyst_llm.analyze_item(title,
                                                          content,
-                                                         url=item["url"] or
-                                                         "")
+                                                         url=item["url"] or "")
             await update_item_analyzed(
                 item_id=item["id"],
                 summary=result.summary,
                 relevance_score=result.relevance_score,
                 ai_tags=result.tags,
-                full_content=(content if content != title else
-                              item["full_content"]),
+                full_content=(content
+                              if content != title else item["full_content"]),
                 image_prompt=result.image_prompt,
                 canonical_url=result.canonical_url,
             )
