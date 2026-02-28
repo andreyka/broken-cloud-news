@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import logging
+import random
 import re
 from typing import Any, TYPE_CHECKING
 from urllib.parse import parse_qsl
@@ -194,7 +195,7 @@ class LLMClient:
         role: str | None,
         system_prompt: str,
         user_content: str,
-        retries: int = 3,
+        retries: int = 8,
         json_response: bool = False,
         tools: list[Any] | None = None,
     ) -> str:
@@ -224,9 +225,9 @@ class LLMClient:
                     raise
                 last_exc = exc
                 if attempt < retries:
-                    wait = 2**attempt
+                    wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
                     logger.warning(
-                        "LLM request failed (attempt %d/%d, status=%d), retrying in %ds",
+                        "LLM request failed (attempt %d/%d, status=%d), retrying in %.2fs",
                         attempt,
                         retries,
                         status,
@@ -236,15 +237,31 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt < retries:
-                    wait = 2**attempt
+                    wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
                     logger.warning(
-                        "LLM request failed (attempt %d/%d, %s), retrying in %ds",
+                        "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
                         attempt,
                         retries,
                         type(exc).__name__,
                         wait,
                     )
                     await asyncio.sleep(wait)
+            except Exception as exc:
+                is_genai_error = type(exc).__name__ in {"APIError", "ClientError"} and "google" in getattr(type(exc), "__module__", "")
+                if is_genai_error and ("429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc) or getattr(exc, "code", 0) in {429, 500, 502, 503, 504}):
+                    last_exc = exc
+                    if attempt < retries:
+                        wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
+                        logger.warning(
+                            "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
+                            attempt,
+                            retries,
+                            type(exc).__name__,
+                            wait,
+                        )
+                        await asyncio.sleep(wait)
+                else:
+                    raise
         raise last_exc if last_exc else RuntimeError(
             "LLM request failed without exception")
 
