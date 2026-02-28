@@ -253,6 +253,10 @@ class Settings(BaseSettings):
     # Distribution: Slack
     slack_webhook_url: str = ""
 
+    # Distribution: Discord
+    discord_bot_token: str = ""
+    discord_channel_id: str = ""
+
     # Agent ports
     collector_port: int = 9001
     analyst_port: int = 9002

@@ -559,6 +559,7 @@ def distribute() -> None:
         from bcn.distributors.email import EmailDistributor
         from bcn.distributors.slack import SlackDistributor
         from bcn.distributors.telegram import TelegramDistributor
+        from bcn.distributors.discord import DiscordDistributor
 
         await get_pool(settings)
         briefing = await get_latest_briefing()
@@ -591,6 +592,9 @@ def distribute() -> None:
         if settings.slack_webhook_url:
             channels.append(
                 ("slack", SlackDistributor(settings.slack_webhook_url)))
+        if settings.discord_bot_token and settings.discord_channel_id:
+            channels.append(
+                ("discord", DiscordDistributor(settings.discord_bot_token, settings.discord_channel_id)))
 
         if not channels:
             click.echo("No distribution channels configured")
@@ -633,6 +637,19 @@ def distribute() -> None:
                         "markdown_chars":
                             len(str(briefing["content_markdown"] or "")),
                     }
+                elif name == "discord":
+                    ok = await channel.send(briefing["content_markdown"],
+                                            briefing["cover_image_url"])
+                    metadata = {
+                        "cover_image":
+                            bool(briefing["cover_image_url"]),
+                        "markdown_chars":
+                            len(str(briefing["content_markdown"] or "")),
+                    }
+                    if hasattr(channel, "last_result") and channel.last_result:
+                        msg_id = channel.last_result.get("primary_message_id")
+                        if msg_id is not None:
+                            external_message_id = str(msg_id)
                 else:
                     ok = False
                 status = "ok" if ok else "failed"
