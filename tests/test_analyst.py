@@ -16,6 +16,7 @@ from bcn.agents.analyst.llm import AnalystLLM
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
 
+
 @pytest.mark.asyncio
 async def test_analyst_canonical_url_extraction():
     settings = Settings()
@@ -36,8 +37,8 @@ async def test_analyst_canonical_url_extraction():
     Check Point Research details the vulnerabilities in their advisory: https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/
     Anthropic has released a patch and developers are urged to update immediately.
     """
-    
+
     result = await analyst.analyze_item(title=title, content=content, url=url)
-    
+
     assert result.canonical_url == "https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/"
     assert result.relevance_score >= 7

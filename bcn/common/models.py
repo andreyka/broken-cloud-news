@@ -36,7 +36,9 @@ class AnalysisResult(BaseModel):
     relevance_score: int = Field(ge=1, le=10)
     tags: list[str] = Field(default_factory=list)
     image_prompt: str = "cloud security concept art"
-    canonical_url: Optional[str] = Field(default=None, description="The most authoritative primary source URL found, if any.")
+    canonical_url: Optional[str] = Field(
+        default=None,
+        description="The most authoritative primary source URL found, if any.")
 
 
 class Briefing(BaseModel):

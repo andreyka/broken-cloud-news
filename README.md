@@ -202,9 +202,33 @@ Important briefing-quality knobs:
 
 ---
 
-## AI Infrastructure (DGX Spark)
+## AI Infrastructure & Serving API
 
-### 1. Qwen3-VL (LLM Inference)
+You can deploy the AI backend entirely in the cloud using Google's Gemini API, or run the models on-premise (e.g., NVIDIA DGX Spark).
+
+### Option 1: Gemini API (Cloud)
+
+The simplest deployment uses Google's Vertex AI / Gemini API for both text and image generation.
+
+1. Get a Vertex AI or Gemini API key.
+2. Update your `.env` file to use the Gemini provider and models:
+   ```bash
+   BCN_LLM_PROVIDER=vertexai
+   BCN_LLM_BASE_URL=https://aiplatform.googleapis.com/v1
+   BCN_LLM_API_KEY=<your_vertex_key>
+   BCN_LLM_MODEL_ANALYST=gemini-3.1-pro-preview
+   BCN_LLM_MODEL_WRITER=gemini-3.1-pro-preview
+   BCN_LLM_MODEL_CRITIC=gemini-3.1-pro-preview
+   BCN_LLM_MODEL_VERIFIER=gemini-3.1-pro-preview
+   BCN_LLM_MODEL_COVER=gemini-3-pro-image-preview
+   ```
+*(Note: Using `gemini-3-pro-image-preview` for the cover role enables native image generation without needing ComfyUI).*
+
+### Option 2: DGX Spark (On-Premise)
+
+For fully local, high-performance execution, deploy Qwen3-VL and Flux.1-schnell.
+
+#### 1. Qwen3-VL (LLM Inference)
 
 Runs as an OpenAI-compatible API via **vLLM**:
 
@@ -224,7 +248,7 @@ docker run --rm -it \
     --max-model-len 16384
 ```
 
-### 2. Flux.1-schnell (Cover Image Generation)
+#### 2. Flux.1-schnell (Cover Image Generation)
 
 Runs **ComfyUI** with Flux model:
 
