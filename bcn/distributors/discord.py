@@ -57,11 +57,13 @@ class DiscordDistributor:
         first_message_id = None
         
         try:
+            import json
             for i, chunk in enumerate(chunks):
-                payload = {"content": chunk}
                 if i == 0 and files:
+                    payload = {"payload_json": json.dumps({"content": chunk})}
                     resp = await self._client.post(self.api, data=payload, files=files)
                 else:
+                    payload = {"content": chunk}
                     resp = await self._client.post(self.api, json=payload)
                     
                 resp.raise_for_status()
