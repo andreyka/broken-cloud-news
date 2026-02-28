@@ -76,7 +76,6 @@ class TelegramDistributor:
             photo_msg_id: int | None = None
 
             if cover_image_url:
-                caption = self._truncate_caption(clean_text)
                 try:
                     filename, mime_type, img_bytes = await self._load_cover_image_bytes(
                         cover_image_url)
@@ -84,8 +83,6 @@ class TelegramDistributor:
                         f"{self.api}/sendPhoto",
                         data={
                             "chat_id": self.chat_id,
-                            "caption": caption,
-                            "parse_mode": "Markdown",
                         },
                         files={"photo": (filename, img_bytes, mime_type)},
                     )
@@ -100,35 +97,23 @@ class TelegramDistributor:
                     result["cover_image_error"] = str(exc)
 
             if photo_msg_id is not None:
-                # Send overflow text (beyond caption limit) as a reply
-                overflow = clean_text[len(self._truncate_caption(clean_text)
-                                         ):].lstrip("\n")
-                if overflow and self._should_send_overflow(overflow):
-                    result["overflow_sent"] = True
-                    for chunk in self._split_message(overflow):
-                        resp = await self._client.post(
-                            f"{self.api}/sendMessage",
-                            json={
-                                "chat_id": self.chat_id,
-                                "text": chunk,
-                                "parse_mode": "Markdown",
-                                "disable_web_page_preview": True,
-                                "reply_to_message_id": photo_msg_id,
-                            },
-                        )
-                        resp.raise_for_status()
-                        payload = resp.json()
-                        msg_id = payload.get("result", {}).get("message_id")
-                        if msg_id is not None and isinstance(
-                                result["message_ids"], list):
-                            result["message_ids"].append(msg_id)
-                elif overflow:
-                    logger.info(
-                        "Telegram overflow omitted by '%s' mode (%d chars)",
-                        self.overflow_mode,
-                        len(overflow),
+                # Send the entire text as a reply to the photo
+                for chunk in self._split_message(clean_text):
+                    resp = await self._client.post(
+                        f"{self.api}/sendMessage",
+                        json={
+                            "chat_id": self.chat_id,
+                            "text": chunk,
+                            "parse_mode": "Markdown",
+                            "disable_web_page_preview": True,
+                            "reply_to_message_id": photo_msg_id,
+                        },
                     )
-                    result["overflow_omitted"] = True
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    msg_id = payload.get("result", {}).get("message_id")
+                    if msg_id is not None and isinstance(result["message_ids"], list):
+                        result["message_ids"].append(msg_id)
             else:
                 # Fallback: no photo, send as plain text message(s)
                 sent_ids: list[int] = []
