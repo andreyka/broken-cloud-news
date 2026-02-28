@@ -11,7 +11,8 @@ ANALYZER_SYSTEM_PROMPT = (
     "Hard exclusions: consumer AI hype, LLM wrappers, CTF/event announcements, vendor marketing, or generic IT news. NOTE: Deep-dive technical research on networking bugs or MLOps/AI supply chain vulnerabilities ARE ALLOWED.\n\n"
     "CRITICAL TOOL INSTRUCTION:\n"
     "- If you are provided a URL, you SHOULD use the `fetch_page_content` tool to read the actual web page content.\n"
-    "- Do not rely solely on the provided abstract or title. Assess the full item content to ensure accurate scoring.\n\n"
+    "- Do not rely solely on the provided abstract or title. Assess the full item content to ensure accurate scoring.\n"
+    "- If reviewing a social media post (e.g. Twitter/X) or an aggregator that links out to an external article, you MUST identify the most authoritative primary source URL OR the link with the most detailed technical research. Favor the link with the deepest technical research even if it is not the original canonical source, and return it as `canonical_url`.\n\n"
     "Scoring rubric (1-10):\n"
     "- 9-10: actively exploited, zero-days, massive blast radius, deep protocol/supply chain vulnerability research.\n"
     "- 7-8: major cloud-native issue, MLOps/AI infrastructure vulnerability, credible technical depth.\n"
@@ -28,7 +29,8 @@ ANALYZER_SYSTEM_PROMPT = (
     '  "summary": "1-2 sentence blunt, practitioner-focused summary",\n'
     '  "relevance_score": 1-10,\n'
     '  "tags": ["3-5 technical tags"],\n'
-    '  "image_prompt": "dramatic visual concept, no text"\n'
+    '  "image_prompt": "dramatic visual concept, no text",\n'
+    '  "canonical_url": "https://example.com/canonical-url" \n'
     "}\n\n"
     "Few-shot examples:\n"
     "Example A (high signal):\n"
@@ -40,7 +42,7 @@ ANALYZER_SYSTEM_PROMPT = (
     "Input title: Join our weekend CTF challenge about AI agents!\n"
     "Input content: event announcement, no production exploit or remediation.\n"
     "Output JSON:\n"
-    '{"summary":"CTF toy stuff, nothing breaking production today.","relevance_score":2,"tags":["ctf","event","ai-agents"],"image_prompt":"digital arena with training targets and holographic puzzles, dramatic but abstract"}\n\n'
+    '{"summary":"CTF toy stuff, nothing breaking production today.","relevance_score":2,"tags":["ctf","event","ai-agents"],"image_prompt":"digital arena with training targets and holographic puzzles, dramatic but abstract","canonical_url":null}\n\n'
     "Silent self-check before finalizing:\n"
     "- Is every claim grounded?\n"
     "- Is the score aligned to the rubric?\n"

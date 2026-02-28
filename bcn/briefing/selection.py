@@ -26,6 +26,7 @@ _TRUSTED_RSS_DOMAINS = frozenset({
     "kubernetes.io",
     "ubuntu.com",
     "unit42.paloaltonetworks.com",
+    "research.checkpoint.com",
 })
 
 _CSP_SIDE_DOMAINS = frozenset({

@@ -374,6 +374,11 @@ def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
     help="Use full writer->critic rewrite loop during simulation (much slower).",
 )
 @click.option(
+    "--reanalyze-items",
+    is_flag=True,
+    help="Re-run the Analyst LLM on historical items to capture new logic (e.g. canonical URLs) before Writer simulation.",
+)
+@click.option(
     "--store-db/--no-store-db",
     default=True,
     show_default=True,
@@ -385,6 +390,7 @@ def simulate(
     output_path: str,
     include_text: bool,
     with_critic_rewrites: bool,
+    reanalyze_items: bool,
     store_db: bool,
 ) -> None:
     """Simulate historical briefings and compare against actual distributed posts."""
@@ -435,6 +441,7 @@ def simulate(
             since_days=max(0, int(since_days)),
             include_text=include_text,
             apply_critic_rewrites=with_critic_rewrites,
+            reanalyze_items=reanalyze_items,
         )
 
         if store_db:

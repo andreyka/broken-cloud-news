@@ -38,6 +38,7 @@ class AnalystLLM:
                 tags=parsed.get("tags", []),
                 image_prompt=parsed.get("image_prompt",
                                         "cloud security concept art"),
+                canonical_url=parsed.get("canonical_url"),
             )
         except Exception:
             logger.warning("Failed to parse LLM JSON, using fallback")
@@ -46,4 +47,5 @@ class AnalystLLM:
                 relevance_score=5,
                 tags=[],
                 image_prompt="cloud security concept art",
+                canonical_url=None,
             )

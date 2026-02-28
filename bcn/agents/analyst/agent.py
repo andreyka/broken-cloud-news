@@ -60,55 +60,70 @@ class AnalystExecutor(AgentExecutor):
 
         analyzed = 0
         for item in items:
-            title: str = item["title"] or ""
-            content: str = item["full_content"] or ""
-
-            if not content and item["url"]:
-                if item["source_type"] in ("rss", "ghsa"):
-                    content = await self.scraper.scrape(item["url"])
-
-            if item["source_type"] == "ghsa":
-                try:
-                    raw = (json.loads(item["raw_data"]) if isinstance(
-                        item["raw_data"], str) else item["raw_data"])
-                    desc = raw.get("description", "")
-                    severity = raw.get("severity", "")
-                    if desc and (not content or len(content) < 200):
-                        content = f"[Severity: {severity}]\n{desc}\n\n{content or ''}"
-                except Exception:
-                    pass
-
-            if not content:
-                content = title
-
-            try:
-                result = await self.analyst_llm.analyze_item(title,
-                                                             content,
-                                                             url=item["url"] or
-                                                             "")
-                await update_item_analyzed(
-                    item_id=item["id"],
-                    summary=result.summary,
-                    relevance_score=result.relevance_score,
-                    ai_tags=result.tags,
-                    full_content=(content if content != title else
-                                  item["full_content"]),
-                    image_prompt=result.image_prompt,
-                )
-                analyzed += 1
-                logger.info(
-                    "Analyzed %s [%s] score=%d",
-                    item["source_id"],
-                    item["source_type"],
-                    result.relevance_score,
-                )
-            except Exception:
-                logger.exception("Failed to analyze item %s", item["id"])
-                continue
+            await self._analyze_item_and_save(item)
+            analyzed += 1
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
         logger.info(msg)
         await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+
+    async def _analyze_item_and_save(self, item: dict) -> None:
+        title: str = item["title"] or ""
+        content: str = item["full_content"] or ""
+
+        if not content and item["url"]:
+            if item["source_type"] in ("rss", "ghsa"):
+                content = await self.scraper.scrape(item["url"])
+
+        if item["source_type"] == "ghsa":
+            try:
+                raw = (json.loads(item["raw_data"]) if isinstance(
+                    item["raw_data"], str) else item["raw_data"])
+                desc = raw.get("description", "")
+                severity = raw.get("severity", "")
+                if desc and (not content or len(content) < 200):
+                    content = f"[Severity: {severity}]\n{desc}\n\n{content or ''}"
+            except Exception:
+                pass
+        elif item["source_type"] == "twitter":
+            try:
+                raw = (json.loads(item["raw_data"]) if isinstance(
+                    item["raw_data"], str) else item["raw_data"])
+                references = raw.get("references", [])
+                for ref in references:
+                    if isinstance(ref, dict) and ref.get("url"):
+                        scraped_ref = await self.scraper.scrape(ref["url"])
+                        if scraped_ref:
+                            content += f"\n\n--- Scraped content from {ref['url']} ---\n{scraped_ref[:3000]}"
+            except Exception as exc:
+                logger.warning("Failed to scrape tweet references for %s: %s", item["id"], exc)
+
+        if not content:
+            content = title
+
+        try:
+            result = await self.analyst_llm.analyze_item(title,
+                                                         content,
+                                                         url=item["url"] or
+                                                         "")
+            await update_item_analyzed(
+                item_id=item["id"],
+                summary=result.summary,
+                relevance_score=result.relevance_score,
+                ai_tags=result.tags,
+                full_content=(content if content != title else
+                              item["full_content"]),
+                image_prompt=result.image_prompt,
+                canonical_url=result.canonical_url,
+            )
+            logger.info(
+                "Analyzed %s [%s] score=%d",
+                item["source_id"],
+                item["source_type"],
+                result.relevance_score,
+            )
+        except Exception:
+            logger.exception("Failed to analyze item %s", item["id"])
 
     @override
     async def cancel(
