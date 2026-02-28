@@ -131,6 +131,7 @@ async def update_item_analyzed(
     ai_tags: list[str],
     full_content: Optional[str],
     image_prompt: Optional[str],
+    canonical_url: Optional[str] = None,
 ) -> None:
     """Mark an item as ``ANALYZED`` and store LLM analysis results.
 
@@ -141,6 +142,7 @@ async def update_item_analyzed(
         ai_tags: List of topic tags.
         full_content: Updated body text (if enriched during analysis).
         image_prompt: Suggested cover-image prompt.
+        canonical_url: Optional resolved primary source URL.
     """
     pool = await get_pool()
     await pool.execute(
@@ -148,14 +150,15 @@ async def update_item_analyzed(
         UPDATE news_items
         SET summary = $1, relevance_score = $2, ai_tags = $3::jsonb,
             full_content = COALESCE($4, full_content),
-            image_prompt = $5, status = 'ANALYZED', updated_at = NOW()
-        WHERE id = $6
+            image_prompt = $5, url = COALESCE($6, url), status = 'ANALYZED', updated_at = NOW()
+        WHERE id = $7
         """,
         summary,
         relevance_score,
         json.dumps(ai_tags),
         full_content,
         image_prompt,
+        canonical_url,
         item_id,
     )
 

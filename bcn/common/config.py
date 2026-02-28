@@ -199,6 +199,7 @@ class Settings(BaseSettings):
         "https://aws.amazon.com/blogs/security/feed/",
         "https://blog.cloudflare.com/tag/security/rss/",
         "https://unit42.paloaltonetworks.com/feed/",
+        "https://research.checkpoint.com/feed/",
     ]
 
     # Reddit (RSS)

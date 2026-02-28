@@ -676,7 +676,8 @@ async def simulate_historical_briefings(
     limit: int = 0,
     since_days: int = 0,
     include_text: bool = False,
-    apply_critic_rewrites: bool = False,
+    apply_critic_rewrites: bool = True,
+    reanalyze_items: bool = False,
 ) -> dict[str, object]:
     """Replay historical distributed briefings and compare simulated output."""
     briefings = await get_distributed_briefings(limit=limit,
@@ -700,6 +701,12 @@ async def simulate_historical_briefings(
     ordered = sorted(briefings, key=lambda b: b["created_at"])
     writer = WriterExecutor(settings)
     critic = writer.critic_llm  # reuse the critic from the writer
+    
+    analyst = None
+    if reanalyze_items:
+        from bcn.agents.analyst.agent import AnalystExecutor
+        analyst = AnalystExecutor(settings)
+
     results: list[dict[str, object]] = []
     recurring_notes: Counter[str] = Counter()
 
@@ -711,6 +718,25 @@ async def simulate_historical_briefings(
         items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
         if not items:
             continue
+
+        if analyst and items:
+            logger.info("Re-analyzing %d items for briefing %s to capture new Analyst features (e.g. canonical URLs)...", len(items), briefing["id"])
+            for db_item in items:
+                # Mock a request context so we can run the analyst directly
+                from a2a.server.agent_execution import RequestContext
+                from a2a.types import Message, MessageSendParams, TextPart
+                from uuid import uuid4
+                
+                # Check if it was a Twitter/Reddit item with raw_data
+                if db_item.get("source_type") in ("twitter", "reddit") and db_item.get("raw_data"):
+                    # We can't easily re-run the collector, but we can re-run the execute loop if we mock the item check.
+                    # However, to avoid side-effects on the DB immediately, we can just run analyze_item locally.
+                    # Actually, we want it to update the DB so the generated briefing uses the canonical_url.
+                    await analyst._analyze_item_and_save(dict(db_item))
+                    
+            # Refetch items to get the newly updated DB fields (like url/canonical_url)
+            item_rows = await get_items_by_ids(item_ids)
+            items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
 
         history_start = max(0, idx - int(settings.briefing_history_items))
         history = [{
