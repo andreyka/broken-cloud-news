@@ -109,6 +109,25 @@ async def _job_daily_digest() -> None:
     await _send_to_agent(_settings.distributor_port, "distribute_briefing")
 
 
+def _daily_digest_hour_expression(settings: Settings) -> str:
+    """Build cron hour expression from multi-hour or legacy single-hour settings."""
+    hours = settings.distribute_hours or [settings.distribute_hour]
+    # Cron expressions are clearer when sorted and deduplicated.
+    normalized = sorted({int(hour) for hour in hours})
+    return ",".join(str(hour) for hour in normalized)
+
+
+def _build_daily_digest_trigger(settings: Settings):
+    """Build the cron trigger for daily digest publication."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    return CronTrigger(
+        hour=_daily_digest_hour_expression(settings),
+        minute=settings.distribute_minute,
+        timezone=settings.distribute_timezone,
+    )
+
+
 async def _run_agent_directly(
     executor_cls: type,
     settings: Settings,
@@ -1306,7 +1325,6 @@ def run() -> None:
 
     async def _daemon():
         from apscheduler import AsyncScheduler
-        from apscheduler.triggers.cron import CronTrigger
         from apscheduler.triggers.interval import IntervalTrigger
 
         from bcn.agents.analyst.agent import AnalystExecutor
@@ -1452,9 +1470,7 @@ def run() -> None:
                 # Daily digest: write + distribute
                 await scheduler.add_schedule(
                     _job_daily_digest,
-                    CronTrigger(
-                        hour=settings.distribute_hour, minute=settings.distribute_minute
-                    ),
+                    _build_daily_digest_trigger(settings),
                     id="daily_digest",
                 )
 

@@ -168,6 +168,10 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_TELEGRAM_BOT_TOKEN` | - | Telegram bot token |
 | `BCN_TELEGRAM_CHAT_ID` | - | Telegram channel chat ID |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) to include in briefing |
+| `BCN_DISTRIBUTE_HOURS` | empty | Optional comma/JSON list of digest hours (e.g. `9,13,19`) |
+| `BCN_DISTRIBUTE_HOUR` | `9` | Legacy single digest hour fallback when `BCN_DISTRIBUTE_HOURS` is empty |
+| `BCN_DISTRIBUTE_MINUTE` | `0` | Minute used for digest cron scheduling |
+| `BCN_DISTRIBUTE_TIMEZONE` | `UTC` | IANA timezone for digest cron (e.g. `America/Los_Angeles`) |
 
 Gemini trial example (role-based):
 ```bash
@@ -204,6 +208,8 @@ Important briefing-quality knobs:
   `minimal` (only hard correctness checks block).
 - `BCN_SCRAPE_PLAYWRIGHT_FETCH_FALLBACK` (default `true`) uses Playwright request
   fallback when direct HTTP fetches of feeds/Reddit endpoints fail.
+- `BCN_DISTRIBUTE_HOURS` + `BCN_DISTRIBUTE_TIMEZONE` support multiple daily publish
+  slots without external cron (example: `BCN_DISTRIBUTE_HOURS=9,13,19`).
 
 ---
 

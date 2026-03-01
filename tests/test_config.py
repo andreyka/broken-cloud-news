@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic import ValidationError
+import pytest
 
 from bcn.common.config import Settings
 
@@ -47,3 +49,25 @@ class TestSettings:
         assert s.rss_feeds == []
         assert s.reddit_subreddits == []
         assert s.ghsa_keywords == []
+
+    def test_distribute_hours_csv_parsing(self, monkeypatch):
+        monkeypatch.setenv("BCN_DISTRIBUTE_HOURS", "9,13,19")
+        s = Settings()
+        assert s.distribute_hours == [9, 13, 19]
+
+    def test_distribute_hours_json_parsing_and_dedup(self, monkeypatch):
+        monkeypatch.setenv("BCN_DISTRIBUTE_HOURS", "[19, 9, 13, 9]")
+        s = Settings()
+        assert s.distribute_hours == [19, 9, 13]
+
+    def test_distribute_hours_invalid_range(self, monkeypatch):
+        monkeypatch.setenv("BCN_DISTRIBUTE_HOURS", "9,25")
+        with pytest.raises(ValidationError):
+            Settings()
+
+    def test_distribute_timezone_validation(self):
+        assert Settings(distribute_timezone="America/Los_Angeles").distribute_timezone == (
+            "America/Los_Angeles"
+        )
+        with pytest.raises(ValidationError):
+            Settings(distribute_timezone="Mars/Olympus_Mons")
