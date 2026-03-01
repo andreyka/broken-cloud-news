@@ -61,7 +61,9 @@ async def test_execute_reports_failed_sources_in_collect_all():
             new_callable=AsyncMock,
             return_value=3,
         ),
-        patch.object(executor, "_collect_reddit", new_callable=AsyncMock, return_value=4),
+        patch.object(
+            executor, "_collect_reddit", new_callable=AsyncMock, return_value=4
+        ),
     ):
         eq = _FakeEventQueue()
         ctx = _fake_context("collect")
