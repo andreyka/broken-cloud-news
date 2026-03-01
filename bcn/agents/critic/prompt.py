@@ -27,4 +27,5 @@ BRIEFING_CRITIC_PROMPT = (
     "  },\n"
     '  "issues": ["short concrete issue 1"],\n'
     '  "recommendations": ["short concrete fix 1"]\n'
-    "}\n")
+    "}\n"
+)

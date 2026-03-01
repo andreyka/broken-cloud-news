@@ -37,13 +37,16 @@ def test_blocks_hostname_resolving_to_private_ip(monkeypatch):
 
 
 def test_allows_hostname_resolving_to_public_ip(monkeypatch):
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: _ai("93.184.216.34"))
+    monkeypatch.setattr(
+        socket, "getaddrinfo", lambda *args, **kwargs: _ai("93.184.216.34")
+    )
     assert_public_http_url("https://news.example.org/story")
 
 
 def test_trusted_hosts_from_urls_extracts_hostname():
     assert trusted_hosts_from_urls(
-        ["http://host.docker.internal:8188", "https://example.com/path"]) == {
-            "host.docker.internal",
-            "example.com",
-        }
+        ["http://host.docker.internal:8188", "https://example.com/path"]
+    ) == {
+        "host.docker.internal",
+        "example.com",
+    }

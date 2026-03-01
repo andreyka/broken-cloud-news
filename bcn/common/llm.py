@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass
-import hashlib
 import json
 import logging
 import random
@@ -15,7 +13,6 @@ from typing import Any, TYPE_CHECKING
 import httpx
 
 from bcn.briefing.text import canonical_url_key
-from bcn.common.models import AnalysisResult
 
 if TYPE_CHECKING:
     from bcn.common.config import Settings
@@ -45,8 +42,7 @@ class LLMClient:
         *,
         provider: str = "openai_compat",
         api_key: str = "",
-        role_overrides: dict[str, dict[str, str] | _EndpointConfig] |
-        None = None,
+        role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.model = model or ""
@@ -63,12 +59,16 @@ class LLMClient:
         for role, override in (role_overrides or {}).items():
             if role not in LLM_ROLES:
                 continue
-            payload = ({
-                "base_url": override.base_url,
-                "model": override.model,
-                "provider": override.provider,
-                "api_key": override.api_key,
-            } if isinstance(override, _EndpointConfig) else override)
+            payload = (
+                {
+                    "base_url": override.base_url,
+                    "model": override.model,
+                    "provider": override.provider,
+                    "api_key": override.api_key,
+                }
+                if isinstance(override, _EndpointConfig)
+                else override
+            )
             resolved = self._resolve_endpoint_override(payload)
             if resolved:
                 self._role_endpoints[role] = resolved
@@ -82,14 +82,10 @@ class LLMClient:
         role_overrides: dict[str, dict[str, str]] = {}
         for role in LLM_ROLES:
             role_overrides[role] = {
-                "provider":
-                    cls._resolve_role_value(settings, "llm_provider", role),
-                "base_url":
-                    cls._resolve_role_value(settings, "llm_base_url", role),
-                "model":
-                    cls._resolve_role_value(settings, "llm_model", role),
-                "api_key":
-                    cls._resolve_role_value(settings, "llm_api_key", role),
+                "provider": cls._resolve_role_value(settings, "llm_provider", role),
+                "base_url": cls._resolve_role_value(settings, "llm_base_url", role),
+                "model": cls._resolve_role_value(settings, "llm_model", role),
+                "api_key": cls._resolve_role_value(settings, "llm_api_key", role),
             }
         return cls(
             base_url=str(settings.llm_base_url or ""),
@@ -116,14 +112,15 @@ class LLMClient:
         return "openai_compat"
 
     def _resolve_endpoint_override(
-            self, payload: dict[str, str] | None) -> _EndpointConfig | None:
+        self, payload: dict[str, str] | None
+    ) -> _EndpointConfig | None:
         if not payload:
             return None
-        base_url = str(payload.get("base_url", "") or
-                       "").strip() or self.base_url
+        base_url = str(payload.get("base_url", "") or "").strip() or self.base_url
         model = str(payload.get("model", "") or "").strip() or self.model
         provider = self._normalize_provider(
-            str(payload.get("provider", "") or self.provider))
+            str(payload.get("provider", "") or self.provider)
+        )
         api_key = str(payload.get("api_key", "") or "").strip() or self.api_key
         if not base_url or not model:
             return None
@@ -215,7 +212,7 @@ class LLMClient:
                     raise
                 last_exc = exc
                 if attempt < retries:
-                    wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
+                    wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
                     logger.warning(
                         "LLM request failed (attempt %d/%d, status=%d), retrying in %.2fs",
                         attempt,
@@ -227,7 +224,7 @@ class LLMClient:
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt < retries:
-                    wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
+                    wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
                     logger.warning(
                         "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
                         attempt,
@@ -237,11 +234,18 @@ class LLMClient:
                     )
                     await asyncio.sleep(wait)
             except Exception as exc:
-                is_genai_error = type(exc).__name__ in {"APIError", "ClientError"} and "google" in getattr(type(exc), "__module__", "")
-                if is_genai_error and ("429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc) or getattr(exc, "code", 0) in {429, 500, 502, 503, 504}):
+                is_genai_error = type(exc).__name__ in {
+                    "APIError",
+                    "ClientError",
+                } and "google" in getattr(type(exc), "__module__", "")
+                if is_genai_error and (
+                    "429" in str(exc)
+                    or "RESOURCE_EXHAUSTED" in str(exc)
+                    or getattr(exc, "code", 0) in {429, 500, 502, 503, 504}
+                ):
                     last_exc = exc
                     if attempt < retries:
-                        wait = min(60.0, (2 ** attempt)) + random.uniform(0.1, 1.5)
+                        wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
                         logger.warning(
                             "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
                             attempt,
@@ -252,8 +256,11 @@ class LLMClient:
                         await asyncio.sleep(wait)
                 else:
                     raise
-        raise last_exc if last_exc else RuntimeError(
-            "LLM request failed without exception")
+        raise (
+            last_exc
+            if last_exc
+            else RuntimeError("LLM request failed without exception")
+        )
 
     async def _chat_openai_compat(
         self,
@@ -264,17 +271,10 @@ class LLMClient:
         json_response: bool = False,
     ) -> str:
         request: dict[str, Any] = {
-            "model":
-                endpoint.model,
+            "model": endpoint.model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt
-                },
-                {
-                    "role": "user",
-                    "content": user_content
-                },
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
             ],
         }
         response = await self._client.post(
@@ -287,6 +287,7 @@ class LLMClient:
 
     def _get_genai_client(self, endpoint: _EndpointConfig) -> Any:
         from google import genai
+
         key = f"{endpoint.base_url}_{endpoint.api_key}"
         if key not in self._genai_clients:
             http_options = {}
@@ -295,13 +296,14 @@ class LLMClient:
                     base = endpoint.base_url.rstrip("/")[:-3]
                     http_options = {
                         "base_url": base,
-                        "api_version": "v1/publishers/google"
+                        "api_version": "v1/publishers/google",
                     }
                 else:
                     http_options = {"base_url": endpoint.base_url}
             self._genai_clients[key] = genai.Client(
                 api_key=endpoint.api_key or "NO_KEY",
-                http_options=http_options if http_options else None)
+                http_options=http_options if http_options else None,
+            )
         return self._genai_clients[key]
 
     async def _chat_gemini(
@@ -314,12 +316,14 @@ class LLMClient:
         tools: list[Any] | None = None,
     ) -> str:
         from google.genai import types
+
         client = self._get_genai_client(endpoint)
         response_mime_type = "application/json" if json_response else "text/plain"
 
         # Determine if we should merge prompts to bypass potential Vertex Express issues
         use_vertex = endpoint.provider == "vertexai" or self._is_gemini_vertex_endpoint(
-            endpoint)
+            endpoint
+        )
         if use_vertex:
             contents = f"System instructions:\n{system_prompt}\n\nUser request:\n{user_content}"
             config = types.GenerateContentConfig(
@@ -349,6 +353,7 @@ class LLMClient:
         prompt_text: str,
     ) -> tuple[str, bytes]:
         from google.genai import types
+
         client = self._get_genai_client(endpoint)
 
         config = types.GenerateImagesConfig(
@@ -363,22 +368,24 @@ class LLMClient:
         )
 
         for generated_image in response.generated_images:
-            if getattr(generated_image, "image", None) and getattr(generated_image.image, "image_bytes", None):
+            if getattr(generated_image, "image", None) and getattr(
+                generated_image.image, "image_bytes", None
+            ):
                 return "image/png", generated_image.image.image_bytes
 
-        raise RuntimeError(
-            "Gemini image response did not include image bytes")
+        raise RuntimeError("Gemini image response did not include image bytes")
 
     @staticmethod
     def _is_gemini_vertex_endpoint(endpoint: _EndpointConfig) -> bool:
         base = endpoint.base_url.lower()
-        return "aiplatform.googleapis.com" in base or "/publishers/google/models/" in base
+        return (
+            "aiplatform.googleapis.com" in base or "/publishers/google/models/" in base
+        )
 
     @staticmethod
     def parse_json_response(raw_text: str) -> Any:
         """Parse JSON from model output with fence stripping and raw-decode fallback."""
-        cleaned = re.sub(r"```json\s*", "", raw_text or "",
-                         flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```json\s*", "", raw_text or "", flags=re.IGNORECASE).strip()
         cleaned = re.sub(r"```\s*", "", cleaned).strip()
         if not cleaned:
             raise json.JSONDecodeError("empty response", cleaned, 0)

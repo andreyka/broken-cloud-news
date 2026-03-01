@@ -44,8 +44,10 @@ class Scraper:
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=True)
         self._context = await self._browser.new_context(
-            user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            ),
             java_script_enabled=True,
         )
         return self._context
@@ -101,7 +103,7 @@ class Scraper:
                         continue
                     text = (await el.inner_text()).strip()
                     if text and len(text) >= self.min_content_length:
-                        return text[:self.content_limit]
+                        return text[: self.content_limit]
                 except Exception:
                     continue
 

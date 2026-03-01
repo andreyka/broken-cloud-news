@@ -26,8 +26,7 @@ SKILLS = [
     AgentSkill(
         id="analyze_new_items",
         name="Analyze New Items",
-        description=
-        "Analyze unprocessed news items using Qwen LLM for relevance scoring",
+        description="Analyze unprocessed news items using Qwen LLM for relevance scoring",
         tags=["analysis", "llm"],
         examples=["analyze", "analyze_new_items"],
     ),
@@ -55,7 +54,8 @@ class AnalystExecutor(AgentExecutor):
         items = await get_new_items()
         if not items:
             await enqueue_event_safe(
-                event_queue, new_agent_text_message("No new items to analyze"))
+                event_queue, new_agent_text_message("No new items to analyze")
+            )
             return
 
         analyzed = 0
@@ -84,8 +84,11 @@ class AnalystExecutor(AgentExecutor):
 
         if item["source_type"] == "ghsa":
             try:
-                raw = (json.loads(item["raw_data"]) if isinstance(
-                    item["raw_data"], str) else item["raw_data"])
+                raw = (
+                    json.loads(item["raw_data"])
+                    if isinstance(item["raw_data"], str)
+                    else item["raw_data"]
+                )
                 desc = raw.get("description", "")
                 severity = raw.get("severity", "")
                 if desc and (not content or len(content) < 200):
@@ -94,8 +97,11 @@ class AnalystExecutor(AgentExecutor):
                 pass
         elif item["source_type"] == "twitter":
             try:
-                raw = (json.loads(item["raw_data"]) if isinstance(
-                    item["raw_data"], str) else item["raw_data"])
+                raw = (
+                    json.loads(item["raw_data"])
+                    if isinstance(item["raw_data"], str)
+                    else item["raw_data"]
+                )
                 references = raw.get("references", [])
                 for ref in references:
                     if isinstance(ref, dict) and ref.get("url"):
@@ -103,15 +109,16 @@ class AnalystExecutor(AgentExecutor):
                         if scraped_ref:
                             content += f"\n\n--- Scraped content from {ref['url']} ---\n{scraped_ref[:3000]}"
             except Exception as exc:
-                logger.warning("Failed to scrape tweet references for %s: %s",
-                               item["id"], exc)
+                logger.warning(
+                    "Failed to scrape tweet references for %s: %s", item["id"], exc
+                )
 
         if not content:
             content = title
 
-        result = await self.analyst_llm.analyze_item(title,
-                                                     content,
-                                                     url=item["url"] or "")
+        result = await self.analyst_llm.analyze_item(
+            title, content, url=item["url"] or ""
+        )
         await update_item_analyzed(
             item_id=item["id"],
             summary=result.summary,

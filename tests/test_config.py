@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 
 from bcn.common.config import Settings
 
 
 class TestSettings:
-
     def test_defaults(self):
         s = Settings()
         assert s.llm_timeout == 120

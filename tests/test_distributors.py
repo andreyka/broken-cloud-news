@@ -11,7 +11,6 @@ from bcn.distributors.telegram import TelegramDistributor
 
 
 class TestTelegramDistributor:
-
     def test_split_message_short(self):
         chunks = TelegramDistributor._split_message("short message")
         assert chunks == ["short message"]
@@ -34,32 +33,38 @@ class TestTelegramDistributor:
     def test_truncate_caption_avoids_dangling_heading(self):
         prefix = ("Complete sentence about previous item.\n" * 30).strip()
         text = (
-            prefix + "\n\n**Network Protocol Exploits**\n" +
-            "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
+            prefix
+            + "\n\n**Network Protocol Exploits**\n"
+            + "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
         )
         truncated = TelegramDistributor._truncate_caption(text)
         assert not truncated.rstrip().endswith("**Network Protocol Exploits**")
-        overflow = text[len(truncated):].lstrip("\n")
+        overflow = text[len(truncated) :].lstrip("\n")
         assert len(overflow) > 0
 
     def test_overflow_smart_drops_short_fluff(self):
-        dist = TelegramDistributor(bot_token="123:FAKE",
-                                   chat_id="-100",
-                                   overflow_mode="smart")
+        dist = TelegramDistributor(
+            bot_token="123:FAKE", chat_id="-100", overflow_mode="smart"
+        )
         assert dist._should_send_overflow("quick trailing remark") is False
 
     def test_overflow_smart_keeps_actionable(self):
-        dist = TelegramDistributor(bot_token="123:FAKE",
-                                   chat_id="-100",
-                                   overflow_mode="smart")
-        assert dist._should_send_overflow(
-            "Patch: CVE-2026-1234 fix here https://example.com") is True
+        dist = TelegramDistributor(
+            bot_token="123:FAKE", chat_id="-100", overflow_mode="smart"
+        )
+        assert (
+            dist._should_send_overflow(
+                "Patch: CVE-2026-1234 fix here https://example.com"
+            )
+            is True
+        )
 
     def test_split_message_avoids_heading_tail(self):
         prefix = ("line\n" * 900).strip()
         text = (
-            prefix + "\n\n**Network Protocol Exploits**\n" +
-            "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
+            prefix
+            + "\n\n**Network Protocol Exploits**\n"
+            + "[Defending QUIC](https://example.com) patches CVE and gives mitigation steps."
         )
         chunks = TelegramDistributor._split_message(text)
         assert len(chunks) > 1
@@ -70,13 +75,10 @@ class TestTelegramDistributor:
     async def test_send_text_only(self):
         dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
         respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
-            return_value=httpx.Response(200,
-                                        json={
-                                            "ok": True,
-                                            "result": {
-                                                "message_id": 42
-                                            }
-                                        }))
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 42}}
+            )
+        )
 
         ok = await dist.send({"content_markdown": "*Title*\n\nBody text here"})
         assert ok is True
@@ -86,31 +88,28 @@ class TestTelegramDistributor:
     @respx.mock
     @pytest.mark.asyncio
     async def test_send_with_cover(self):
-        dist = TelegramDistributor(bot_token="123:FAKE",
-                                   chat_id="-100",
-                                   trusted_image_hosts={"comfy"})
+        dist = TelegramDistributor(
+            bot_token="123:FAKE", chat_id="-100", trusted_image_hosts={"comfy"}
+        )
         respx.get("http://comfy:8188/view?filename=cover.png").mock(
-            return_value=httpx.Response(200, content=b"\x89PNG\r\n"))
+            return_value=httpx.Response(200, content=b"\x89PNG\r\n")
+        )
         respx.post("https://api.telegram.org/bot123:FAKE/sendPhoto").mock(
-            return_value=httpx.Response(200,
-                                        json={
-                                            "ok": True,
-                                            "result": {
-                                                "message_id": 101
-                                            }
-                                        }))
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 101}}
+            )
+        )
         respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
-            return_value=httpx.Response(200,
-                                        json={
-                                            "ok": True,
-                                            "result": {
-                                                "message_id": 102
-                                            }
-                                        }))
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 102}}
+            )
+        )
 
         ok = await dist.send(
-            {"content_markdown": "*Title*\n\nBody text here",
-             "cover_image_url": "http://comfy:8188/view?filename=cover.png"},
+            {
+                "content_markdown": "*Title*\n\nBody text here",
+                "cover_image_url": "http://comfy:8188/view?filename=cover.png",
+            },
         )
         assert ok is True
         assert dist.last_result["ok"] is True
@@ -121,31 +120,29 @@ class TestTelegramDistributor:
     async def test_send_with_data_url_cover(self):
         dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
         respx.post("https://api.telegram.org/bot123:FAKE/sendPhoto").mock(
-            return_value=httpx.Response(200,
-                                        json={
-                                            "ok": True,
-                                            "result": {
-                                                "message_id": 201
-                                            }
-                                        }))
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 201}}
+            )
+        )
         respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
-            return_value=httpx.Response(200,
-                                        json={
-                                            "ok": True,
-                                            "result": {
-                                                "message_id": 202
-                                            }
-                                        }))
-        data_url = "data:image/png;base64," + base64.b64encode(
-            b"\x89PNG\r\n").decode("ascii")
-        ok = await dist.send({"content_markdown": "*Title*\n\nBody text here",
-                              "cover_image_url": data_url})
+            return_value=httpx.Response(
+                200, json={"ok": True, "result": {"message_id": 202}}
+            )
+        )
+        data_url = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n").decode(
+            "ascii"
+        )
+        ok = await dist.send(
+            {
+                "content_markdown": "*Title*\n\nBody text here",
+                "cover_image_url": data_url,
+            }
+        )
         assert ok is True
         assert dist.last_result["used_cover_image"] is True
 
 
 class TestSlackDistributor:
-
     def test_build_blocks_text_only(self):
         blocks = SlackDistributor._build_blocks("Hello world", None)
         assert len(blocks) == 1
@@ -153,15 +150,13 @@ class TestSlackDistributor:
         assert blocks[0]["text"]["text"] == "Hello world"
 
     def test_build_blocks_with_image(self):
-        blocks = SlackDistributor._build_blocks("Hello",
-                                                "https://img.com/cover.png")
+        blocks = SlackDistributor._build_blocks("Hello", "https://img.com/cover.png")
         assert blocks[0]["type"] == "image"
         assert blocks[0]["image_url"] == "https://img.com/cover.png"
         assert blocks[1]["type"] == "section"
 
     def test_build_blocks_ignores_data_url_image(self):
-        data_url = "data:image/png;base64," + base64.b64encode(b"fake").decode(
-            "ascii")
+        data_url = "data:image/png;base64," + base64.b64encode(b"fake").decode("ascii")
         blocks = SlackDistributor._build_blocks("Hello", data_url)
         assert blocks[0]["type"] == "section"
 
@@ -177,7 +172,8 @@ class TestSlackDistributor:
     async def test_send(self):
         dist = SlackDistributor(webhook_url="https://hooks.slack.com/fake")
         respx.post("https://hooks.slack.com/fake").mock(
-            return_value=httpx.Response(200, text="ok"))
+            return_value=httpx.Response(200, text="ok")
+        )
 
         ok = await dist.send({"content_markdown": "Briefing content"})
         assert ok is True
@@ -187,7 +183,8 @@ class TestSlackDistributor:
     async def test_send_failure(self):
         dist = SlackDistributor(webhook_url="https://hooks.slack.com/fake")
         respx.post("https://hooks.slack.com/fake").mock(
-            return_value=httpx.Response(500, text="error"))
+            return_value=httpx.Response(500, text="error")
+        )
 
         ok = await dist.send({"content_markdown": "content"})
         assert ok is False

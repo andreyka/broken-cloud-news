@@ -67,7 +67,11 @@ class DiscordDistributor:
             if image_url.startswith("data:image/"):
                 try:
                     header, sep, payload = image_url.partition(",")
-                    mime_type = header[5:header.index(";")] if header.startswith("data:") else "image/png"
+                    mime_type = (
+                        header[5 : header.index(";")]
+                        if header.startswith("data:")
+                        else "image/png"
+                    )
                     ext = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
                     img_bytes = base64.b64decode(payload)
                     filename = f"cover.{ext}"
@@ -100,7 +104,11 @@ class DiscordDistributor:
                     payload_dict: dict[str, Any] = {"content": chunk}
                     if attachments:
                         payload_dict["attachments"] = attachments
-                    files["payload_json"] = (None, json.dumps(payload_dict), "application/json")
+                    files["payload_json"] = (
+                        None,
+                        json.dumps(payload_dict),
+                        "application/json",
+                    )
                     resp = await self._client.post(self.api, files=files)
 
                     # Remove payload_json so it isn't re-sent
@@ -139,7 +147,7 @@ class DiscordDistributor:
 
                 if len(paragraph) > limit:
                     for i in range(0, len(paragraph), limit):
-                        chunks.append(paragraph[i:i + limit])
+                        chunks.append(paragraph[i : i + limit])
                     current_chunk = ""
                 else:
                     current_chunk = paragraph + "\n"

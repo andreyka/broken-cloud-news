@@ -74,13 +74,14 @@ class SlackDistributor:
         """
         blocks: list[dict[str, object]] = []
 
-        if cover_image_url and cover_image_url.startswith(
-            ("http://", "https://")):
-            blocks.append({
-                "type": "image",
-                "image_url": cover_image_url,
-                "alt_text": "Broken Cloud News Daily Cover",
-            })
+        if cover_image_url and cover_image_url.startswith(("http://", "https://")):
+            blocks.append(
+                {
+                    "type": "image",
+                    "image_url": cover_image_url,
+                    "alt_text": "Broken Cloud News Daily Cover",
+                }
+            )
 
         # Slack markdown blocks have a 3000 char limit per section
         chunks = []
@@ -96,12 +97,11 @@ class SlackDistributor:
             remaining = remaining[split_at:].lstrip("\n")
 
         for chunk in chunks:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": chunk
-                },
-            })
+            blocks.append(
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": chunk},
+                }
+            )
 
         return blocks

@@ -35,9 +35,7 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     async with _pool_lock:
         if _pool is None:
             s = settings or Settings()
-            _pool = await asyncpg.create_pool(s.database_url,
-                                              min_size=2,
-                                              max_size=10)
+            _pool = await asyncpg.create_pool(s.database_url, min_size=2, max_size=10)
     return _pool
 
 
@@ -315,13 +313,14 @@ async def get_distributed_briefings(
 
     if since_days > 0:
         params.append(int(since_days))
-        where.append(
-            f"created_at > NOW() - make_interval(days => ${len(params)})")
+        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
 
-    sql = ("SELECT id, created_at, distributed_at, content_markdown, item_ids "
-           "FROM briefings "
-           f"WHERE {' AND '.join(where)} "
-           "ORDER BY created_at DESC")
+    sql = (
+        "SELECT id, created_at, distributed_at, content_markdown, item_ids "
+        "FROM briefings "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
     if limit > 0:
         params.append(int(limit))
         sql += f" LIMIT ${len(params)}"
@@ -333,7 +332,8 @@ async def get_latest_any_briefing() -> Optional[asyncpg.Record]:
     """Return the latest briefing regardless of status."""
     pool = await get_pool()
     return await pool.fetchrow(
-        "SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1")
+        "SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1"
+    )
 
 
 async def get_latest_briefing() -> Optional[asyncpg.Record]:
@@ -446,8 +446,7 @@ async def count_simulation_runs() -> int:
     """Return the number of stored simulation runs."""
     await ensure_simulation_tables()
     pool = await get_pool()
-    row = await pool.fetchrow(
-        "SELECT COUNT(*)::int AS count FROM simulation_runs")
+    row = await pool.fetchrow("SELECT COUNT(*)::int AS count FROM simulation_runs")
     return int(row["count"]) if row else 0
 
 
@@ -467,14 +466,10 @@ async def insert_simulation_report(
         summary = {}
 
     params = {
-        "limit":
-            _coerce_int(report.get("limit"), 0),
-        "since_days":
-            _coerce_int(report.get("since_days"), 0),
-        "include_text":
-            bool(report.get("include_text", False)),
-        "apply_critic_rewrites":
-            bool(report.get("apply_critic_rewrites", False)),
+        "limit": _coerce_int(report.get("limit"), 0),
+        "since_days": _coerce_int(report.get("since_days"), 0),
+        "include_text": bool(report.get("include_text", False)),
+        "apply_critic_rewrites": bool(report.get("apply_critic_rewrites", False)),
     }
     generated_at = _coerce_iso_datetime(report.get("generated_at"))
     run_count = _coerce_int(report.get("count"), 0)
@@ -500,23 +495,25 @@ async def insert_simulation_report(
     raw_results = report.get("results")
     results = raw_results if isinstance(raw_results, list) else []
     if results:
-        payloads: list[tuple[UUID, str | None, datetime | None, int, int, int,
-                             str]] = []
+        payloads: list[
+            tuple[UUID, str | None, datetime | None, int, int, int, str]
+        ] = []
         for row in results:
             if not isinstance(row, dict):
                 continue
             briefing_id_raw = row.get("briefing_id")
-            briefing_id = str(
-                briefing_id_raw).strip() if briefing_id_raw else None
-            payloads.append((
-                run_id,
-                briefing_id if briefing_id else None,
-                _coerce_iso_datetime(row.get("created_at")),
-                _coerce_int(row.get("actual_score"), 0),
-                _coerce_int(row.get("simulated_score"), 0),
-                _coerce_int(row.get("delta"), 0),
-                json.dumps(row, ensure_ascii=False),
-            ))
+            briefing_id = str(briefing_id_raw).strip() if briefing_id_raw else None
+            payloads.append(
+                (
+                    run_id,
+                    briefing_id if briefing_id else None,
+                    _coerce_iso_datetime(row.get("created_at")),
+                    _coerce_int(row.get("actual_score"), 0),
+                    _coerce_int(row.get("simulated_score"), 0),
+                    _coerce_int(row.get("delta"), 0),
+                    json.dumps(row, ensure_ascii=False),
+                )
+            )
 
         if payloads:
             await pool.executemany(
@@ -635,29 +632,19 @@ async def get_simulation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
     generated_at = run["generated_at"] or run["created_at"]
 
     report: dict[str, Any] = {
-        "generated_at":
-            generated_at.isoformat()
-            if isinstance(generated_at, datetime) else None,
-        "count":
-            int(run["count"]),
-        "limit":
-            _coerce_int(params.get("limit"), 0),
-        "since_days":
-            _coerce_int(params.get("since_days"), 0),
-        "include_text":
-            bool(params.get("include_text", False)),
-        "apply_critic_rewrites":
-            bool(params.get("apply_critic_rewrites", False)),
-        "summary":
-            summary,
-        "results":
-            results,
-        "db_run_id":
-            str(run["id"]),
-        "db_created_at":
-            run["created_at"].isoformat(),
-        "db_source":
-            str(run["source"]),
+        "generated_at": generated_at.isoformat()
+        if isinstance(generated_at, datetime)
+        else None,
+        "count": int(run["count"]),
+        "limit": _coerce_int(params.get("limit"), 0),
+        "since_days": _coerce_int(params.get("since_days"), 0),
+        "include_text": bool(params.get("include_text", False)),
+        "apply_critic_rewrites": bool(params.get("apply_critic_rewrites", False)),
+        "summary": summary,
+        "results": results,
+        "db_run_id": str(run["id"]),
+        "db_created_at": run["created_at"].isoformat(),
+        "db_source": str(run["source"]),
     }
     if run["report_path"]:
         report["report_path"] = str(run["report_path"])
@@ -752,7 +739,8 @@ async def ensure_training_tables() -> None:
         """)
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_generation_preference_pairs_run_id "
-        "ON generation_preference_pairs (run_id)")
+        "ON generation_preference_pairs (run_id)"
+    )
 
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS briefing_human_reviews (
@@ -771,7 +759,8 @@ async def ensure_training_tables() -> None:
         """)
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_briefing_human_reviews_briefing_id "
-        "ON briefing_human_reviews (briefing_id, created_at DESC)")
+        "ON briefing_human_reviews (briefing_id, created_at DESC)"
+    )
 
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS briefing_distribution_outcomes (
@@ -791,7 +780,8 @@ async def ensure_training_tables() -> None:
         """)
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_distribution_outcomes_briefing_id "
-        "ON briefing_distribution_outcomes (briefing_id)")
+        "ON briefing_distribution_outcomes (briefing_id)"
+    )
 
 
 async def create_generation_run(
@@ -989,7 +979,8 @@ async def finalize_generation_run(
 
 
 async def get_latest_generation_run_for_briefing(
-    briefing_id: UUID,) -> Optional[asyncpg.Record]:
+    briefing_id: UUID,
+) -> Optional[asyncpg.Record]:
     """Return latest trace run linked to a given briefing."""
     await ensure_training_tables()
     pool = await get_pool()
@@ -1084,7 +1075,7 @@ async def get_review_queue(
             FROM briefing_human_reviews hr
             WHERE hr.briefing_id = b.id
         ) rv ON TRUE
-        WHERE {' AND '.join(where)}
+        WHERE {" AND ".join(where)}
         ORDER BY b.created_at DESC
         LIMIT $1
         """,
@@ -1110,9 +1101,11 @@ async def get_human_reviews(
         params.append(run_ids)
         where.append(f"run_id = ANY(${len(params)}::uuid[])")
 
-    sql = ("SELECT * FROM briefing_human_reviews "
-           f"WHERE {' AND '.join(where)} "
-           "ORDER BY created_at DESC")
+    sql = (
+        "SELECT * FROM briefing_human_reviews "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
     if limit > 0:
         params.append(max(1, int(limit)))
         sql += f" LIMIT ${len(params)}"
@@ -1181,9 +1174,11 @@ async def get_distribution_outcomes(
         params.append(briefing_ids)
         where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
 
-    sql = ("SELECT * FROM briefing_distribution_outcomes "
-           f"WHERE {' AND '.join(where)} "
-           "ORDER BY sent_at DESC, created_at DESC")
+    sql = (
+        "SELECT * FROM briefing_distribution_outcomes "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY sent_at DESC, created_at DESC"
+    )
     if limit > 0:
         params.append(max(1, int(limit)))
         sql += f" LIMIT ${len(params)}"
@@ -1205,20 +1200,20 @@ async def get_generation_runs_for_export(
         where.append("decision = 'PUBLISHED'")
     if since_days > 0:
         params.append(int(since_days))
-        where.append(
-            f"created_at > NOW() - make_interval(days => ${len(params)})")
+        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
 
-    sql = ("SELECT * FROM generation_runs "
-           f"WHERE {' AND '.join(where)} "
-           "ORDER BY created_at DESC")
+    sql = (
+        "SELECT * FROM generation_runs "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
     if limit > 0:
         params.append(max(1, int(limit)))
         sql += f" LIMIT ${len(params)}"
     return await pool.fetch(sql, *params)
 
 
-async def get_generation_rounds_for_runs(
-        run_ids: list[UUID]) -> list[asyncpg.Record]:
+async def get_generation_rounds_for_runs(run_ids: list[UUID]) -> list[asyncpg.Record]:
     """Fetch per-round artifacts for a set of generation runs."""
     if not run_ids:
         return []
@@ -1236,7 +1231,8 @@ async def get_generation_rounds_for_runs(
 
 
 async def get_generation_preference_pairs_for_runs(
-    run_ids: list[UUID],) -> list[asyncpg.Record]:
+    run_ids: list[UUID],
+) -> list[asyncpg.Record]:
     """Fetch preference pairs linked to generation runs."""
     if not run_ids:
         return []

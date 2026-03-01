@@ -52,8 +52,7 @@ SKILLS = [
     AgentSkill(
         id="generate_briefing",
         name="Generate Briefing",
-        description=
-        "Generate a security briefing with cover image from top-scored items",
+        description="Generate a security briefing with cover image from top-scored items",
         tags=["briefing", "writer"],
         examples=["write", "generate_briefing", "generate briefing"],
     ),
@@ -75,8 +74,7 @@ class WriterExecutor(AgentExecutor):
         )
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
-        self.verifier = BriefingFactVerifier(settings,
-                                             llm_client=self.llm_client)
+        self.verifier = BriefingFactVerifier(settings, llm_client=self.llm_client)
 
     @override
     async def execute(
@@ -94,7 +92,8 @@ class WriterExecutor(AgentExecutor):
             msg = (
                 f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
                 f"in the last {self.settings.briefing_lookback_hours}h. "
-                f"Skipping briefing.")
+                f"Skipping briefing."
+            )
             logger.info(msg)
             await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
@@ -118,14 +117,15 @@ class WriterExecutor(AgentExecutor):
         if bool(self.settings.briefing_skip_if_no_high_signal):
             high_signal = self.selector.high_signal_count(item_dicts)
             min_high_signal = max(
-                1, int(self.settings.briefing_min_high_signal_to_publish))
+                1, int(self.settings.briefing_min_high_signal_to_publish)
+            )
             if high_signal < min_high_signal:
                 msg = (
                     "Quiet day — not enough high-signal items "
-                    f"({high_signal} < {min_high_signal}). Skipping briefing.")
+                    f"({high_signal} < {min_high_signal}). Skipping briefing."
+                )
                 logger.info(msg)
-                await enqueue_event_safe(event_queue,
-                                         new_agent_text_message(msg))
+                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
                 return
 
         recent_published = await get_recent_published_items(
@@ -150,8 +150,7 @@ class WriterExecutor(AgentExecutor):
             selected_count=len(selected_items),
         )
 
-        history = await get_recent_briefings(
-            limit=self.settings.briefing_history_items)
+        history = await get_recent_briefings(limit=self.settings.briefing_history_items)
         history_items = [dict(r) for r in history]
 
         briefing_body = await self.writer_llm.generate_briefing(
@@ -213,12 +212,8 @@ class WriterExecutor(AgentExecutor):
                     draft_markdown=briefing_body,
                     items=selected_items,
                     mode=mode,
-                    gate_hard_issues=[
-                        str(i) for i in last_gate.get("hard_issues", [])
-                    ],
-                    gate_soft_issues=[
-                        str(i) for i in last_gate.get("soft_issues", [])
-                    ],
+                    gate_hard_issues=[str(i) for i in last_gate.get("hard_issues", [])],
+                    gate_soft_issues=[str(i) for i in last_gate.get("soft_issues", [])],
                     recent_briefings=history_items,
                 )
             else:
@@ -290,14 +285,14 @@ class WriterExecutor(AgentExecutor):
 
             feedback.extend([str(i) for i in last_gate.get("issues", [])])
             feedback.extend([str(i) for i in last_critique.get("issues", [])])
+            feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
+            feedback.extend([str(i) for i in last_verification.get("issues", [])])
             feedback.extend(
-                [str(i) for i in last_critique.get("recommendations", [])])
-            feedback.extend(
-                [str(i) for i in last_verification.get("issues", [])])
-            feedback.extend(
-                [str(i) for i in last_verification.get("recommendations", [])])
+                [str(i) for i in last_verification.get("recommendations", [])]
+            )
             missing_items = self._missing_items_for_markdown(
-                briefing_body, selected_items)
+                briefing_body, selected_items
+            )
             missing_urls = [
                 str(i.get("url", "")) for i in missing_items if i.get("url")
             ]
@@ -310,9 +305,11 @@ class WriterExecutor(AgentExecutor):
                     len(missing_items),
                 )
                 briefing_body = self._append_missing_items_section(
-                    briefing_body, missing_items)
+                    briefing_body, missing_items
+                )
                 briefing_body = self._normalize_section_headings(
-                    self._dedupe_markdown_links(briefing_body.strip()))
+                    self._dedupe_markdown_links(briefing_body.strip())
+                )
                 briefing_body = self._de_template_fields(briefing_body)
 
             feedback_context = self._build_rewrite_feedback_context(
@@ -386,7 +383,8 @@ class WriterExecutor(AgentExecutor):
                 "Blocking publish: briefing did not meet release thresholds after "
                 f"{rewrites} rewrite(s). gate={bool(last_gate.get('passed', False))} "
                 f"critic={self._passes_critic_thresholds(last_critique)} "
-                f"verifier={bool(last_verification.get('passed', True))}")
+                f"verifier={bool(last_verification.get('passed', True))}"
+            )
             logger.warning(msg)
             await self._trace_finalize_run(
                 run_id=trace_run_id,
@@ -407,16 +405,17 @@ class WriterExecutor(AgentExecutor):
 
         logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
-        topics = "\n".join(
-            f"- {i['title']}: {i['summary']}" for i in selected_items)
+        topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in selected_items)
         cover_prompt = await self.writer_llm.generate_cover_prompt(topics)
         logger.info("Cover prompt: %s", cover_prompt[:100])
 
         cover_url = ""
         if self.writer_llm.supports_cover_image_generation():
             try:
-                cover_url = await self.writer_llm.generate_cover_image_data_url(
-                    cover_prompt) or ""
+                cover_url = (
+                    await self.writer_llm.generate_cover_image_data_url(cover_prompt)
+                    or ""
+                )
                 if cover_url:
                     logger.info("Cover image generated via Gemini image model")
             except Exception:
@@ -427,12 +426,10 @@ class WriterExecutor(AgentExecutor):
             if not cover_url:
                 timestamp = int(time.time() * 1000)
                 prefix = f"Digest_Cover_{timestamp}"
-                cover_url = await self.comfyui.generate_image(
-                    cover_prompt, prefix)
+                cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
                 logger.info("Cover image: %s", cover_url)
         except Exception:
-            logger.exception(
-                "Failed to generate cover image, continuing without it")
+            logger.exception("Failed to generate cover image, continuing without it")
 
         markdown = self._format_markdown(briefing_body, cover_url)
         html = self._format_html(briefing_body, cover_url)
@@ -489,16 +486,17 @@ class WriterExecutor(AgentExecutor):
     def _is_quiet_day(self, items: list[dict]) -> bool:
         return self.selector.is_quiet_day(items)
 
-    def _char_limits(self,
-                     mode: str,
-                     selected_count: int | None = None) -> tuple[int, int, int]:
+    def _char_limits(
+        self, mode: str, selected_count: int | None = None
+    ) -> tuple[int, int, int]:
         min_chars, target_chars, hard_max_chars = self.quality.char_limits(mode)
         if selected_count is not None and selected_count <= 1:
-            min_chars = min(min_chars,
-                            int(self.settings.briefing_single_item_min_chars))
+            min_chars = min(
+                min_chars, int(self.settings.briefing_single_item_min_chars)
+            )
             target_chars = min(
-                target_chars,
-                int(self.settings.briefing_single_item_target_chars))
+                target_chars, int(self.settings.briefing_single_item_target_chars)
+            )
             hard_max_chars = min(
                 hard_max_chars,
                 int(self.settings.briefing_single_item_hard_max_chars),
@@ -540,13 +538,13 @@ class WriterExecutor(AgentExecutor):
         source_diversity = int(dims.get("source_diversity", 0) or 0)
         link_hygiene = int(dims.get("link_hygiene", 0) or 0)
 
-        return (score >= int(self.settings.briefing_critic_min_score) and
-                actionability >= int(
-                    self.settings.briefing_critic_min_actionability) and
-                source_diversity >= int(
-                    self.settings.briefing_critic_min_source_diversity) and
-                link_hygiene >= int(
-                    self.settings.briefing_critic_min_link_hygiene))
+        return (
+            score >= int(self.settings.briefing_critic_min_score)
+            and actionability >= int(self.settings.briefing_critic_min_actionability)
+            and source_diversity
+            >= int(self.settings.briefing_critic_min_source_diversity)
+            and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
+        )
 
     @staticmethod
     def _has_critical_critic_issue(critique: dict[str, object]) -> bool:
@@ -574,17 +572,19 @@ class WriterExecutor(AgentExecutor):
         hard_max_chars: int,
     ) -> str:
         """Enforce URL coverage and depth/length constraints on LLM draft."""
-        current_min_chars, current_target_chars, current_hard_max_chars = self._char_limits(
-            mode,
-            selected_count=len(selected_items),
+        current_min_chars, current_target_chars, current_hard_max_chars = (
+            self._char_limits(
+                mode,
+                selected_count=len(selected_items),
+            )
         )
         markdown = self._normalize_section_headings(
-            self._dedupe_markdown_links((briefing_body or "").strip()))
+            self._dedupe_markdown_links((briefing_body or "").strip())
+        )
         markdown = self._de_template_fields(markdown)
 
         for _ in range(2):
-            missing_items = self._missing_items_for_markdown(
-                markdown, selected_items)
+            missing_items = self._missing_items_for_markdown(markdown, selected_items)
             too_short = len(markdown) < current_min_chars
             if not missing_items and not too_short:
                 break
@@ -602,29 +602,35 @@ class WriterExecutor(AgentExecutor):
                 mode=mode,
             )
             markdown = self._normalize_section_headings(
-                self._dedupe_markdown_links(markdown.strip()))
+                self._dedupe_markdown_links(markdown.strip())
+            )
             markdown = self._de_template_fields(markdown)
 
-        missing_items = self._missing_items_for_markdown(
-            markdown, selected_items)
-        max_drops = max(0,
-                        int(self.settings.briefing_missing_coverage_max_drops))
+        missing_items = self._missing_items_for_markdown(markdown, selected_items)
+        max_drops = max(0, int(self.settings.briefing_missing_coverage_max_drops))
         min_items_after_drop = max(
-            1, int(self.settings.briefing_min_items_after_coverage_drop))
+            1, int(self.settings.briefing_min_items_after_coverage_drop)
+        )
         drops = 0
-        while missing_items and drops < max_drops and len(
-                selected_items) > min_items_after_drop:
+        while (
+            missing_items
+            and drops < max_drops
+            and len(selected_items) > min_items_after_drop
+        ):
             weakest = min(
                 missing_items,
                 key=lambda item: self._priority_score(item),
             )
             selected_items[:] = [
-                item for item in selected_items
+                item
+                for item in selected_items
                 if str(item.get("id")) != str(weakest.get("id"))
             ]
-            current_min_chars, current_target_chars, current_hard_max_chars = self._char_limits(
-                mode,
-                selected_count=len(selected_items),
+            current_min_chars, current_target_chars, current_hard_max_chars = (
+                self._char_limits(
+                    mode,
+                    selected_count=len(selected_items),
+                )
             )
             drops += 1
             logger.warning(
@@ -634,8 +640,7 @@ class WriterExecutor(AgentExecutor):
             )
 
             # Recompute after the drop so we don't pass stale URLs to the enricher.
-            missing_items = self._missing_items_for_markdown(
-                markdown, selected_items)
+            missing_items = self._missing_items_for_markdown(markdown, selected_items)
             if not missing_items:
                 break
 
@@ -647,14 +652,15 @@ class WriterExecutor(AgentExecutor):
                 hard_max_chars=current_hard_max_chars,
                 missing_urls=[
                     str(i.get("url", "")) for i in missing_items if i.get("url")
-                ] or None,
+                ]
+                or None,
                 mode=mode,
             )
             markdown = self._normalize_section_headings(
-                self._dedupe_markdown_links(markdown.strip()))
+                self._dedupe_markdown_links(markdown.strip())
+            )
             markdown = self._de_template_fields(markdown)
-            missing_items = self._missing_items_for_markdown(
-                markdown, selected_items)
+            missing_items = self._missing_items_for_markdown(markdown, selected_items)
 
         # Final deterministic fallback to prevent endless URL coverage oscillation.
         if missing_items:
@@ -662,10 +668,10 @@ class WriterExecutor(AgentExecutor):
                 "Coverage fallback appending %d missing selected item references.",
                 len(missing_items),
             )
-            markdown = self._append_missing_items_section(
-                markdown, missing_items)
+            markdown = self._append_missing_items_section(markdown, missing_items)
             markdown = self._normalize_section_headings(
-                self._dedupe_markdown_links(markdown.strip()))
+                self._dedupe_markdown_links(markdown.strip())
+            )
             markdown = self._de_template_fields(markdown)
 
         if len(markdown) > current_hard_max_chars:
@@ -675,7 +681,8 @@ class WriterExecutor(AgentExecutor):
                 hard_max_chars=current_hard_max_chars,
             )
             markdown = self._normalize_section_headings(
-                self._dedupe_markdown_links(markdown.strip()))
+                self._dedupe_markdown_links(markdown.strip())
+            )
             markdown = self._de_template_fields(markdown)
 
         if len(markdown) > current_hard_max_chars:
@@ -701,15 +708,12 @@ class WriterExecutor(AgentExecutor):
         return briefing_text.de_template_fields(markdown)
 
     @staticmethod
-    def _missing_items_for_markdown(markdown: str,
-                                    items: list[dict]) -> list[dict]:
+    def _missing_items_for_markdown(markdown: str, items: list[dict]) -> list[dict]:
         return briefing_text.missing_items_for_markdown(markdown, items)
 
     @staticmethod
-    def _append_missing_items_section(markdown: str,
-                                      missing_items: list[dict]) -> str:
-        return briefing_text.append_missing_items_section(
-            markdown, missing_items)
+    def _append_missing_items_section(markdown: str, missing_items: list[dict]) -> str:
+        return briefing_text.append_missing_items_section(markdown, missing_items)
 
     @staticmethod
     def _clip_markdown(markdown: str, limit: int) -> str:
@@ -723,14 +727,13 @@ class WriterExecutor(AgentExecutor):
         hard_max_chars: int,
     ) -> str:
         """Apply deterministic URL cleanup just before release checks."""
-        cleaned = self._strip_unselected_github_advisory_links(
-            markdown, selected_items)
+        cleaned = self._strip_unselected_github_advisory_links(markdown, selected_items)
         cleaned = self._normalize_section_headings(
-            self._dedupe_markdown_links((cleaned or "").strip()))
+            self._dedupe_markdown_links((cleaned or "").strip())
+        )
         cleaned = self._de_template_fields(cleaned)
 
-        missing_items = self._missing_items_for_markdown(
-            cleaned, selected_items)
+        missing_items = self._missing_items_for_markdown(cleaned, selected_items)
         if missing_items:
             logger.warning(
                 "Final deterministic coverage pass appending %d missing selected item references.",
@@ -738,7 +741,8 @@ class WriterExecutor(AgentExecutor):
             )
             cleaned = self._append_missing_items_section(cleaned, missing_items)
             cleaned = self._normalize_section_headings(
-                self._dedupe_markdown_links(cleaned.strip()))
+                self._dedupe_markdown_links(cleaned.strip())
+            )
             cleaned = self._de_template_fields(cleaned)
 
         if len(cleaned) > hard_max_chars:
@@ -748,7 +752,8 @@ class WriterExecutor(AgentExecutor):
 
     @staticmethod
     def _strip_unselected_github_advisory_links(
-            markdown: str, selected_items: list[dict]) -> str:
+        markdown: str, selected_items: list[dict]
+    ) -> str:
         """Drop markdown-link formatting for GHSA advisory URLs not in selected items."""
         selected_urls = {
             briefing_text.normalize_url(str(item.get("url", "")))
@@ -766,8 +771,7 @@ class WriterExecutor(AgentExecutor):
                 return label
             return match.group(0)
 
-        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace,
-                      markdown or "")
+        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace, markdown or "")
 
     async def _trace_start_run(
         self,
@@ -926,63 +930,66 @@ class WriterExecutor(AgentExecutor):
         gate_issues = self._string_list(gate.get("issues"), limit=20)
         critic_issues = self._string_list(critique.get("issues"), limit=16)
         critic_recommendations = self._string_list(
-            critique.get("recommendations"), limit=16)
-        verifier_hard = self._string_list(verification.get("hard_issues"),
-                                          limit=16)
+            critique.get("recommendations"), limit=16
+        )
+        verifier_hard = self._string_list(verification.get("hard_issues"), limit=16)
         verifier_blocking_hard = self._string_list(
-            verification.get("blocking_hard_issues"), limit=16)
-        verifier_soft = self._string_list(verification.get("soft_issues"),
-                                          limit=16)
+            verification.get("blocking_hard_issues"), limit=16
+        )
+        verifier_soft = self._string_list(verification.get("soft_issues"), limit=16)
         verifier_recommendations = self._string_list(
-            verification.get("recommendations"), limit=16)
+            verification.get("recommendations"), limit=16
+        )
 
         critic_dims = critique.get("dimension_scores", {})
         if not isinstance(critic_dims, dict):
             critic_dims = {}
         min_thresholds = {
-            "score":
-                int(self.settings.briefing_critic_min_score),
-            "actionability":
-                int(self.settings.briefing_critic_min_actionability),
-            "source_diversity":
-                int(self.settings.briefing_critic_min_source_diversity),
-            "link_hygiene":
-                int(self.settings.briefing_critic_min_link_hygiene),
+            "score": int(self.settings.briefing_critic_min_score),
+            "actionability": int(self.settings.briefing_critic_min_actionability),
+            "source_diversity": int(self.settings.briefing_critic_min_source_diversity),
+            "link_hygiene": int(self.settings.briefing_critic_min_link_hygiene),
         }
         failed_critic_thresholds: list[str] = []
         critic_score = int(critique.get("score", 0) or 0)
         if critic_score < min_thresholds["score"]:
             failed_critic_thresholds.append(
-                f"score {critic_score} < {min_thresholds['score']}")
+                f"score {critic_score} < {min_thresholds['score']}"
+            )
         for dim in ("actionability", "source_diversity", "link_hygiene"):
             dim_score = int(critic_dims.get(dim, 0) or 0)
             if dim_score < min_thresholds[dim]:
                 failed_critic_thresholds.append(
-                    f"{dim} {dim_score} < {min_thresholds[dim]}")
+                    f"{dim} {dim_score} < {min_thresholds[dim]}"
+                )
 
         compact_items: list[dict[str, Any]] = []
         for item in selected_items[:12]:
-            compact_items.append({
-                "url": str(item.get("url", "")).strip(),
-                "title": str(item.get("title", "")).strip(),
-                "source_type": str(item.get("source_type", "")).strip(),
-                "relevance_score": int(item.get("relevance_score", 0) or 0),
-            })
+            compact_items.append(
+                {
+                    "url": str(item.get("url", "")).strip(),
+                    "title": str(item.get("title", "")).strip(),
+                    "source_type": str(item.get("source_type", "")).strip(),
+                    "relevance_score": int(item.get("relevance_score", 0) or 0),
+                }
+            )
 
         priorities: list[str] = []
         if gate_hard:
-            priorities.append(
-                "Resolve gate hard issues first (blocking release).")
+            priorities.append("Resolve gate hard issues first (blocking release).")
         if verifier_blocking_hard:
             priorities.append(
                 "Resolve verifier deterministic blocking issues before style changes."
             )
         if verifier_hard:
             priorities.append(
-                "Address verifier hard issues to tighten factual grounding.")
+                "Address verifier hard issues to tighten factual grounding."
+            )
         if failed_critic_thresholds:
-            priorities.append("Raise critic threshold failures: " +
-                              "; ".join(failed_critic_thresholds[:3]))
+            priorities.append(
+                "Raise critic threshold failures: "
+                + "; ".join(failed_critic_thresholds[:3])
+            )
         if not priorities:
             priorities.append(
                 "Improve clarity and actionability while preserving exact URL coverage."
@@ -1018,16 +1025,13 @@ class WriterExecutor(AgentExecutor):
                 "passed": bool(critique.get("passed", False)),
                 "score": critic_score,
                 "dimension_scores": {
-                    "actionability":
-                        int(critic_dims.get("actionability", 0) or 0),
-                    "source_diversity":
-                        int(critic_dims.get("source_diversity", 0) or 0),
-                    "link_hygiene":
-                        int(critic_dims.get("link_hygiene", 0) or 0),
-                    "clarity":
-                        int(critic_dims.get("clarity", 0) or 0),
-                    "style":
-                        int(critic_dims.get("style", 0) or 0),
+                    "actionability": int(critic_dims.get("actionability", 0) or 0),
+                    "source_diversity": int(
+                        critic_dims.get("source_diversity", 0) or 0
+                    ),
+                    "link_hygiene": int(critic_dims.get("link_hygiene", 0) or 0),
+                    "clarity": int(critic_dims.get("clarity", 0) or 0),
+                    "style": int(critic_dims.get("style", 0) or 0),
                 },
                 "thresholds": min_thresholds,
                 "failed_thresholds": failed_critic_thresholds,
@@ -1046,8 +1050,7 @@ class WriterExecutor(AgentExecutor):
                     for url in (missing_selected_urls or [])
                     if str(url).strip()
                 ][:16],
-                "selected_items":
-                    compact_items,
+                "selected_items": compact_items,
             },
         }
 
@@ -1081,42 +1084,49 @@ class WriterExecutor(AgentExecutor):
         filtered: dict[str, Any] = {}
         for key, value in raw.items():
             lowered = key.lower()
-            if (any(secret in lowered
-                    for secret in ("token", "password", "webhook")) or
-                    lowered == "database_url" or lowered.startswith("smtp_")):
+            if (
+                any(secret in lowered for secret in ("token", "password", "webhook"))
+                or lowered == "database_url"
+                or lowered.startswith("smtp_")
+            ):
                 continue
             filtered[key] = value
 
-        collector_keys = tuple(prefix for prefix in ("ghsa_", "rss_", "reddit_",
-                                                     "twitter_", "scrape_"))
+        collector_keys = tuple(
+            prefix for prefix in ("ghsa_", "rss_", "reddit_", "twitter_", "scrape_")
+        )
         writer_keys = tuple(
-            prefix for prefix in ("briefing_", "telegram_overflow_mode"))
+            prefix for prefix in ("briefing_", "telegram_overflow_mode")
+        )
         collector = {
-            key: filtered[key]
-            for key in filtered
-            if key.startswith(collector_keys)
+            key: filtered[key] for key in filtered if key.startswith(collector_keys)
         }
         analyzer = {
             key: filtered[key]
             for key in filtered
-            if key.startswith("scrape_") or key.startswith("llm_") or
-            key in {"relevance_threshold"}
+            if key.startswith("scrape_")
+            or key.startswith("llm_")
+            or key in {"relevance_threshold"}
         }
         writer = {
             key: filtered[key]
             for key in filtered
-            if key.startswith(writer_keys) or key in {
+            if key.startswith(writer_keys)
+            or key
+            in {
                 "relevance_threshold",
                 "briefing_lookback_hours",
                 "llm_timeout",
                 "comfyui_url",
                 "comfyui_timeout",
                 "comfyui_poll_interval",
-            } or key.startswith("llm_")
+            }
+            or key.startswith("llm_")
         }
         critic = {
-            key: filtered[key] for key in filtered if
-            key.startswith("briefing_critic_") or key in {"briefing_gate_mode"}
+            key: filtered[key]
+            for key in filtered
+            if key.startswith("briefing_critic_") or key in {"briefing_gate_mode"}
         }
         verifier = {
             key: filtered[key]
@@ -1169,18 +1179,11 @@ class WriterExecutor(AgentExecutor):
     def _format_html(briefing_body: str, cover_url: str) -> str:
         """Convert the briefing body to basic HTML."""
         html_body = briefing_body
-        html_body = re.sub(r"^### (.+)$",
-                           r"<h3>\1</h3>",
-                           html_body,
-                           flags=re.MULTILINE)
-        html_body = re.sub(r"^## (.+)$",
-                           r"<h2>\1</h2>",
-                           html_body,
-                           flags=re.MULTILINE)
+        html_body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
+        html_body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE)
         html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
         html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body)
-        html_body = re.sub(r"\[([^\]]+)]\(([^)]+)\)", r'<a href="\2">\1</a>',
-                           html_body)
+        html_body = re.sub(r"\[([^\]]+)]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body)
         html_body = re.sub(r"\n{2,}", "</p>\n<p>", html_body)
         html_body = f"<p>{html_body}</p>"
 

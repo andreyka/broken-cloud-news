@@ -7,11 +7,13 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-_BLOCKED_HOST_EXACT = frozenset({
-    "localhost",
-    "localhost.localdomain",
-    "metadata.google.internal",
-})
+_BLOCKED_HOST_EXACT = frozenset(
+    {
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+    }
+)
 _BLOCKED_HOST_SUFFIXES = (
     ".localhost",
     ".local",
@@ -104,7 +106,8 @@ def assert_public_http_url(
         return
 
     if host in _BLOCKED_HOST_EXACT or any(
-            host.endswith(suffix) for suffix in _BLOCKED_HOST_SUFFIXES):
+        host.endswith(suffix) for suffix in _BLOCKED_HOST_SUFFIXES
+    ):
         raise URLValidationError(f"blocked local/internal hostname: {host}")
 
     try:
@@ -133,10 +136,12 @@ def assert_public_http_url(
             resolved_ip = ipaddress.ip_address(ip_txt)
         except ValueError as exc:
             raise URLValidationError(
-                f"hostname resolved to invalid address: {ip_txt}") from exc
+                f"hostname resolved to invalid address: {ip_txt}"
+            ) from exc
         if not _is_public_ip(resolved_ip):
             raise URLValidationError(
-                f"hostname resolves to non-public IP: {resolved_ip}")
+                f"hostname resolves to non-public IP: {resolved_ip}"
+            )
 
 
 def _is_public_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:

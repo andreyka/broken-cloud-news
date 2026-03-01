@@ -12,22 +12,25 @@ _TEMPLATE_HEADING_PREFIX = re.compile(
     r"^\*\*(detection|source|threat|response|mitigation|intel)\s*:\s*(.+?)\*\*$",
     flags=re.IGNORECASE,
 )
-_SOURCE_FIELD_LINE = re.compile(r"^\*?\s*source\s*:\s*(.+?)\s*\*?$",
-                                flags=re.IGNORECASE)
-_TRACKING_PARAM_NAMES = frozenset({
-    "fbclid",
-    "gclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "msclkid",
-    "rb_clickid",
-    "s_cid",
-    "vero_conv",
-    "vero_id",
-    "yclid",
-})
+_SOURCE_FIELD_LINE = re.compile(
+    r"^\*?\s*source\s*:\s*(.+?)\s*\*?$", flags=re.IGNORECASE
+)
+_TRACKING_PARAM_NAMES = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "igshid",
+        "mc_cid",
+        "mc_eid",
+        "mkt_tok",
+        "msclkid",
+        "rb_clickid",
+        "s_cid",
+        "vero_conv",
+        "vero_id",
+        "yclid",
+    }
+)
 
 
 def normalize_url(url: str) -> str:
@@ -87,8 +90,11 @@ def canonical_url_key(url: str) -> str:
     query_params: list[tuple[str, str]] = []
     for raw_key, raw_value in parse_qsl(parsed.query, keep_blank_values=True):
         key = raw_key.lower()
-        if key.startswith("utm_") or key.startswith(
-                "mc_") or key in _TRACKING_PARAM_NAMES:
+        if (
+            key.startswith("utm_")
+            or key.startswith("mc_")
+            or key in _TRACKING_PARAM_NAMES
+        ):
             continue
         query_params.append((key, raw_value))
     query_params.sort()
@@ -110,8 +116,7 @@ def missing_items_for_markdown(markdown: str, items: list[dict]) -> list[dict]:
     return missing
 
 
-def append_missing_items_section(markdown: str,
-                                 missing_items: list[dict]) -> str:
+def append_missing_items_section(markdown: str, missing_items: list[dict]) -> str:
     """Append missing item references in a readable non-templated layout."""
     if not missing_items:
         return markdown
@@ -176,8 +181,11 @@ def de_template_fields(markdown: str) -> str:
             idx = len(out) - 1
             while idx >= 0:
                 candidate = out[idx].strip()
-                if not candidate or candidate == "---" or re.fullmatch(
-                        r"\*\*.+\*\*", candidate):
+                if (
+                    not candidate
+                    or candidate == "---"
+                    or re.fullmatch(r"\*\*.+\*\*", candidate)
+                ):
                     idx -= 1
                     continue
                 break

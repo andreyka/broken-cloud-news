@@ -9,15 +9,16 @@ from bcn.briefing.text import normalize_url
 from bcn.common.config import Settings
 
 _AI_STAMP_PATTERNS = (
-    re.compile(r"clouds?\s+are\s+getting.+tools?\s+are\s+just\s+getting",
-               re.IGNORECASE),
-    re.compile(r"\b(in\s+today'?s\s+(?:fast|rapidly)\s+evolving)\b",
-               re.IGNORECASE),
+    re.compile(
+        r"clouds?\s+are\s+getting.+tools?\s+are\s+just\s+getting", re.IGNORECASE
+    ),
+    re.compile(r"\b(in\s+today'?s\s+(?:fast|rapidly)\s+evolving)\b", re.IGNORECASE),
     re.compile(r"\bever[-\s]evolving\b", re.IGNORECASE),
 )
 _RAW_MARKDOWN_HEADING = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
 _BANNED_SECTION_TITLE = re.compile(
-    r"(?im)^\*{0,2}\s*additional\s+high[-\s]signal\s+items\s*\*{0,2}\s*$")
+    r"(?im)^\*{0,2}\s*additional\s+high[-\s]signal\s+items\s*\*{0,2}\s*$"
+)
 _TRUNCATION_ARTIFACT = re.compile(r"\.\.\.\s*;")
 _FALLBACK_PHRASE = re.compile(
     r"validate exposure and queue patch/detection checks\.?",
@@ -58,10 +59,14 @@ class BriefingQualityGate:
         """Run deterministic checks before critic/model feedback."""
         hard_issues: list[str] = []
         soft_issues: list[str] = []
-        gate_mode = str(getattr(self.settings, "briefing_gate_mode",
-                                "balanced")).strip().lower()
-        gate_mode = gate_mode if gate_mode in {"strict", "balanced", "minimal"
-                                              } else "balanced"
+        gate_mode = (
+            str(getattr(self.settings, "briefing_gate_mode", "balanced"))
+            .strip()
+            .lower()
+        )
+        gate_mode = (
+            gate_mode if gate_mode in {"strict", "balanced", "minimal"} else "balanced"
+        )
         strict_structure = gate_mode == "strict"
         check_structure = gate_mode != "minimal"
         body = (markdown or "").strip()
@@ -73,11 +78,13 @@ class BriefingQualityGate:
             )
         if length > hard_max_chars:
             hard_issues.append(
-                f"Digest too long ({length} chars, hard max {hard_max_chars}).")
+                f"Digest too long ({length} chars, hard max {hard_max_chars})."
+            )
 
         if check_structure:
             heading_count = len(
-                re.findall(r"^\*\*.+\*\*\s*$", body, flags=re.MULTILINE))
+                re.findall(r"^\*\*.+\*\*\s*$", body, flags=re.MULTILINE)
+            )
             if len(selected_items) <= 1:
                 min_sections = 1
             else:
@@ -101,15 +108,13 @@ class BriefingQualityGate:
             if count == 0:
                 hard_issues.append(f"Missing selected URL: {expected}")
             elif count > 1:
-                hard_issues.append(
-                    f"Selected URL appears multiple times: {expected}")
+                hard_issues.append(f"Selected URL appears multiple times: {expected}")
 
         lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
         if lines:
             tail = lines[-1]
             if re.fullmatch(r"\*\*.+\*\*", tail):
-                soft_issues.append(
-                    "Digest ends with an unfinished section header.")
+                soft_issues.append("Digest ends with an unfinished section header.")
             if tail.endswith(":") and len(tail) <= 120:
                 soft_issues.append("Digest ends with unfinished lead-in text.")
 
@@ -145,7 +150,8 @@ class BriefingQualityGate:
 
         if _DENSE_LINK_BLOCK.search(body):
             soft_issues.append(
-                "Consecutive link items detected without blank-line spacing.")
+                "Consecutive link items detected without blank-line spacing."
+            )
 
         if _BANNED_SECTION_TITLE.search(body):
             soft_issues.append(
@@ -154,29 +160,29 @@ class BriefingQualityGate:
 
         if _TRUNCATION_ARTIFACT.search(body):
             hard_issues.append(
-                "Truncation artifact detected (`...;`) in briefing text.")
+                "Truncation artifact detected (`...;`) in briefing text."
+            )
 
         if _FALLBACK_PHRASE.search(body):
-            hard_issues.append(
-                "Fallback phrase artifact detected in briefing text.")
+            hard_issues.append("Fallback phrase artifact detected in briefing text.")
 
         headings = re.findall(r"(?m)^\*\*(.+?)\*\*\s*$", body)
         stems = [h.strip().split()[0].lower() for h in headings if h.strip()]
-        repeated_stems = [
-            stem for stem, count in Counter(stems).items() if count > 1
-        ]
+        repeated_stems = [stem for stem, count in Counter(stems).items() if count > 1]
         if repeated_stems:
             soft_issues.append(
                 "Section headings repeat the same stem; diversify title phrasing."
             )
 
         source_counts = Counter(
-            str(i.get("source_type", "")).lower() for i in selected_items)
+            str(i.get("source_type", "")).lower() for i in selected_items
+        )
         if source_counts:
             dominant = source_counts.most_common(1)[0][1]
             if dominant >= max(4, len(selected_items)):
                 soft_issues.append(
-                    "Source diversity is too narrow (single source dominates).")
+                    "Source diversity is too narrow (single source dominates)."
+                )
 
         issues = hard_issues + soft_issues
         return {
