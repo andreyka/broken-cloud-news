@@ -28,6 +28,16 @@ _SKIP_DOMAINS = frozenset(
     }
 )
 
+_IMAGE_MODEL_HINTS = frozenset(
+    {
+        "image",
+        "imagen",
+        "nanobanana",
+        "nano-banana",
+        "nano banana",
+    }
+)
+
 
 class WriterLLM:
     def __init__(self, client: LLMClient):
@@ -211,10 +221,12 @@ class WriterLLM:
         return raw.replace("`", "").strip()
 
     def supports_cover_image_generation(self) -> bool:
-        """Return True when the cover role points to a Gemini image model."""
+        """Return True when the cover role points to a Gemini image-capable model."""
         endpoint = self.client._endpoint("cover")
+        if endpoint.provider not in {"gemini", "vertexai"}:
+            return False
         model = (endpoint.model or "").lower()
-        return endpoint.provider in {"gemini", "vertexai"} and "image" in model
+        return any(hint in model for hint in _IMAGE_MODEL_HINTS)
 
     async def generate_cover_image_data_url(self, prompt_text: str) -> str | None:
         """Generate cover image bytes via Gemini and return a data URL."""
