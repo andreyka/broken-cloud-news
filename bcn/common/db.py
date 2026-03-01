@@ -344,6 +344,50 @@ async def get_latest_briefing() -> Optional[asyncpg.Record]:
     )
 
 
+async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
+    """Atomically claim the latest draft for distribution.
+
+    Transitions one ``DRAFT`` row to ``DISTRIBUTING`` using ``SKIP LOCKED`` so
+    concurrent distributor runs cannot claim the same briefing. Also reclaims
+    stale ``DISTRIBUTING`` rows older than 30 minutes (e.g., crashed workers).
+    """
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        WITH candidate AS (
+            SELECT id
+            FROM briefings
+            WHERE status = 'DRAFT'
+               OR (
+                    status = 'DISTRIBUTING'
+                    AND updated_at < NOW() - INTERVAL '30 minutes'
+               )
+            ORDER BY created_at DESC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+        )
+        UPDATE briefings AS b
+        SET status = 'DISTRIBUTING', updated_at = NOW()
+        FROM candidate
+        WHERE b.id = candidate.id
+        RETURNING b.*
+        """
+    )
+
+
+async def release_briefing_for_retry(briefing_id: UUID) -> None:
+    """Return a claimed briefing back to ``DRAFT`` for retry."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE briefings
+        SET status = 'DRAFT', updated_at = NOW()
+        WHERE id = $1 AND status = 'DISTRIBUTING'
+        """,
+        briefing_id,
+    )
+
+
 async def get_items_by_ids(item_ids: list[UUID]) -> list[asyncpg.Record]:
     """Fetch news items by UUID list preserving database ordering."""
     if not item_ids:

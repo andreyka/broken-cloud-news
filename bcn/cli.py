@@ -170,12 +170,16 @@ async def _run_agent_directly(
         await executor.execute(context=context, event_queue=capture)
         return "\n".join(capture.messages) if capture.messages else "Done"
     finally:
-        close_fn = getattr(executor, "close", None)
-        if callable(close_fn):
-            maybe = close_fn()
-            if hasattr(maybe, "__await__"):
-                await maybe
-        await close_pool()
+        try:
+            close_fn = getattr(executor, "close", None)
+            if callable(close_fn):
+                maybe = close_fn()
+                if hasattr(maybe, "__await__"):
+                    await maybe
+        except Exception:
+            logger.exception("Failed to close %s executor", executor_cls.__name__)
+        finally:
+            await close_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +233,12 @@ def collect(source: str) -> None:
                     f"Twitter={counts[2]}, Reddit={counts[3]}"
                 )
         finally:
-            await executor.close()
-            await close_pool()
+            try:
+                await executor.close()
+            except Exception:
+                logger.exception("Failed to close collector executor")
+            finally:
+                await close_pool()
 
     asyncio.run(_run())
 
@@ -552,87 +560,91 @@ def distribute() -> None:
 
     async def _run():
 
+        from bcn.common.db import claim_latest_draft_briefing
         from bcn.common.db import close_pool
-        from bcn.common.db import get_latest_briefing
-        from bcn.common.db import get_pool
-        from bcn.common.db import mark_briefing_distributed
-        from bcn.common.db import mark_items_published
         from bcn.common.db import get_distribution_outcomes
+        from bcn.common.db import get_pool
+        from bcn.common.db import mark_items_published
+        from bcn.common.db import mark_briefing_distributed
+        from bcn.common.db import release_briefing_for_retry
         from bcn.common.db import upsert_distribution_outcome
         from bcn.common.url_policy import trusted_hosts_from_urls
+        from bcn.distributors.discord import DiscordDistributor
         from bcn.distributors.email import EmailDistributor
         from bcn.distributors.slack import SlackDistributor
         from bcn.distributors.telegram import TelegramDistributor
-        from bcn.distributors.discord import DiscordDistributor
 
         await get_pool(settings)
-        briefing = await get_latest_briefing()
-        if not briefing:
-            click.echo("No new briefing to distribute")
-            await close_pool()
-            return
-
-        trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
+        briefing: dict[str, Any] | None = None
         channels: list[tuple[str, Any]] = []
-        if settings.telegram_bot_token and settings.telegram_chat_id:
-            channels.append(
-                (
-                    "telegram",
-                    TelegramDistributor(
-                        settings.telegram_bot_token,
-                        settings.telegram_chat_id,
-                        overflow_mode=settings.telegram_overflow_mode,
-                        trusted_image_hosts=trusted_image_hosts,
-                    ),
-                )
-            )
-        if settings.smtp_host and settings.email_recipients:
-            channels.append(
-                (
-                    "email",
-                    EmailDistributor(
-                        settings.smtp_host,
-                        settings.smtp_port,
-                        settings.smtp_user,
-                        settings.smtp_password,
-                        settings.email_from,
-                        settings.email_recipients,
-                    ),
-                )
-            )
-        if settings.slack_webhook_url:
-            channels.append(("slack", SlackDistributor(settings.slack_webhook_url)))
-        if settings.discord_bot_token and settings.discord_channel_id:
-            channels.append(
-                (
-                    "discord",
-                    DiscordDistributor(
-                        settings.discord_bot_token,
-                        settings.discord_channel_id,
-                        trusted_image_hosts=trusted_image_hosts,
-                    ),
-                )
-            )
-
-        if not channels:
-            click.echo("No distribution channels configured")
-            await close_pool()
-            return
-
-        previous = await get_distribution_outcomes(briefing_ids=[briefing["id"]])
-        previously_ok_channels: set[str] = set()
-        for row in previous:
-            try:
-                channel = str(row["channel"]).strip().lower()
-                status = str(row["status"] or "").strip().lower()
-            except Exception:
-                continue
-            if channel and status == "ok":
-                previously_ok_channels.add(channel)
-
-        results: dict[str, str] = {}
+        should_release_for_retry = False
 
         try:
+            claimed = await claim_latest_draft_briefing()
+            if not claimed:
+                click.echo("No new briefing to distribute")
+                return
+            briefing = dict(claimed)
+            should_release_for_retry = True
+
+            trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
+            if settings.telegram_bot_token and settings.telegram_chat_id:
+                channels.append(
+                    (
+                        "telegram",
+                        TelegramDistributor(
+                            settings.telegram_bot_token,
+                            settings.telegram_chat_id,
+                            overflow_mode=settings.telegram_overflow_mode,
+                            trusted_image_hosts=trusted_image_hosts,
+                        ),
+                    )
+                )
+            if settings.smtp_host and settings.email_recipients:
+                channels.append(
+                    (
+                        "email",
+                        EmailDistributor(
+                            settings.smtp_host,
+                            settings.smtp_port,
+                            settings.smtp_user,
+                            settings.smtp_password,
+                            settings.email_from,
+                            settings.email_recipients,
+                        ),
+                    )
+                )
+            if settings.slack_webhook_url:
+                channels.append(("slack", SlackDistributor(settings.slack_webhook_url)))
+            if settings.discord_bot_token and settings.discord_channel_id:
+                channels.append(
+                    (
+                        "discord",
+                        DiscordDistributor(
+                            settings.discord_bot_token,
+                            settings.discord_channel_id,
+                            trusted_image_hosts=trusted_image_hosts,
+                        ),
+                    )
+                )
+
+            if not channels:
+                click.echo("No distribution channels configured")
+                return
+
+            previous = await get_distribution_outcomes(briefing_ids=[briefing["id"]])
+            previously_ok_channels: set[str] = set()
+            for row in previous:
+                try:
+                    channel = str(row["channel"]).strip().lower()
+                    status = str(row["status"] or "").strip().lower()
+                except Exception:
+                    continue
+                if channel and status == "ok":
+                    previously_ok_channels.add(channel)
+
+            results: dict[str, str] = {}
+
             for name, channel in channels:
                 if name in previously_ok_channels:
                     results[name] = "ok"
@@ -676,6 +688,20 @@ def distribute() -> None:
                         f"  {name}: warning - failed to persist distribution outcome: {exc}",
                         err=True,
                     )
+
+            all_ok = bool(results) and all(
+                status == "ok" for status in results.values()
+            )
+            if all_ok:
+                await mark_briefing_distributed(briefing["id"], results)
+                item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
+                await mark_items_published(item_ids)
+                should_release_for_retry = False
+                click.echo("Distribution complete")
+            else:
+                click.echo(
+                    f"Distribution incomplete; briefing remains DRAFT for retry ({results})"
+                )
         finally:
             for _name, channel in channels:
                 try:
@@ -684,18 +710,15 @@ def distribute() -> None:
                     click.echo(
                         f"  {_name}: warning - failed to close channel: {exc}", err=True
                     )
-
-        all_ok = bool(results) and all(status == "ok" for status in results.values())
-        if all_ok:
-            await mark_briefing_distributed(briefing["id"], results)
-            item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
-            await mark_items_published(item_ids)
-            click.echo("Distribution complete")
-        else:
-            click.echo(
-                f"Distribution incomplete; briefing remains DRAFT for retry ({results})"
-            )
-        await close_pool()
+            if briefing and should_release_for_retry:
+                try:
+                    await release_briefing_for_retry(briefing["id"])
+                except Exception as exc:
+                    click.echo(
+                        f"warning - failed to release briefing for retry: {exc}",
+                        err=True,
+                    )
+            await close_pool()
 
     asyncio.run(_run())
 
@@ -1447,10 +1470,18 @@ def run() -> None:
             for executor in executors:
                 close_fn = getattr(executor, "close", None)
                 if callable(close_fn):
-                    maybe = close_fn()
-                    if hasattr(maybe, "__await__"):
-                        await maybe
-            await close_pool()
+                    try:
+                        maybe = close_fn()
+                        if hasattr(maybe, "__await__"):
+                            await maybe
+                    except Exception:
+                        logger.exception(
+                            "Failed to close %s executor", executor.__class__.__name__
+                        )
+            try:
+                await close_pool()
+            except Exception:
+                logger.exception("Failed to close DB pool during daemon shutdown")
 
     try:
         asyncio.run(_daemon())
