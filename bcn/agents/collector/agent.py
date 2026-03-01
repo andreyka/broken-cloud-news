@@ -9,6 +9,7 @@ import html
 import json
 import logging
 import re
+from typing import Any
 from urllib.parse import urlparse
 
 from a2a.server.agent_execution import AgentExecutor
@@ -103,6 +104,7 @@ class CollectorExecutor(AgentExecutor):
             min_content_length=settings.scrape_min_content_length,
         )
         self._http = httpx.AsyncClient(timeout=60)
+        self._last_collect_failures: dict[str, str] = {}
 
     @override
     async def execute(
@@ -132,6 +134,9 @@ class CollectorExecutor(AgentExecutor):
                 f"All: GHSA={counts[0]}, RSS={counts[1]}, "
                 f"Twitter={counts[2]}, Reddit={counts[3]}"
             )
+            if self._last_collect_failures:
+                failed = ", ".join(sorted(self._last_collect_failures))
+                result += f" (failures: {failed})"
 
         logger.info(result)
         await enqueue_event_safe(event_queue, new_agent_text_message(result))
@@ -152,14 +157,33 @@ class CollectorExecutor(AgentExecutor):
 
     async def _collect_all(self) -> tuple[int, int, int, int]:
         """Run all collectors concurrently and return per-source counts."""
+        sources: list[tuple[str, Any]] = [
+            ("ghsa", self._collect_ghsa()),
+            ("rss", self._collect_rss()),
+            ("twitter", self._collect_twitter()),
+            ("reddit", self._collect_reddit()),
+        ]
         results = await asyncio.gather(
-            self._collect_ghsa(),
-            self._collect_rss(),
-            self._collect_twitter(),
-            self._collect_reddit(),
+            *(coro for _name, coro in sources),
             return_exceptions=True,
         )
-        return tuple(r if isinstance(r, int) else 0 for r in results)
+        failures: dict[str, str] = {}
+        counts: list[int] = []
+        for (source, _coro), result in zip(sources, results):
+            if isinstance(result, int):
+                counts.append(result)
+                continue
+
+            counts.append(0)
+            failures[source] = f"{result.__class__.__name__}: {result}"
+            logger.error(
+                "Collector source %s failed",
+                source,
+                exc_info=(result.__class__, result, result.__traceback__),
+            )
+
+        self._last_collect_failures = failures
+        return tuple(counts)
 
     def _is_cloud_security_relevant(self, text: str) -> bool:
         """Heuristic topical filter to keep cloud-security signal high."""
@@ -197,7 +221,7 @@ class CollectorExecutor(AgentExecutor):
         headers: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> str:
-        """Fetch text exclusively through Playwright APIRequestContext to avoid bot blocks."""
+        """Fetch text through Playwright to avoid bot blocks."""
         status, text = await self.scraper.fetch_text(
             url=url,
             headers=headers,
