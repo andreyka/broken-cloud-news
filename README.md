@@ -141,6 +141,11 @@ bcn run
 docker compose up -d
 ```
 
+The Compose stack now routes outbound HTTP(S) through an internal Squid proxy
+that blocks private/metadata destinations by default. Keep internal services
+such as Postgres/ComfyUI reachable via `NO_PROXY` hostnames (set `NO_PROXY`
+in `.env` to include your internal ComfyUI host/IP).
+
 ---
 
 ## Configuration
