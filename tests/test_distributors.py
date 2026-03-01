@@ -86,7 +86,9 @@ class TestTelegramDistributor:
     @respx.mock
     @pytest.mark.asyncio
     async def test_send_with_cover(self):
-        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
+        dist = TelegramDistributor(bot_token="123:FAKE",
+                                   chat_id="-100",
+                                   trusted_image_hosts={"comfy"})
         respx.get("http://comfy:8188/view?filename=cover.png").mock(
             return_value=httpx.Response(200, content=b"\x89PNG\r\n"))
         respx.post("https://api.telegram.org/bot123:FAKE/sendPhoto").mock(

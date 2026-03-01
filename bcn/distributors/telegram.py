@@ -5,9 +5,13 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
+
+from bcn.common.url_policy import assert_public_http_url
+from bcn.common.url_policy import normalize_trusted_hosts
+from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +36,13 @@ class TelegramDistributor:
         bot_token: str,
         chat_id: str,
         overflow_mode: str = "smart",
+        trusted_image_hosts: Iterable[str] | None = None,
     ) -> None:
         self.bot_token: str = bot_token
         self.chat_id: str = chat_id
         self.api: str = f"https://api.telegram.org/bot{bot_token}"
         self.overflow_mode: str = overflow_mode
+        self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
         self.last_result: dict[str, object] = {}
 
@@ -152,6 +158,14 @@ class TelegramDistributor:
         """Load image bytes from an HTTP URL or data URI."""
         if cover_image_url.startswith("data:image/"):
             return self._decode_data_image_uri(cover_image_url)
+
+        try:
+            assert_public_http_url(
+                cover_image_url,
+                trusted_hosts=self._trusted_image_hosts,
+            )
+        except URLValidationError as exc:
+            raise ValueError(f"Blocked cover image URL: {exc}") from exc
 
         img_resp = await self._client.get(cover_image_url, timeout=30)
         img_resp.raise_for_status()

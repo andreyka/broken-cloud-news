@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Any
 
+from bcn.agents.tools import allow_tool_urls
 from bcn.agents.tools import fetch_page_content
 from bcn.agents.writer.prompt import BRIEFING_ENRICHER_PROMPT
 from bcn.agents.writer.prompt import BRIEFING_REWRITE_PROMPT
@@ -62,11 +63,14 @@ class WriterLLM:
         if topic_memory:
             user_msg += "\n\n" + topic_memory
 
-        return await self.client.chat_for_role(
-            role="writer",
-            system_prompt=BRIEFING_SYSTEM_PROMPT,
-            user_content=user_msg,
-            tools=[fetch_page_content])
+        tool_urls = self._tool_allowlist_urls(items)
+        tools = [fetch_page_content] if tool_urls else None
+        with allow_tool_urls(tool_urls):
+            return await self.client.chat_for_role(
+                role="writer",
+                system_prompt=BRIEFING_SYSTEM_PROMPT,
+                user_content=user_msg,
+                tools=tools)
 
     async def tighten_briefing(
         self,
@@ -116,11 +120,14 @@ class WriterLLM:
             missing = "\n".join(f"- {u}" for u in missing_urls)
             user_msg += "\n\nRequired URLs currently missing and must be included exactly once:\n" + missing
 
-        rewritten = await self.client.chat_for_role(
-            role="writer",
-            system_prompt=BRIEFING_ENRICHER_PROMPT,
-            user_content=user_msg,
-            tools=[fetch_page_content])
+        tool_urls = self._tool_allowlist_urls(items)
+        tools = [fetch_page_content] if tool_urls else None
+        with allow_tool_urls(tool_urls):
+            rewritten = await self.client.chat_for_role(
+                role="writer",
+                system_prompt=BRIEFING_ENRICHER_PROMPT,
+                user_content=user_msg,
+                tools=tools)
         return rewritten.strip()
 
     async def revise_briefing(
@@ -159,11 +166,14 @@ class WriterLLM:
             "Current draft:\n"
             f"{draft_markdown}\n\n"
             "Story cards:\n\n" + cards_text)
-        revised = await self.client.chat_for_role(
-            role="writer",
-            system_prompt=BRIEFING_REWRITE_PROMPT,
-            user_content=user_msg,
-            tools=[fetch_page_content])
+        tool_urls = self._tool_allowlist_urls(items)
+        tools = [fetch_page_content] if tool_urls else None
+        with allow_tool_urls(tool_urls):
+            revised = await self.client.chat_for_role(
+                role="writer",
+                system_prompt=BRIEFING_REWRITE_PROMPT,
+                user_content=user_msg,
+                tools=tools)
         return revised.strip()
 
     async def generate_cover_prompt(self, topics: str) -> str:
@@ -356,6 +366,23 @@ class WriterLLM:
             seen.add(url)
             out.append(url)
 
+        return out
+
+    def _tool_allowlist_urls(self, items: list[dict]) -> list[str]:
+        """Build URL allowlist for LLM fetch tool from selected item context."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            main_url = str(item.get("url") or "").strip()
+            if main_url and main_url not in seen:
+                seen.add(main_url)
+                out.append(main_url)
+
+            refs = self._extract_reference_urls(item.get("raw_data"), main_url)
+            for ref in refs:
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append(ref)
         return out
 
     async def _filter_live_reference_urls(self, urls: list[str]) -> list[str]:

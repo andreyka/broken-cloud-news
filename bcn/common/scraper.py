@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Iterable, Optional
 
 from playwright.async_api import async_playwright
 from playwright.async_api import Browser
 from playwright.async_api import BrowserContext
 from playwright.async_api import Playwright
+
+from bcn.common.url_policy import assert_public_http_url
+from bcn.common.url_policy import URLValidationError
+from bcn.common.url_policy import normalize_trusted_hosts
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +28,11 @@ class Scraper:
         self,
         content_limit: int = 10000,
         min_content_length: int = 100,
+        trusted_hosts: Iterable[str] | None = None,
     ) -> None:
         self.content_limit = content_limit
         self.min_content_length = min_content_length
+        self.trusted_hosts = normalize_trusted_hosts(trusted_hosts)
         self._pw: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -75,6 +81,12 @@ class Scraper:
         Returns:
             Extracted text truncated to ``content_limit``, or ``""``.
         """
+        try:
+            assert_public_http_url(url, trusted_hosts=self.trusted_hosts)
+        except URLValidationError as exc:
+            logger.warning("Blocked URL by SSRF policy: %s (%s)", url, exc)
+            return ""
+
         context = await self._ensure_browser()
         page = await context.new_page()
         try:
@@ -120,6 +132,12 @@ class Scraper:
         Returns:
             Tuple of (status_code, response_text). Returns (0, "") on failure.
         """
+        try:
+            assert_public_http_url(url, trusted_hosts=self.trusted_hosts)
+        except URLValidationError as exc:
+            logger.warning("Blocked URL by SSRF policy: %s (%s)", url, exc)
+            return 0, ""
+
         context = await self._ensure_browser()
         try:
             response = await context.request.fetch(

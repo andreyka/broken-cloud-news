@@ -5,9 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
+
+from bcn.common.url_policy import assert_public_http_url
+from bcn.common.url_policy import normalize_trusted_hosts
+from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +19,16 @@ logger = logging.getLogger(__name__)
 class DiscordDistributor:
     """Sends briefings to a Discord channel via the Discord API."""
 
-    def __init__(self, bot_token: str, channel_id: str) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        channel_id: str,
+        trusted_image_hosts: Iterable[str] | None = None,
+    ) -> None:
         self.bot_token = bot_token.strip()
         self.channel_id = str(channel_id).strip()
         self.api = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
+        self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
         self._client = httpx.AsyncClient(
             headers={"Authorization": f"Bot {self.bot_token}"},
             timeout=30,
@@ -67,11 +77,17 @@ class DiscordDistributor:
                     logger.warning("Error parsing data uri: %s", e)
             else:
                 try:
+                    assert_public_http_url(
+                        image_url,
+                        trusted_hosts=self._trusted_image_hosts,
+                    )
                     resp = await self._client.get(image_url)
                     resp.raise_for_status()
                     filename = "cover.png"
                     files = {"files[0]": (filename, resp.content, "image/png")}
                     attachments = [{"id": 0, "filename": filename}]
+                except URLValidationError as exc:
+                    logger.warning("Blocked cover image URL: %s", exc)
                 except Exception as e:
                     logger.warning("Error fetching image: %s", e)
 

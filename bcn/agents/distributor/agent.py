@@ -21,6 +21,7 @@ from bcn.common.db import get_latest_briefing
 from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
 from bcn.common.db import upsert_distribution_outcome
+from bcn.common.url_policy import trusted_hosts_from_urls
 from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
@@ -47,6 +48,7 @@ class DistributorExecutor(AgentExecutor):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.channels: list[tuple[str, Distributor]] = []
+        trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
 
         if settings.telegram_bot_token and settings.telegram_chat_id:
             self.channels.append((
@@ -55,6 +57,7 @@ class DistributorExecutor(AgentExecutor):
                     settings.telegram_bot_token,
                     settings.telegram_chat_id,
                     overflow_mode=settings.telegram_overflow_mode,
+                    trusted_image_hosts=trusted_image_hosts,
                 ),
             ))
 
@@ -83,6 +86,7 @@ class DistributorExecutor(AgentExecutor):
                 DiscordDistributor(
                     settings.discord_bot_token,
                     settings.discord_channel_id,
+                    trusted_image_hosts=trusted_image_hosts,
                 ),
             ))
 

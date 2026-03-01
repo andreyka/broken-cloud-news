@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -11,6 +12,16 @@ from bcn.common.scraper import Scraper
 @pytest.fixture
 def scraper():
     return Scraper(content_limit=500, min_content_length=10)
+
+
+@pytest.fixture(autouse=True)
+def _mock_dns(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
+                                  ("93.184.216.34", 443))],
+    )
 
 
 class TestScraper:
