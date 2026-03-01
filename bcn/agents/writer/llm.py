@@ -63,14 +63,22 @@ class WriterLLM:
         cards_text = "\n\n".join(story_cards)
         style_memory = self._build_style_memory(recent_briefings or [])
         topic_memory = self._build_topic_memory(recent_briefings or [])
-        mode_block = (
-            "Mode: quiet_day.\n"
-            "- Fewer stories are acceptable.\n"
-            "- Add deeper operator guidance and telemetry checks per item.\n"
-            "- Explain tradeoffs clearly.\n"
-            if mode == "quiet_day"
-            else "Mode: standard daily briefing."
-        )
+        if mode == "quiet_day":
+            mode_block = (
+                "Mode: quiet_day.\n"
+                "- Fewer stories are acceptable.\n"
+                "- Add deeper operator guidance and telemetry checks per item.\n"
+                "- Explain tradeoffs clearly.\n"
+            )
+        elif mode == "monthly_newsletter":
+            mode_block = (
+                "Mode: monthly_newsletter.\n"
+                "- Build a richer, longer editorial brief.\n"
+                "- Prioritize trend synthesis across incidents and advisories.\n"
+                "- Provide practical operator takeaways for each major section.\n"
+            )
+        else:
+            mode_block = "Mode: standard daily briefing."
         user_msg = (
             f"{mode_block}\n\nStory cards ({len(story_cards)} total). "
             "Use every `URL` exactly once in the final briefing.\n\n" + cards_text
@@ -128,11 +136,16 @@ class WriterLLM:
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
 
-        mode_hint = (
-            "quiet_day: deepen practical guidance per item and include concrete playbook flavor."
-            if mode == "quiet_day"
-            else "standard: balanced actionable digest."
-        )
+        if mode == "quiet_day":
+            mode_hint = (
+                "quiet_day: deepen practical guidance per item and include concrete playbook flavor."
+            )
+        elif mode == "monthly_newsletter":
+            mode_hint = (
+                "monthly_newsletter: synthesize broader trends with richer depth and stronger sectioned narrative."
+            )
+        else:
+            mode_hint = "standard: balanced actionable digest."
         user_msg = (
             f"Length goal: {min_chars}-{hard_max_chars} chars (target ~{target_chars}).\n"
             f"Mode: {mode_hint}\n"
@@ -183,11 +196,12 @@ class WriterLLM:
         )
         structured = feedback_context or {}
         structured_json = json.dumps(structured, ensure_ascii=False, indent=2)
-        mode_text = (
-            "quiet_day: deeper practical guidance with fewer items accepted"
-            if mode == "quiet_day"
-            else "standard daily briefing"
-        )
+        if mode == "quiet_day":
+            mode_text = "quiet_day: deeper practical guidance with fewer items accepted"
+        elif mode == "monthly_newsletter":
+            mode_text = "monthly_newsletter: broader trend synthesis with deeper multi-story analysis"
+        else:
+            mode_text = "standard daily briefing"
         user_msg = (
             f"Mode: {mode_text}\n"
             f"Target length: {min_chars}-{hard_max_chars} chars (ideal ~{target_chars}).\n\n"

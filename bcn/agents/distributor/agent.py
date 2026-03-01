@@ -6,6 +6,8 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 import logging
+import re
+from uuid import UUID
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution import RequestContext
@@ -16,8 +18,10 @@ from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
+from bcn.common.db import claim_draft_briefing_by_id
 from bcn.common.db import claim_latest_draft_briefing
 from bcn.common.db import get_distribution_outcomes
+from bcn.common.db import get_newsletter_subscribers
 from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
 from bcn.common.db import release_briefing_for_retry
@@ -26,10 +30,24 @@ from bcn.common.url_policy import trusted_hosts_from_urls
 from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
-from bcn.distributors.slack import SlackDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
 logger = logging.getLogger(__name__)
+REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
+AD_HOC_MODE = "ad_hoc"
+REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
+_SUPPORTED_MODES = {
+    REGULAR_DAILY_BRIEFING_MODE,
+    AD_HOC_MODE,
+    REGULAR_MONTHLY_NEWSLETTER_MODE,
+}
+_UUID_PATTERN = re.compile(
+    r"\b[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}\b"
+)
 
 SKILLS = [
     AgentSkill(
@@ -48,11 +66,25 @@ class DistributorExecutor(AgentExecutor):
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def _build_channels(self) -> list[tuple[str, Distributor]]:
+    def _build_channels(
+        self,
+        mode: str = REGULAR_DAILY_BRIEFING_MODE,
+        *,
+        newsletter_recipients: list[str] | None = None,
+    ) -> list[tuple[str, Distributor]]:
         trusted_image_hosts = trusted_hosts_from_urls([self.settings.comfyui_url])
         channels: list[tuple[str, Distributor]] = []
+        normalized_mode = self._normalize_mode(mode)
+        if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+            channel_names = {"email"}
+        else:
+            channel_names = {"telegram", "discord"}
 
-        if self.settings.telegram_bot_token and self.settings.telegram_chat_id:
+        if (
+            "telegram" in channel_names
+            and self.settings.telegram_bot_token
+            and self.settings.telegram_chat_id
+        ):
             channels.append(
                 (
                     "telegram",
@@ -65,7 +97,12 @@ class DistributorExecutor(AgentExecutor):
                 )
             )
 
-        if self.settings.smtp_host and self.settings.email_recipients:
+        if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+            recipients = list(newsletter_recipients or [])
+        else:
+            recipients = list(self.settings.email_recipients)
+
+        if "email" in channel_names and self.settings.smtp_host and recipients:
             channels.append(
                 (
                     "email",
@@ -75,20 +112,16 @@ class DistributorExecutor(AgentExecutor):
                         smtp_user=self.settings.smtp_user,
                         smtp_password=self.settings.smtp_password,
                         from_addr=self.settings.email_from,
-                        recipients=self.settings.email_recipients,
+                        recipients=recipients,
                     ),
                 )
             )
 
-        if self.settings.slack_webhook_url:
-            channels.append(
-                (
-                    "slack",
-                    SlackDistributor(self.settings.slack_webhook_url),
-                )
-            )
-
-        if self.settings.discord_bot_token and self.settings.discord_channel_id:
+        if (
+            "discord" in channel_names
+            and self.settings.discord_bot_token
+            and self.settings.discord_channel_id
+        ):
             channels.append(
                 (
                     "discord",
@@ -111,8 +144,22 @@ class DistributorExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Send the latest DRAFT briefing to all configured channels."""
-        briefing = await claim_latest_draft_briefing()
+        user_input = context.get_user_input() or ""
+        requested_briefing_id = self._extract_requested_briefing_id(user_input)
+        requested_mode = self._extract_requested_mode(user_input)
+        if requested_briefing_id:
+            briefing = await claim_draft_briefing_by_id(requested_briefing_id)
+        else:
+            briefing = await claim_latest_draft_briefing()
         if not briefing:
+            if requested_briefing_id:
+                await enqueue_event_safe(
+                    event_queue,
+                    new_agent_text_message(
+                        f"Requested briefing {requested_briefing_id} is not available for distribution"
+                    ),
+                )
+                return
             await enqueue_event_safe(
                 event_queue, new_agent_text_message("No new briefing to distribute")
             )
@@ -121,6 +168,8 @@ class DistributorExecutor(AgentExecutor):
         channels: list[tuple[str, Distributor]] = []
         results: dict[str, str] = {}
         msg: str | None = None
+        mode = self._normalize_mode(requested_mode)
+        newsletter_recipients: list[str] | None = None
 
         try:
             max_age_minutes = max(
@@ -145,11 +194,33 @@ class DistributorExecutor(AgentExecutor):
                         )
                         return
 
-            channels = self._build_channels()
+            if mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+                subscriber_rows = await get_newsletter_subscribers(active_only=True)
+                newsletter_recipients = []
+                for row in subscriber_rows:
+                    email = str(dict(row).get("email") or "").strip()
+                    if email:
+                        newsletter_recipients.append(email)
+            channels = self._build_channels(
+                mode=mode,
+                newsletter_recipients=newsletter_recipients,
+            )
             if not channels:
+                if mode == REGULAR_MONTHLY_NEWSLETTER_MODE and not (
+                    newsletter_recipients or []
+                ):
+                    await enqueue_event_safe(
+                        event_queue,
+                        new_agent_text_message(
+                            "No active monthly newsletter subscribers configured"
+                        ),
+                    )
+                    return
                 await enqueue_event_safe(
                     event_queue,
-                    new_agent_text_message("No distribution channels configured"),
+                    new_agent_text_message(
+                        f"No distribution channels configured for mode={mode}"
+                    ),
                 )
                 return
 
@@ -178,7 +249,18 @@ class DistributorExecutor(AgentExecutor):
                 metadata: dict[str, object] = {}
                 external_message_id: str | None = None
                 try:
-                    ok = await channel.send(briefing)
+                    channel_briefing = dict(briefing)
+                    if mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+                        created_at = briefing.get("created_at")
+                        month_label = (
+                            created_at.strftime("%B %Y")
+                            if isinstance(created_at, datetime)
+                            else "Monthly Edition"
+                        )
+                        channel_briefing["email_subject"] = (
+                            f"Broken Cloud News Monthly Newsletter - {month_label}"
+                        )
+                    ok = await channel.send(channel_briefing)
 
                     if isinstance(channel.last_result, dict):
                         metadata = dict(channel.last_result)
@@ -216,11 +298,11 @@ class DistributorExecutor(AgentExecutor):
                 item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
                 await mark_items_published(item_ids)
                 should_release_for_retry = False
-                msg = f"Distributed to: {results}"
+                msg = f"Distributed to: {results} (mode={mode})"
             else:
                 msg = (
                     "Distribution incomplete; kept briefing as DRAFT for retry. "
-                    f"results={results}"
+                    f"mode={mode} results={results}"
                 )
         finally:
             for _name, channel in channels:
@@ -240,6 +322,37 @@ class DistributorExecutor(AgentExecutor):
         if msg:
             logger.info(msg)
             await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+
+    @staticmethod
+    def _extract_requested_briefing_id(text: str) -> UUID | None:
+        """Extract optional target briefing UUID from distributor skill text."""
+        match = _UUID_PATTERN.search(text or "")
+        if not match:
+            return None
+        try:
+            return UUID(match.group(0))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _extract_requested_mode(text: str) -> str | None:
+        """Extract optional distribution mode from skill text tokens."""
+        for token in str(text or "").split("::"):
+            candidate = token.strip().lower()
+            if candidate.startswith("mode="):
+                candidate = candidate.split("=", 1)[1].strip().lower()
+            if candidate in _SUPPORTED_MODES:
+                return candidate
+        return None
+
+    @staticmethod
+    def _normalize_mode(mode: str | None) -> str:
+        normalized = str(mode or "").strip().lower()
+        return (
+            normalized
+            if normalized in _SUPPORTED_MODES
+            else REGULAR_DAILY_BRIEFING_MODE
+        )
 
     @override
     async def cancel(

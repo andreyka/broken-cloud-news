@@ -42,6 +42,12 @@ class BriefingQualityGate:
                 int(self.settings.briefing_quiet_day_target_chars),
                 int(self.settings.briefing_quiet_day_hard_max_chars),
             )
+        if mode == "monthly_newsletter":
+            return (
+                int(self.settings.briefing_monthly_min_chars),
+                int(self.settings.briefing_monthly_target_chars),
+                int(self.settings.briefing_monthly_hard_max_chars),
+            )
         return (
             int(self.settings.briefing_min_chars),
             int(self.settings.briefing_target_chars),
@@ -88,7 +94,12 @@ class BriefingQualityGate:
             if len(selected_items) <= 1:
                 min_sections = 1
             else:
-                min_sections = 1 if mode == "quiet_day" else 2
+                if mode == "quiet_day":
+                    min_sections = 1
+                elif mode == "monthly_newsletter":
+                    min_sections = 4
+                else:
+                    min_sections = 2
             if heading_count < min_sections:
                 issue = f"Too few sections ({heading_count}); expected at least {min_sections}."
                 if strict_structure:

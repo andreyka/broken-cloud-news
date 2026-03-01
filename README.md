@@ -77,9 +77,9 @@ flowchart TB
 |-------|------|---------|------|
 | **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA/AWS/Cloudflare), Reddit RSS, Twitter/X via API v2 |
 | **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
-| **Writer** | 9003 | Daily 9:00 | Generates briefing and cover image (Gemini image or Flux fallback) |
+| **Writer** | 9003 | Daily + Monthly | Generates briefings/newsletters and cover images (Gemini image or Flux fallback) |
 | **Critic** | 9005 | On-demand | Scores/criticizes briefing quality (LLM + deterministic gate) |
-| **Distributor** | 9004 | After Writer | Sends photo+caption to Telegram channel |
+| **Distributor** | 9004 | After Writer | Mode-aware distribution (daily/ad-hoc: Telegram+Discord, monthly: email) |
 
 All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The scheduler orchestrates the pipeline automatically in daemon mode.
 
@@ -117,7 +117,8 @@ bcn collect              # Collect from all sources
 bcn collect -s ghsa      # Collect GHSA only
 bcn collect -s reddit    # Collect Reddit RSS only
 bcn analyze              # Analyze new items with LLM
-bcn write                # Generate briefing + cover image
+bcn write --mode regular_daily_briefing
+bcn write --mode regular_monthly_newsletter
 bcn critique --latest    # Critique latest briefing (quality report JSON)
 bcn critique --file ./draft.md
 bcn simulate --limit 30 --output simulation_report.json  # Backtest vs historical briefings (no publish)
@@ -125,10 +126,15 @@ bcn simulate --limit 0 --with-critic-rewrites            # Full heavy replay wit
 bcn simulate --store-db                                   # Persist run/results in DB and compare with previous run
 bcn review --decision accept --issue-tag style            # Store human review labels for latest briefing
 bcn review-queue --only-unreviewed                        # List briefings needing manual review
+bcn finalize-pending-runs --max-age-minutes 180           # Finalize stale trace runs stuck in PENDING
 bcn record-outcome --briefing-id <uuid> --channel telegram --views 1200 --clicks 74
 bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets
-bcn distribute           # Send to configured channels
-bcn pipeline             # Full pipeline: collect -> analyze -> write -> distribute
+bcn distribute --mode regular_daily_briefing
+bcn distribute --mode regular_monthly_newsletter --briefing-id <uuid>
+bcn newsletter-subscribers add avkovaleff@gmail.com
+bcn newsletter-subscribers list
+bcn workflow-run --mode ad_hoc
+bcn pipeline --mode regular_daily_briefing
 ```
 
 **Daemon mode** (all agents + scheduler):
@@ -172,6 +178,12 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_DISTRIBUTE_HOUR` | `9` | Legacy single digest hour fallback when `BCN_DISTRIBUTE_HOURS` is empty |
 | `BCN_DISTRIBUTE_MINUTE` | `0` | Minute used for digest cron scheduling |
 | `BCN_DISTRIBUTE_TIMEZONE` | `UTC` | IANA timezone for digest cron (e.g. `America/Los_Angeles`) |
+| `BCN_MONTHLY_NEWSLETTER_ENABLED` | `true` | Enable monthly newsletter scheduler job |
+| `BCN_MONTHLY_NEWSLETTER_DAY` | `1` | Day-of-month for monthly newsletter publish |
+| `BCN_MONTHLY_NEWSLETTER_HOUR` | `9` | Hour for monthly newsletter publish |
+| `BCN_MONTHLY_NEWSLETTER_MINUTE` | `0` | Minute for monthly newsletter publish |
+| `BCN_MONTHLY_NEWSLETTER_TIMEZONE` | `UTC` | IANA timezone for monthly newsletter cron |
+| `BCN_GENERATION_RUN_STALE_PENDING_MINUTES` | `180` | Auto-finalize stale writer trace runs left in `PENDING` |
 
 Gemini trial example (role-based):
 ```bash
@@ -206,10 +218,24 @@ Important briefing-quality knobs:
 - `BCN_BRIEFING_GATE_MODE` (default `balanced`) controls deterministic strictness:
   `strict` (structure rules are blocking), `balanced` (structure/style are advisory),
   `minimal` (only hard correctness checks block).
+- `BCN_BRIEFING_MONTHLY_MIN_CHARS` / `BCN_BRIEFING_MONTHLY_TARGET_CHARS` /
+  `BCN_BRIEFING_MONTHLY_HARD_MAX_CHARS` set newsletter depth envelope.
+- `BCN_MONTHLY_NEWSLETTER_LOOKBACK_DAYS` + `BCN_MONTHLY_NEWSLETTER_MAX_ITEMS`
+  control monthly item window breadth and total section count.
 - `BCN_SCRAPE_PLAYWRIGHT_FETCH_FALLBACK` (default `true`) uses Playwright request
   fallback when direct HTTP fetches of feeds/Reddit endpoints fail.
 - `BCN_DISTRIBUTE_HOURS` + `BCN_DISTRIBUTE_TIMEZONE` support multiple daily publish
   slots without external cron (example: `BCN_DISTRIBUTE_HOURS=9,13,19`).
+
+Workflow channel policy:
+- `regular_daily_briefing`: Telegram + Discord
+- `ad_hoc`: Telegram + Discord
+- `regular_monthly_newsletter`: Email only (DB-backed subscriber list)
+
+Monthly newsletter subscribers are managed via CLI:
+- `bcn newsletter-subscribers add you@example.com`
+- `bcn newsletter-subscribers remove you@example.com`
+- `bcn newsletter-subscribers list`
 
 ---
 
@@ -305,7 +331,14 @@ async with httpx.AsyncClient() as http:
 ## Project Structure
 ```
 bcn/
-  cli.py              CLI commands + daemon scheduler
+  cli.py              CLI command wiring (thin entrypoint)
+  workflows/
+    runtime.py        Shared runtime wiring (settings + sender)
+    automation.py     Scheduler jobs + mode facade
+    modes/
+      regular_daily_briefing.py
+      ad_hoc.py
+      regular_monthly_newsletter.py
   config.py           Pydantic Settings (env vars)
   db.py               asyncpg database layer
   models.py           Pydantic data models

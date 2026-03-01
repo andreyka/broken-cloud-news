@@ -60,7 +60,9 @@ class EmailDistributor:
         try:
             created_at = briefing.get("created_at")
             date_str = created_at.strftime("%Y-%m-%d") if created_at else ""
-            subject = f"Broken Cloud News - {date_str}"
+            subject = str(briefing.get("email_subject") or "").strip()
+            if not subject:
+                subject = f"Broken Cloud News - {date_str}"
             html_body = str(
                 briefing.get("content_html") or briefing.get("content_markdown") or ""
             )

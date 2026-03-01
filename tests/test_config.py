@@ -71,3 +71,8 @@ class TestSettings:
         )
         with pytest.raises(ValidationError):
             Settings(distribute_timezone="Mars/Olympus_Mons")
+
+    def test_monthly_newsletter_day_validation(self):
+        assert Settings(monthly_newsletter_day=1).monthly_newsletter_day == 1
+        with pytest.raises(ValidationError):
+            Settings(monthly_newsletter_day=31)
