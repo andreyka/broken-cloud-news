@@ -56,6 +56,12 @@ class Scraper:
             await self._pw.stop()
             self._pw = None
 
+    async def __aenter__(self) -> "Scraper":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
     async def scrape(self, url: str) -> str:
         """Navigate to *url* and return extracted article text.
 

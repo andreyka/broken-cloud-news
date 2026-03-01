@@ -175,6 +175,12 @@ class LLMClient:
         """Release the underlying HTTP connection pool."""
         await self._client.aclose()
 
+    async def __aenter__(self) -> "LLMClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
     async def chat(
         self,
         system_prompt: str,
