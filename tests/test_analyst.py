@@ -1,21 +1,29 @@
 import os
 import sys
+import json
+from unittest.mock import AsyncMock
+
+import pytest
+
+from bcn.agents.analyst.llm import AnalystLLM
+from bcn.common.llm import LLMClient
 
 sys.path.insert(0, os.path.abspath("."))
 
-from bcn.agents.analyst.llm import AnalystLLM
-from bcn.common.config import Settings
-from bcn.common.llm import LLMClient
-
-import pytest
-import os
-import sys
-
-
 @pytest.mark.asyncio
 async def test_analyst_canonical_url_extraction():
-    settings = Settings()
-    client = LLMClient.from_settings(settings)
+    client = LLMClient(base_url="http://fake-llm:8000/v1", model="test-model", timeout=5)
+    client.chat_for_role = AsyncMock(
+        return_value=json.dumps(
+            {
+                "summary": "Critical Claude Code vuln",
+                "relevance_score": 8,
+                "tags": ["rce", "developer-tools"],
+                "image_prompt": "secure coding workstation under attack",
+                "canonical_url": "https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/",
+            }
+        )
+    )
     analyst = AnalystLLM(client)
 
     title = "Claude Code flaws exposed developer devices to silent hacking - @Fox0x01 @steipete"
@@ -40,3 +48,4 @@ async def test_analyst_canonical_url_extraction():
         == "https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/"
     )
     assert result.relevance_score >= 7
+    client.chat_for_role.assert_awaited_once()
