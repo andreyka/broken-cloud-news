@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Any
 
 from bcn.agents.critic.prompt import BRIEFING_CRITIC_PROMPT
@@ -23,6 +24,7 @@ class CriticLLM:
         mode: str = "standard",
         gate_hard_issues: list[str] | None = None,
         gate_soft_issues: list[str] | None = None,
+        recent_briefings: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Critique a draft briefing and return structured pass/fail guidance."""
         item_lines = [
@@ -34,11 +36,35 @@ class CriticLLM:
         soft_text = "\n".join(
             f"- {issue}" for issue in (gate_soft_issues or [])) or "- none"
         mode_text = "quiet_day" if mode == "quiet_day" else "standard"
+
+        # Build history context for novelty checking
+        history_block = ""
+        if recent_briefings:
+            history_parts: list[str] = []
+            for idx, briefing in enumerate(recent_briefings[:10], start=1):
+                body = briefing.get("content_markdown", "") or ""
+                urls = re.findall(r"\[.*?\]\((https?://[^\)]+)\)", body)
+                topics = re.findall(r"\*\*(.+?)\*\*", body)
+                cves = re.findall(r"CVE-\d{4}-\d+", body, flags=re.IGNORECASE)
+                parts = []
+                if topics:
+                    parts.append(f"topics={topics[:5]}")
+                if urls:
+                    parts.append(f"urls={urls[:8]}")
+                if cves:
+                    parts.append(f"cves={cves}")
+                if parts:
+                    history_parts.append(f"{idx}) " + " | ".join(parts))
+            if history_parts:
+                history_block = ("\n\nRecent briefing history (check for repeated topics/URLs):\n" +
+                                 "\n".join(history_parts))
+
         user_msg = (f"Mode: {mode_text}\n"
                     f"Selected items ({len(items)}):\n" +
                     "\n".join(item_lines) +
                     "\n\nLocal quality-gate findings (HARD):\n" + hard_text +
                     "\n\nLocal quality-gate findings (SOFT):\n" + soft_text +
+                    history_block +
                     "\n\nDraft:\n" + draft_markdown)
         raw = await self.client.chat_for_role(
             role="critic",
@@ -78,6 +104,8 @@ class CriticLLM:
                                                              score)))),
                 "style":
                     max(0, min(100, int(dimension_scores.get("style", score)))),
+                "novelty":
+                    max(0, min(100, int(dimension_scores.get("novelty", score)))),
             }
             issues = parsed.get("issues", [])
             recommendations = parsed.get("recommendations", [])
@@ -106,6 +134,7 @@ class CriticLLM:
                     "link_hygiene": 0,
                     "clarity": 0,
                     "style": 0,
+                    "novelty": 0,
                 },
                 "issues": ["Critic response parsing failed"],
                 "recommendations": [
