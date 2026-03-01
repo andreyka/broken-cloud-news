@@ -137,3 +137,33 @@ class TestScraper:
 
             result = await scraper.scrape("https://example.com/post")
             assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_fetch_text_returns_status_and_body(self, scraper):
+        with patch("bcn.common.scraper.async_playwright") as mock_pw_start:
+            mock_pw = AsyncMock()
+            mock_pw_start.return_value.start = AsyncMock(return_value=mock_pw)
+            mock_browser = AsyncMock()
+            mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
+            mock_context = AsyncMock()
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+            mock_response = AsyncMock()
+            mock_response.status = 200
+            mock_response.text = AsyncMock(return_value="feed body")
+            mock_response.headers = {}
+            mock_context.request.fetch = AsyncMock(return_value=mock_response)
+
+            status, body = await scraper.fetch_text("https://example.com/feed.xml")
+            assert status == 200
+            assert body == "feed body"
+            mock_context.request.fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_guard_request_blocks_private_subrequest(self, scraper):
+        route = AsyncMock()
+        request = type("Req", (), {"url": "http://127.0.0.1/admin"})()
+
+        await scraper._guard_request(route, request)
+
+        route.abort.assert_awaited_once()
+        route.continue_.assert_not_called()

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable, Optional
+from urllib.parse import urljoin
 
 from playwright.async_api import async_playwright
 from playwright.async_api import Browser
 from playwright.async_api import BrowserContext
 from playwright.async_api import Playwright
+from playwright.async_api import Request as PWRequest
+from playwright.async_api import Route as PWRoute
 
 from bcn.common.url_policy import assert_public_http_url
-from bcn.common.url_policy import URLValidationError
 from bcn.common.url_policy import normalize_trusted_hosts
+from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,11 @@ class Scraper:
         if self._context is not None:
             return self._context
         self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=True)
+        launch_kwargs: dict[str, object] = {"headless": True}
+        proxy_server = self._playwright_proxy_server()
+        if proxy_server:
+            launch_kwargs["proxy"] = {"server": proxy_server}
+        self._browser = await self._pw.chromium.launch(**launch_kwargs)
         self._context = await self._browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -50,6 +58,9 @@ class Scraper:
             ),
             java_script_enabled=True,
         )
+        # Enforce SSRF policy on every browser-level request, including redirects
+        # and secondary fetches triggered while loading a page.
+        await self._context.route("**/*", self._guard_request)
         return self._context
 
     async def close(self) -> None:
@@ -69,6 +80,36 @@ class Scraper:
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
+
+    @staticmethod
+    def _playwright_proxy_server() -> str | None:
+        """Resolve proxy server URL for Playwright, if configured."""
+        for key in ("BCN_PLAYWRIGHT_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+        return None
+
+    @staticmethod
+    def _is_http_url(url: str) -> bool:
+        text = (url or "").strip().lower()
+        return text.startswith("http://") or text.startswith("https://")
+
+    async def _guard_request(self, route: PWRoute, request: PWRequest) -> None:
+        """Block internal/private HTTP requests at the browser network layer."""
+        request_url = request.url or ""
+        if self._is_http_url(request_url):
+            try:
+                assert_public_http_url(request_url, trusted_hosts=self.trusted_hosts)
+            except URLValidationError as exc:
+                logger.warning(
+                    "Blocked browser subrequest by SSRF policy: %s (%s)",
+                    request_url,
+                    exc,
+                )
+                await route.abort("blockedbyclient")
+                return
+        await route.continue_()
 
     async def scrape(self, url: str) -> str:
         """Navigate to *url* and return extracted article text.
@@ -141,16 +182,53 @@ class Scraper:
             return 0, ""
 
         context = await self._ensure_browser()
+        current_url = url
+        current_method = method.upper()
+        max_redirects = 5
+        redirects = 0
         try:
-            response = await context.request.fetch(
-                url,
-                method=method,
-                headers=headers or {},
-                timeout=timeout_ms,
-            )
-            status = int(response.status)
-            text = await response.text()
-            return status, text
+            while True:
+                response = await context.request.fetch(
+                    current_url,
+                    method=current_method,
+                    headers=headers or {},
+                    max_redirects=0,
+                    timeout=timeout_ms,
+                )
+                status = int(response.status)
+
+                if status not in {301, 302, 303, 307, 308}:
+                    text = await response.text()
+                    return status, text
+
+                if redirects >= max_redirects:
+                    logger.warning(
+                        "Playwright fetch exceeded redirect limit for %s", url
+                    )
+                    return 0, ""
+
+                location = ""
+                try:
+                    hdrs = response.headers
+                    if isinstance(hdrs, dict):
+                        location = str(hdrs.get("location") or "").strip()
+                except Exception:
+                    location = ""
+                if not location:
+                    logger.warning(
+                        "Playwright fetch redirect missing Location for %s", current_url
+                    )
+                    return 0, ""
+
+                next_url = urljoin(current_url, location)
+                assert_public_http_url(next_url, trusted_hosts=self.trusted_hosts)
+                current_url = next_url
+                if status in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
+                    current_method = "GET"
+                redirects += 1
+        except URLValidationError as exc:
+            logger.warning("Blocked redirect URL by SSRF policy: %s (%s)", url, exc)
+            return 0, ""
         except Exception as exc:
             logger.warning("Playwright fetch failed for %s: %s", url, exc)
             return 0, ""
