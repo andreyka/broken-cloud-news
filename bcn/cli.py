@@ -609,49 +609,14 @@ def distribute() -> None:
             metadata: dict[str, Any] = {}
             external_message_id: str | None = None
             try:
-                if name == "telegram":
-                    ok = await channel.send(briefing["content_markdown"],
-                                            briefing["cover_image_url"])
-                    if hasattr(channel, "last_result") and isinstance(
-                            channel.last_result, dict):
-                        metadata = dict(channel.last_result)
-                        msg_id = metadata.get("primary_message_id")
-                        if msg_id is not None:
-                            external_message_id = str(msg_id)
-                elif name == "email":
-                    ok = await channel.send(
-                        f"Broken Cloud News - {today}",
-                        briefing["content_html"] or
-                        briefing["content_markdown"],
-                    )
-                    metadata = {
-                        "recipient_count":
-                            len(getattr(channel, "recipients", []))
-                    }
-                elif name == "slack":
-                    ok = await channel.send(briefing["content_markdown"],
-                                            briefing["cover_image_url"])
-                    metadata = {
-                        "cover_image":
-                            bool(briefing["cover_image_url"]),
-                        "markdown_chars":
-                            len(str(briefing["content_markdown"] or "")),
-                    }
-                elif name == "discord":
-                    ok = await channel.send(briefing["content_markdown"],
-                                            briefing["cover_image_url"])
-                    metadata = {
-                        "cover_image":
-                            bool(briefing["cover_image_url"]),
-                        "markdown_chars":
-                            len(str(briefing["content_markdown"] or "")),
-                    }
-                    if hasattr(channel, "last_result") and channel.last_result:
-                        msg_id = channel.last_result.get("primary_message_id")
-                        if msg_id is not None:
-                            external_message_id = str(msg_id)
-                else:
-                    ok = False
+                ok = await channel.send(briefing)
+                
+                if hasattr(channel, "last_result") and isinstance(channel.last_result, dict):
+                    metadata = dict(channel.last_result)
+                    msg_id = metadata.get("primary_message_id")
+                    if msg_id is not None:
+                        external_message_id = str(msg_id)
+                        
                 status = "ok" if ok else "failed"
                 results[name] = status
                 click.echo(f"  {name}: {status}")
