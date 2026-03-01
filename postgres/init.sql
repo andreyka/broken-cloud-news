@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS briefings (
     content_markdown TEXT NOT NULL,
     content_html TEXT,
     item_ids UUID[] NOT NULL,
-    status VARCHAR(20) DEFAULT 'DRAFT', -- DRAFT, DISTRIBUTED
+    status VARCHAR(20) DEFAULT 'DRAFT', -- DRAFT, DISTRIBUTING, DISTRIBUTED
     distributed_at TIMESTAMP WITH TIME ZONE,
     distribution_channels JSONB,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()

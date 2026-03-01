@@ -64,6 +64,34 @@ def _fake_context(text: str = "collect_all"):
     return RequestContext(request=MessageSendParams(message=msg))
 
 
+class TestCliHelpers:
+    @pytest.mark.asyncio
+    async def test_run_agent_directly_closes_pool_when_close_fails(self):
+        from bcn.cli import _run_agent_directly
+
+        class _Executor:
+            def __init__(self, settings):
+                self.settings = settings
+
+            async def execute(self, context, event_queue):
+                return None
+
+            async def close(self):
+                raise RuntimeError("close failed")
+
+        settings = _make_settings()
+        with (
+            patch("bcn.common.db.get_pool", new_callable=AsyncMock),
+            patch(
+                "bcn.common.db.close_pool", new_callable=AsyncMock
+            ) as mock_close_pool,
+        ):
+            result = await _run_agent_directly(_Executor, settings, "noop")
+
+        assert result == "Done"
+        mock_close_pool.assert_awaited_once()
+
+
 # ── Collector tests ──────────────────────────────────────────────────────
 
 
@@ -1370,7 +1398,7 @@ class TestDistributorExecutor:
         executor = DistributorExecutor(settings)
 
         with patch(
-            "bcn.agents.distributor.agent.get_latest_briefing",
+            "bcn.agents.distributor.agent.claim_latest_draft_briefing",
             new_callable=AsyncMock,
             return_value=None,
         ):
@@ -1402,7 +1430,7 @@ class TestDistributorExecutor:
 
         with (
             patch(
-                "bcn.agents.distributor.agent.get_latest_briefing",
+                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
                 new_callable=AsyncMock,
                 return_value=stale_briefing,
             ),
@@ -1414,6 +1442,10 @@ class TestDistributorExecutor:
                 "bcn.agents.distributor.agent.mark_items_published",
                 new_callable=AsyncMock,
             ) as mock_publish,
+            patch(
+                "bcn.agents.distributor.agent.release_briefing_for_retry",
+                new_callable=AsyncMock,
+            ) as mock_release,
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("distribute")
@@ -1422,6 +1454,7 @@ class TestDistributorExecutor:
         assert any("Latest draft is stale" in str(e) for e in eq.events)
         mock_mark.assert_not_called()
         mock_publish.assert_not_called()
+        mock_release.assert_called_once_with(stale_briefing["id"])
 
     @pytest.mark.asyncio
     async def test_partial_channel_failure_keeps_briefing_draft(self):
@@ -1456,7 +1489,7 @@ class TestDistributorExecutor:
 
         with (
             patch(
-                "bcn.agents.distributor.agent.get_latest_briefing",
+                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
                 new_callable=AsyncMock,
                 return_value=briefing,
             ),
@@ -1482,6 +1515,10 @@ class TestDistributorExecutor:
                 "bcn.agents.distributor.agent.mark_items_published",
                 new_callable=AsyncMock,
             ) as mock_publish,
+            patch(
+                "bcn.agents.distributor.agent.release_briefing_for_retry",
+                new_callable=AsyncMock,
+            ) as mock_release,
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("distribute")
@@ -1494,6 +1531,7 @@ class TestDistributorExecutor:
         assert fail_channel.closed == 1
         mock_mark.assert_not_called()
         mock_publish.assert_not_called()
+        mock_release.assert_called_once_with(briefing["id"])
 
     @pytest.mark.asyncio
     async def test_skips_previously_successful_channels_and_finishes_distribution(self):
@@ -1527,7 +1565,7 @@ class TestDistributorExecutor:
 
         with (
             patch(
-                "bcn.agents.distributor.agent.get_latest_briefing",
+                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
                 new_callable=AsyncMock,
                 return_value=briefing,
             ),
@@ -1553,6 +1591,10 @@ class TestDistributorExecutor:
                 "bcn.agents.distributor.agent.mark_items_published",
                 new_callable=AsyncMock,
             ) as mock_publish,
+            patch(
+                "bcn.agents.distributor.agent.release_briefing_for_retry",
+                new_callable=AsyncMock,
+            ) as mock_release,
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("distribute")
@@ -1564,3 +1606,4 @@ class TestDistributorExecutor:
         assert slack.closed == 1
         mock_mark.assert_called_once()
         mock_publish.assert_called_once()
+        mock_release.assert_not_called()
