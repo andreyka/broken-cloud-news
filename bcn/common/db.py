@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from datetime import timezone
 import json
@@ -16,6 +17,7 @@ from bcn.common.config import Settings
 logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
+_pool_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
@@ -28,11 +30,14 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
         The asyncpg connection pool.
     """
     global _pool
-    if _pool is None:
-        s = settings or Settings()
-        _pool = await asyncpg.create_pool(s.database_url,
-                                          min_size=2,
-                                          max_size=10)
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is None:
+            s = settings or Settings()
+            _pool = await asyncpg.create_pool(s.database_url,
+                                              min_size=2,
+                                              max_size=10)
     return _pool
 
 

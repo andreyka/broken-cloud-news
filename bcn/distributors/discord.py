@@ -1,14 +1,16 @@
 """Discord distributor."""
 
-import logging
-from typing import Any
+from __future__ import annotations
+
 import base64
 import json
+import logging
+from typing import Any
+
 import httpx
 
-from bcn.common.models import Briefing
-
 logger = logging.getLogger(__name__)
+
 
 class DiscordDistributor:
     """Sends briefings to a Discord channel via the Discord API."""
@@ -19,14 +21,25 @@ class DiscordDistributor:
         self.api = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
         self._client = httpx.AsyncClient(
             headers={"Authorization": f"Bot {self.bot_token}"},
-            timeout=30
+            timeout=30,
         )
         self.last_result: dict[str, Any] = {}
+
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
 
     async def send(self, briefing: Any) -> bool:
         """Send the briefing to Discord.
 
-        Splits long messages if necessary and attaches the cover image to the first message.
+        Splits long messages if necessary and attaches the cover image
+        to the first message.
+
+        Args:
+            briefing: The briefing dataset record.
+
+        Returns:
+            ``True`` if the message was sent successfully.
         """
         if not self.bot_token or not self.channel_id:
             logger.warning("Discord distributor skipped: missing token or channel_id")
@@ -36,7 +49,7 @@ class DiscordDistributor:
         image_url = briefing.get("cover_image_url")
 
         chunks = self._chunk_text(markdown_text, limit=1900)
-        
+
         # Determine image files to send for the first chunk
         files = None
         attachments = None
@@ -51,7 +64,7 @@ class DiscordDistributor:
                     files = {"files[0]": (filename, img_bytes, mime_type)}
                     attachments = [{"id": 0, "filename": filename}]
                 except Exception as e:
-                    logger.warning(f"Error parsing data uri: {e}")
+                    logger.warning("Error parsing data uri: %s", e)
             else:
                 try:
                     resp = await self._client.get(image_url)
@@ -60,64 +73,62 @@ class DiscordDistributor:
                     files = {"files[0]": (filename, resp.content, "image/png")}
                     attachments = [{"id": 0, "filename": filename}]
                 except Exception as e:
-                    logger.warning(f"Error fetching image: {e}")
+                    logger.warning("Error fetching image: %s", e)
 
         success = True
         first_message_id = None
-        
+
         try:
             for i, chunk in enumerate(chunks):
                 if i == 0 and files:
-                    payload_dict = {"content": chunk}
+                    payload_dict: dict[str, Any] = {"content": chunk}
                     if attachments:
                         payload_dict["attachments"] = attachments
                     files["payload_json"] = (None, json.dumps(payload_dict), "application/json")
                     resp = await self._client.post(self.api, files=files)
-                    
-                    # Remove payload_json from files so we don't accidentally send it again if chunks looped somehow
+
+                    # Remove payload_json so it isn't re-sent
                     files.pop("payload_json", None)
                 else:
-                    payload = {"content": chunk}
-                    resp = await self._client.post(self.api, json=payload)
-                    
+                    payload_body = {"content": chunk}
+                    resp = await self._client.post(self.api, json=payload_body)
+
                 resp.raise_for_status()
                 data = resp.json()
-                
+
                 if i == 0:
                     first_message_id = data.get("id")
-                    
+
             self.last_result = {"primary_message_id": first_message_id}
         except Exception as e:
-            logger.error(f"Failed to send Discord message: {e}")
+            logger.error("Failed to send Discord message: %s", e)
             success = False
-        finally:
-            await self._client.aclose()
-            
+
         return success
 
     def _chunk_text(self, text: str, limit: int = 1900) -> list[str]:
         """Split text neatly respecting newlines to fit within Discord's limits."""
         if not text:
             return []
-            
-        chunks = []
+
+        chunks: list[str] = []
         current_chunk = ""
-        
+
         for paragraph in text.split("\n"):
             if len(current_chunk) + len(paragraph) + 1 <= limit:
                 current_chunk += paragraph + "\n"
             else:
                 if current_chunk:
                     chunks.append(current_chunk.strip())
-                
+
                 if len(paragraph) > limit:
                     for i in range(0, len(paragraph), limit):
-                        chunks.append(paragraph[i:i+limit])
+                        chunks.append(paragraph[i:i + limit])
                     current_chunk = ""
                 else:
                     current_chunk = paragraph + "\n"
-                    
+
         if current_chunk:
             chunks.append(current_chunk.strip())
-            
+
         return chunks

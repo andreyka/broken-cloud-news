@@ -29,6 +29,12 @@ class ComfyUIClient:
         """Release the underlying HTTP connection pool."""
         await self._client.aclose()
 
+    async def __aenter__(self) -> "ComfyUIClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
     async def generate_image(
         self,
         prompt_text: str,

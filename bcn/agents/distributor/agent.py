@@ -1,4 +1,4 @@
-"""Distributor agent: publishes briefings to Telegram, Email, and Slack."""
+"""Distributor agent: publishes briefings to Telegram, Email, Slack, and Discord."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 import logging
+from typing import Any
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution import RequestContext
@@ -20,6 +21,7 @@ from bcn.common.db import get_latest_briefing
 from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
 from bcn.common.db import upsert_distribution_outcome
+from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
 from bcn.distributors.slack import SlackDistributor
 from bcn.distributors.telegram import TelegramDistributor
@@ -31,7 +33,7 @@ SKILLS = [
         id="distribute_briefing",
         name="Distribute Briefing",
         description=
-        "Distribute the latest briefing to Telegram, Email, and Slack",
+        "Distribute the latest briefing to Telegram, Email, Slack, and Discord",
         tags=["distribute", "publish"],
         examples=["distribute", "distribute_briefing", "publish"],
     ),
@@ -43,8 +45,7 @@ class DistributorExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.channels: list[tuple[str, TelegramDistributor | EmailDistributor |
-                                  SlackDistributor]] = []
+        self.channels: list[tuple[str, Any]] = []
 
         if settings.telegram_bot_token and settings.telegram_chat_id:
             self.channels.append((
@@ -73,6 +74,15 @@ class DistributorExecutor(AgentExecutor):
             self.channels.append((
                 "slack",
                 SlackDistributor(settings.slack_webhook_url),
+            ))
+
+        if settings.discord_bot_token and settings.discord_channel_id:
+            self.channels.append((
+                "discord",
+                DiscordDistributor(
+                    settings.discord_bot_token,
+                    settings.discord_channel_id,
+                ),
             ))
 
     @override
@@ -114,43 +124,20 @@ class DistributorExecutor(AgentExecutor):
             return
 
         results: dict[str, str] = {}
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for name, channel in self.channels:
             status = "failed"
             metadata: dict[str, object] = {}
             external_message_id: str | None = None
             try:
-                if isinstance(channel, TelegramDistributor):
-                    ok = await channel.send(
-                        markdown=briefing["content_markdown"],
-                        cover_image_url=briefing["cover_image_url"],
-                    )
-                    metadata = dict(channel.last_result) if isinstance(
-                        channel.last_result, dict) else {}
+                ok = await channel.send(briefing)
+
+                if hasattr(channel, "last_result") and isinstance(
+                        channel.last_result, dict):
+                    metadata = dict(channel.last_result)
                     msg_id = metadata.get("primary_message_id")
                     if msg_id is not None:
                         external_message_id = str(msg_id)
-                elif isinstance(channel, EmailDistributor):
-                    ok = await channel.send(
-                        subject=f"Broken Cloud News - {today}",
-                        html_body=(briefing["content_html"] or
-                                   briefing["content_markdown"]),
-                    )
-                    metadata = {"recipient_count": len(channel.recipients)}
-                elif isinstance(channel, SlackDistributor):
-                    ok = await channel.send(
-                        markdown=briefing["content_markdown"],
-                        cover_image_url=briefing["cover_image_url"],
-                    )
-                    metadata = {
-                        "cover_image":
-                            bool(briefing["cover_image_url"]),
-                        "markdown_chars":
-                            len(str(briefing["content_markdown"] or "")),
-                    }
-                else:
-                    ok = False
 
                 status = "ok" if ok else "failed"
                 results[name] = status

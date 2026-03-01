@@ -59,9 +59,12 @@ class AnalystExecutor(AgentExecutor):
             return
 
         analyzed = 0
-        for item in items:
-            await self._analyze_item_and_save(item)
-            analyzed += 1
+        try:
+            for item in items:
+                await self._analyze_item_and_save(item)
+                analyzed += 1
+        finally:
+            await self.scraper.close()
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
         logger.info(msg)

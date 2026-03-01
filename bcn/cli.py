@@ -568,8 +568,7 @@ def distribute() -> None:
             await close_pool()
             return
 
-        channels: list[tuple[str, TelegramDistributor | EmailDistributor |
-                             SlackDistributor]] = []
+        channels: list[tuple[str, Any]] = []
         if settings.telegram_bot_token and settings.telegram_chat_id:
             channels.append((
                 "telegram",
@@ -602,7 +601,6 @@ def distribute() -> None:
             return
 
         results: dict[str, str] = {}
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         for name, channel in channels:
             status = "failed"
