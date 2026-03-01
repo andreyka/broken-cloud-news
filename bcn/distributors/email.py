@@ -39,6 +39,10 @@ class EmailDistributor:
         self.smtp_password: str = smtp_password
         self.from_addr: str = from_addr
         self.recipients: list[str] = recipients
+        self.last_result: dict[str, Any] = {}
+
+    async def close(self) -> None:
+        """No persistent connections to release."""
 
     async def send(self, briefing: Any) -> bool:
         """Send an HTML email to all configured recipients.

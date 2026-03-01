@@ -71,8 +71,17 @@ class ComfyUIClient:
 
         Returns:
             The output filename of the generated image.
+
+        Raises:
+            TimeoutError: If the prompt does not complete within the timeout.
         """
+        import time
+        deadline = time.monotonic() + self.timeout
         while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"ComfyUI prompt {prompt_id} did not complete within {self.timeout}s"
+                )
             await asyncio.sleep(self.poll_interval)
             resp = await self._client.get(f"{self.base_url}/history/{prompt_id}"
                                          )

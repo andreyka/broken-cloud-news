@@ -110,28 +110,32 @@ class CollectorExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Dispatch to the appropriate collector based on the user message."""
-        msg = context.get_user_input() or "collect_all"
-        text = msg.lower()
+        try:
+            msg = context.get_user_input() or "collect_all"
+            text = msg.lower()
 
-        if "ghsa" in text:
-            count = await self._collect_ghsa()
-            result = f"GHSA: collected {count} items"
-        elif "rss" in text:
-            count = await self._collect_rss()
-            result = f"RSS: collected {count} items"
-        elif "twitter" in text:
-            count = await self._collect_twitter()
-            result = f"Twitter: collected {count} items"
-        elif "reddit" in text:
-            count = await self._collect_reddit()
-            result = f"Reddit: collected {count} items"
-        else:
-            counts = await self._collect_all()
-            result = (f"All: GHSA={counts[0]}, RSS={counts[1]}, "
-                      f"Twitter={counts[2]}, Reddit={counts[3]}")
+            if "ghsa" in text:
+                count = await self._collect_ghsa()
+                result = f"GHSA: collected {count} items"
+            elif "rss" in text:
+                count = await self._collect_rss()
+                result = f"RSS: collected {count} items"
+            elif "twitter" in text:
+                count = await self._collect_twitter()
+                result = f"Twitter: collected {count} items"
+            elif "reddit" in text:
+                count = await self._collect_reddit()
+                result = f"Reddit: collected {count} items"
+            else:
+                counts = await self._collect_all()
+                result = (f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                          f"Twitter={counts[2]}, Reddit={counts[3]}")
 
-        logger.info(result)
-        await enqueue_event_safe(event_queue, new_agent_text_message(result))
+            logger.info(result)
+            await enqueue_event_safe(event_queue, new_agent_text_message(result))
+        finally:
+            await self.scraper.close()
+            await self._http.aclose()
 
     @override
     async def cancel(

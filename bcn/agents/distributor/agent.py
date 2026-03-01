@@ -21,6 +21,7 @@ from bcn.common.db import get_latest_briefing
 from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
 from bcn.common.db import upsert_distribution_outcome
+from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
 from bcn.distributors.slack import SlackDistributor
@@ -45,7 +46,7 @@ class DistributorExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.channels: list[tuple[str, Any]] = []
+        self.channels: list[tuple[str, Distributor]] = []
 
         if settings.telegram_bot_token and settings.telegram_chat_id:
             self.channels.append((
@@ -125,40 +126,46 @@ class DistributorExecutor(AgentExecutor):
 
         results: dict[str, str] = {}
 
-        for name, channel in self.channels:
-            status = "failed"
-            metadata: dict[str, object] = {}
-            external_message_id: str | None = None
-            try:
-                ok = await channel.send(briefing)
+        try:
+            for name, channel in self.channels:
+                status = "failed"
+                metadata: dict[str, object] = {}
+                external_message_id: str | None = None
+                try:
+                    ok = await channel.send(briefing)
 
-                if hasattr(channel, "last_result") and isinstance(
-                        channel.last_result, dict):
-                    metadata = dict(channel.last_result)
-                    msg_id = metadata.get("primary_message_id")
-                    if msg_id is not None:
-                        external_message_id = str(msg_id)
+                    if isinstance(channel.last_result, dict):
+                        metadata = dict(channel.last_result)
+                        msg_id = metadata.get("primary_message_id")
+                        if msg_id is not None:
+                            external_message_id = str(msg_id)
 
-                status = "ok" if ok else "failed"
-                results[name] = status
-            except Exception:
-                logger.exception("Distribution to %s failed", name)
-                status = "error"
-                results[name] = status
-                metadata = {"error": "exception_during_send"}
+                    status = "ok" if ok else "failed"
+                    results[name] = status
+                except Exception:
+                    logger.exception("Distribution to %s failed", name)
+                    status = "error"
+                    results[name] = status
+                    metadata = {"error": "exception_during_send"}
 
-            try:
-                await upsert_distribution_outcome(
-                    briefing_id=briefing["id"],
-                    channel=name,
-                    status=status,
-                    external_message_id=external_message_id,
-                    metrics={},
-                    metadata=metadata,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to persist distribution outcome for %s", name)
+                try:
+                    await upsert_distribution_outcome(
+                        briefing_id=briefing["id"],
+                        channel=name,
+                        status=status,
+                        external_message_id=external_message_id,
+                        metrics={},
+                        metadata=metadata,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist distribution outcome for %s", name)
+        finally:
+            for _name, channel in self.channels:
+                try:
+                    await channel.close()
+                except Exception:
+                    logger.warning("Failed to close %s channel", _name)
 
         await mark_briefing_distributed(briefing["id"], results)
         item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []

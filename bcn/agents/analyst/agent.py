@@ -59,14 +59,21 @@ class AnalystExecutor(AgentExecutor):
             return
 
         analyzed = 0
+        failed = 0
         try:
             for item in items:
-                await self._analyze_item_and_save(item)
-                analyzed += 1
+                try:
+                    await self._analyze_item_and_save(item)
+                    analyzed += 1
+                except Exception:
+                    logger.exception("Failed to analyze item %s", item.get("id"))
+                    failed += 1
         finally:
             await self.scraper.close()
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
+        if failed:
+            msg += f" ({failed} failed)"
         logger.info(msg)
         await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
