@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any
 
+from bcn.agents.tools import allow_tool_urls
 from bcn.agents.analyst.prompt import ANALYZER_SYSTEM_PROMPT
 from bcn.agents.tools import fetch_page_content
 from bcn.common.llm import LLMClient
@@ -21,13 +22,16 @@ class AnalystLLM:
                            url: str) -> AnalysisResult:
         """Score and summarize a single news item."""
         user_msg = f"Title: {title}\nURL: {url}\n\nContent: {content}"
-        raw = await self.client.chat_for_role(
-            role="analyst",
-            system_prompt=ANALYZER_SYSTEM_PROMPT,
-            user_content=user_msg,
-            json_response=True,
-            tools=[fetch_page_content],
-        )
+        allowed_urls = [url] if (url or "").strip() else []
+        tools = [fetch_page_content] if allowed_urls else None
+        with allow_tool_urls(allowed_urls):
+            raw = await self.client.chat_for_role(
+                role="analyst",
+                system_prompt=ANALYZER_SYSTEM_PROMPT,
+                user_content=user_msg,
+                json_response=True,
+                tools=tools,
+            )
 
         try:
             parsed = self.client.parse_json_response(raw)

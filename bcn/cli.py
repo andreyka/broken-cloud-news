@@ -556,6 +556,7 @@ def distribute() -> None:
         from bcn.common.db import mark_briefing_distributed
         from bcn.common.db import mark_items_published
         from bcn.common.db import upsert_distribution_outcome
+        from bcn.common.url_policy import trusted_hosts_from_urls
         from bcn.distributors.email import EmailDistributor
         from bcn.distributors.slack import SlackDistributor
         from bcn.distributors.telegram import TelegramDistributor
@@ -568,6 +569,7 @@ def distribute() -> None:
             await close_pool()
             return
 
+        trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
         channels: list[tuple[str, Any]] = []
         if settings.telegram_bot_token and settings.telegram_chat_id:
             channels.append((
@@ -576,6 +578,7 @@ def distribute() -> None:
                     settings.telegram_bot_token,
                     settings.telegram_chat_id,
                     overflow_mode=settings.telegram_overflow_mode,
+                    trusted_image_hosts=trusted_image_hosts,
                 ),
             ))
         if settings.smtp_host and settings.email_recipients:
@@ -593,7 +596,12 @@ def distribute() -> None:
                 ("slack", SlackDistributor(settings.slack_webhook_url)))
         if settings.discord_bot_token and settings.discord_channel_id:
             channels.append(
-                ("discord", DiscordDistributor(settings.discord_bot_token, settings.discord_channel_id)))
+                ("discord",
+                 DiscordDistributor(
+                     settings.discord_bot_token,
+                     settings.discord_channel_id,
+                     trusted_image_hosts=trusted_image_hosts,
+                 )))
 
         if not channels:
             click.echo("No distribution channels configured")
