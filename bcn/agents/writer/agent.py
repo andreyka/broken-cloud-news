@@ -100,11 +100,14 @@ class WriterExecutor(AgentExecutor):
             return
 
         item_dicts = [dict(i) for i in items]
-        try:
-            await self._execute_core(item_dicts, event_queue)
-        finally:
-            await self.llm_client.close()
-            await self.comfyui.close()
+        await self._execute_core(item_dicts, event_queue)
+
+    async def close(self) -> None:
+        """Release writer resources."""
+        await self.writer_llm.close()
+        await self.verifier.close()
+        await self.comfyui.close()
+        await self.llm_client.close()
 
     async def _execute_core(
         self,

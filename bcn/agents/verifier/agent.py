@@ -39,6 +39,10 @@ class VerifierExecutor(AgentExecutor):
         self.settings = settings
         self.verifier = BriefingFactVerifier(settings)
 
+    async def close(self) -> None:
+        """Release verifier resources."""
+        await self.verifier.close()
+
     @override
     async def execute(
         self,

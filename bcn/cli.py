@@ -166,10 +166,16 @@ async def _run_agent_directly(
     params = MessageSendParams(message=message)
     context = RequestContext(request=params)
 
-    await executor.execute(context=context, event_queue=capture)
-
-    await close_pool()
-    return "\n".join(capture.messages) if capture.messages else "Done"
+    try:
+        await executor.execute(context=context, event_queue=capture)
+        return "\n".join(capture.messages) if capture.messages else "Done"
+    finally:
+        close_fn = getattr(executor, "close", None)
+        if callable(close_fn):
+            maybe = close_fn()
+            if hasattr(maybe, "__await__"):
+                await maybe
+        await close_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -203,25 +209,26 @@ def collect(source: str) -> None:
 
         await get_pool(settings)
         executor = CollectorExecutor(settings)
-
-        if source == "ghsa":
-            count = await executor._collect_ghsa()
-            click.echo(f"GHSA: collected {count} items")
-        elif source == "rss":
-            count = await executor._collect_rss()
-            click.echo(f"RSS: collected {count} items")
-        elif source == "twitter":
-            count = await executor._collect_twitter()
-            click.echo(f"Twitter: collected {count} items")
-        elif source == "reddit":
-            count = await executor._collect_reddit()
-            click.echo(f"Reddit: collected {count} items")
-        else:
-            counts = await executor._collect_all()
-            click.echo(f"All: GHSA={counts[0]}, RSS={counts[1]}, "
-                       f"Twitter={counts[2]}, Reddit={counts[3]}")
-
-        await close_pool()
+        try:
+            if source == "ghsa":
+                count = await executor._collect_ghsa()
+                click.echo(f"GHSA: collected {count} items")
+            elif source == "rss":
+                count = await executor._collect_rss()
+                click.echo(f"RSS: collected {count} items")
+            elif source == "twitter":
+                count = await executor._collect_twitter()
+                click.echo(f"Twitter: collected {count} items")
+            elif source == "reddit":
+                count = await executor._collect_reddit()
+                click.echo(f"Reddit: collected {count} items")
+            else:
+                counts = await executor._collect_all()
+                click.echo(f"All: GHSA={counts[0]}, RSS={counts[1]}, "
+                           f"Twitter={counts[2]}, Reddit={counts[3]}")
+        finally:
+            await executor.close()
+            await close_pool()
 
     asyncio.run(_run())
 
@@ -555,6 +562,7 @@ def distribute() -> None:
         from bcn.common.db import get_pool
         from bcn.common.db import mark_briefing_distributed
         from bcn.common.db import mark_items_published
+        from bcn.common.db import get_distribution_outcomes
         from bcn.common.db import upsert_distribution_outcome
         from bcn.common.url_policy import trusted_hosts_from_urls
         from bcn.distributors.email import EmailDistributor
@@ -608,49 +616,81 @@ def distribute() -> None:
             await close_pool()
             return
 
+        previous = await get_distribution_outcomes(briefing_ids=[briefing["id"]])
+        previously_ok_channels: set[str] = set()
+        for row in previous:
+            try:
+                channel = str(row["channel"]).strip().lower()
+                status = str(row["status"] or "").strip().lower()
+            except Exception:
+                continue
+            if channel and status == "ok":
+                previously_ok_channels.add(channel)
+
         results: dict[str, str] = {}
 
-        for name, channel in channels:
-            status = "failed"
-            metadata: dict[str, Any] = {}
-            external_message_id: str | None = None
-            try:
-                ok = await channel.send(briefing)
-                
-                if hasattr(channel, "last_result") and isinstance(channel.last_result, dict):
-                    metadata = dict(channel.last_result)
-                    msg_id = metadata.get("primary_message_id")
-                    if msg_id is not None:
-                        external_message_id = str(msg_id)
-                        
-                status = "ok" if ok else "failed"
-                results[name] = status
-                click.echo(f"  {name}: {status}")
-            except Exception as exc:
-                status = "error"
-                results[name] = f"error: {exc}"
-                metadata = {"error": str(exc)}
-                click.echo(f"  {name}: error - {exc}", err=True)
+        try:
+            for name, channel in channels:
+                if name in previously_ok_channels:
+                    results[name] = "ok"
+                    click.echo(f"  {name}: ok (already sent, skipped)")
+                    continue
 
-            try:
-                await upsert_distribution_outcome(
-                    briefing_id=briefing["id"],
-                    channel=name,
-                    status=status,
-                    external_message_id=external_message_id,
-                    metrics={},
-                    metadata=metadata,
-                )
-            except Exception as exc:
-                click.echo(
-                    f"  {name}: warning - failed to persist distribution outcome: {exc}",
-                    err=True,
-                )
+                status = "failed"
+                metadata: dict[str, Any] = {}
+                external_message_id: str | None = None
+                try:
+                    ok = await channel.send(briefing)
 
-        await mark_briefing_distributed(briefing["id"], results)
-        item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
-        await mark_items_published(item_ids)
-        click.echo("Distribution complete")
+                    if hasattr(channel, "last_result") and isinstance(
+                            channel.last_result, dict):
+                        metadata = dict(channel.last_result)
+                        msg_id = metadata.get("primary_message_id")
+                        if msg_id is not None:
+                            external_message_id = str(msg_id)
+
+                    status = "ok" if ok else "failed"
+                    results[name] = status
+                    click.echo(f"  {name}: {status}")
+                except Exception as exc:
+                    status = "error"
+                    results[name] = status
+                    metadata = {"error": str(exc)}
+                    click.echo(f"  {name}: error - {exc}", err=True)
+
+                try:
+                    await upsert_distribution_outcome(
+                        briefing_id=briefing["id"],
+                        channel=name,
+                        status=status,
+                        external_message_id=external_message_id,
+                        metrics={},
+                        metadata=metadata,
+                    )
+                except Exception as exc:
+                    click.echo(
+                        f"  {name}: warning - failed to persist distribution outcome: {exc}",
+                        err=True,
+                    )
+        finally:
+            for _name, channel in channels:
+                try:
+                    await channel.close()
+                except Exception as exc:
+                    click.echo(f"  {_name}: warning - failed to close channel: {exc}",
+                               err=True)
+
+        all_ok = bool(results) and all(status == "ok"
+                                       for status in results.values())
+        if all_ok:
+            await mark_briefing_distributed(briefing["id"], results)
+            item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
+            await mark_items_published(item_ids)
+            click.echo("Distribution complete")
+        else:
+            click.echo(
+                f"Distribution incomplete; briefing remains DRAFT for retry ({results})"
+            )
         await close_pool()
 
     asyncio.run(_run())
@@ -1274,6 +1314,7 @@ def run() -> None:
         from bcn.agents.verifier.agent import VerifierExecutor
         from bcn.agents.writer.agent import SKILLS as WRIT_SKILLS
         from bcn.agents.writer.agent import WriterExecutor
+        from bcn.common.db import close_pool
         from bcn.common.db import get_pool
 
         await get_pool(settings)
@@ -1325,25 +1366,17 @@ def run() -> None:
         distributor_exec = DistributorExecutor(settings)
         critic_exec = CriticExecutor(settings)
         verifier_exec = VerifierExecutor(settings)
+        executors = [
+            collector_exec,
+            analyst_exec,
+            writer_exec,
+            distributor_exec,
+            critic_exec,
+            verifier_exec,
+        ]
 
         # Launch agent servers
-        tasks = [
-            asyncio.create_task(
-                serve_agent(collector_card, collector_exec,
-                            settings.collector_port)),
-            asyncio.create_task(
-                serve_agent(analyst_card, analyst_exec, settings.analyst_port)),
-            asyncio.create_task(
-                serve_agent(writer_card, writer_exec, settings.writer_port)),
-            asyncio.create_task(
-                serve_agent(distributor_card, distributor_exec,
-                            settings.distributor_port)),
-            asyncio.create_task(
-                serve_agent(critic_card, critic_exec, settings.critic_port)),
-            asyncio.create_task(
-                serve_agent(verifier_card, verifier_exec,
-                            settings.verifier_port)),
-        ]
+        tasks: list[asyncio.Task[Any]] = []
 
         click.echo(f"  Collector on :{settings.collector_port}")
         click.echo(f"  Analyst  on :{settings.analyst_port}")
@@ -1352,48 +1385,81 @@ def run() -> None:
         click.echo(f"  Critic on :{settings.critic_port}")
         click.echo(f"  Verifier on :{settings.verifier_port}")
 
-        # Set up scheduler (job functions are module-level for APScheduler 4.x)
-        async with AsyncScheduler() as scheduler:
-            # Collection schedules
-            await scheduler.add_schedule(
-                _job_collect_ghsa,
-                IntervalTrigger(hours=settings.ghsa_interval_hours),
-                id="ghsa_collector",
-            )
-            await scheduler.add_schedule(
-                _job_collect_rss,
-                IntervalTrigger(hours=settings.rss_interval_hours),
-                id="rss_collector",
-            )
-            await scheduler.add_schedule(
-                _job_collect_reddit,
-                IntervalTrigger(hours=settings.reddit_interval_hours),
-                id="reddit_collector",
-            )
-            await scheduler.add_schedule(
-                _job_collect_twitter,
-                IntervalTrigger(hours=settings.twitter_interval_hours),
-                id="twitter_collector",
-            )
+        try:
+            tasks = [
+                asyncio.create_task(
+                    serve_agent(collector_card, collector_exec,
+                                settings.collector_port)),
+                asyncio.create_task(
+                    serve_agent(analyst_card, analyst_exec,
+                                settings.analyst_port)),
+                asyncio.create_task(
+                    serve_agent(writer_card, writer_exec, settings.writer_port)),
+                asyncio.create_task(
+                    serve_agent(distributor_card, distributor_exec,
+                                settings.distributor_port)),
+                asyncio.create_task(
+                    serve_agent(critic_card, critic_exec, settings.critic_port)),
+                asyncio.create_task(
+                    serve_agent(verifier_card, verifier_exec,
+                                settings.verifier_port)),
+            ]
 
-            # Analyst schedule
-            await scheduler.add_schedule(
-                _job_analyze,
-                IntervalTrigger(minutes=settings.analyst_interval_minutes),
-                id="analyst",
-            )
+            # Set up scheduler (job functions are module-level for APScheduler 4.x)
+            async with AsyncScheduler() as scheduler:
+                # Collection schedules
+                await scheduler.add_schedule(
+                    _job_collect_ghsa,
+                    IntervalTrigger(hours=settings.ghsa_interval_hours),
+                    id="ghsa_collector",
+                )
+                await scheduler.add_schedule(
+                    _job_collect_rss,
+                    IntervalTrigger(hours=settings.rss_interval_hours),
+                    id="rss_collector",
+                )
+                await scheduler.add_schedule(
+                    _job_collect_reddit,
+                    IntervalTrigger(hours=settings.reddit_interval_hours),
+                    id="reddit_collector",
+                )
+                await scheduler.add_schedule(
+                    _job_collect_twitter,
+                    IntervalTrigger(hours=settings.twitter_interval_hours),
+                    id="twitter_collector",
+                )
 
-            # Daily digest: write + distribute
-            await scheduler.add_schedule(
-                _job_daily_digest,
-                CronTrigger(hour=settings.distribute_hour,
-                            minute=settings.distribute_minute),
-                id="daily_digest",
-            )
+                # Analyst schedule
+                await scheduler.add_schedule(
+                    _job_analyze,
+                    IntervalTrigger(minutes=settings.analyst_interval_minutes),
+                    id="analyst",
+                )
 
-            await scheduler.start_in_background()
-            click.echo("Scheduler started. Press Ctrl+C to stop.")
-            await asyncio.gather(*tasks)
+                # Daily digest: write + distribute
+                await scheduler.add_schedule(
+                    _job_daily_digest,
+                    CronTrigger(hour=settings.distribute_hour,
+                                minute=settings.distribute_minute),
+                    id="daily_digest",
+                )
+
+                await scheduler.start_in_background()
+                click.echo("Scheduler started. Press Ctrl+C to stop.")
+                await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            for executor in executors:
+                close_fn = getattr(executor, "close", None)
+                if callable(close_fn):
+                    maybe = close_fn()
+                    if hasattr(maybe, "__await__"):
+                        await maybe
+            await close_pool()
 
     try:
         asyncio.run(_daemon())
