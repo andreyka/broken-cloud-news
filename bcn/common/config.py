@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfoNotFoundError
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
@@ -27,6 +29,7 @@ class Settings(BaseSettings):
         "email_recipients",
         "reddit_subreddits",
         "twitter_required_keywords",
+        "distribute_hours",
         mode="before",
     )
     @classmethod
@@ -42,6 +45,62 @@ class Settings(BaseSettings):
             except json.JSONDecodeError:
                 pass
         return v
+
+    @field_validator("distribute_hours", mode="before")
+    @classmethod
+    def _parse_distribute_hours(cls, v: Any) -> Any:
+        """Parse BCN_DISTRIBUTE_HOURS from CSV or JSON list forms."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            raw = v.strip()
+            if not raw:
+                return []
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+            if parsed is not None:
+                return [parsed]
+            return [token.strip() for token in raw.split(",") if token.strip()]
+        if isinstance(v, (int, float)):
+            return [int(v)]
+        return v
+
+    @field_validator("distribute_hours")
+    @classmethod
+    def _validate_distribute_hours(cls, v: list[Any]) -> list[int]:
+        """Ensure schedule hours are valid 0..23 values and deduplicated."""
+        normalized: list[int] = []
+        seen: set[int] = set()
+        for raw in v or []:
+            try:
+                hour = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Invalid distribute hour '{raw}'; expected integer 0..23"
+                ) from exc
+            if hour < 0 or hour > 23:
+                raise ValueError(
+                    f"Invalid distribute hour '{hour}'; expected integer 0..23"
+                )
+            if hour not in seen:
+                normalized.append(hour)
+                seen.add(hour)
+        return normalized
+
+    @field_validator("distribute_timezone")
+    @classmethod
+    def _validate_distribute_timezone(cls, v: str) -> str:
+        """Validate IANA timezone used by digest cron scheduling."""
+        value = (v or "").strip() or "UTC"
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Invalid distribute timezone '{value}'") from exc
+        return value
 
     @field_validator("telegram_overflow_mode")
     @classmethod
@@ -273,6 +332,8 @@ class Settings(BaseSettings):
     analyst_interval_minutes: int = 15
     distribute_hour: int = 9
     distribute_minute: int = 0
+    distribute_hours: list[int] = []
+    distribute_timezone: str = "UTC"
     a2a_request_timeout_seconds: int = 180
 
     # Scraping
