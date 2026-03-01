@@ -204,6 +204,7 @@ class WriterExecutor(AgentExecutor):
                     gate_soft_issues=[
                         str(i) for i in last_gate.get("soft_issues", [])
                     ],
+                    recent_briefings=history_items,
                 )
             else:
                 last_critique = {
@@ -215,6 +216,7 @@ class WriterExecutor(AgentExecutor):
                         "link_hygiene": 100,
                         "clarity": 100,
                         "style": 100,
+                        "novelty": 100,
                     },
                     "issues": [],
                     "recommendations": [],

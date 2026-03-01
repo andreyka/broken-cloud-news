@@ -38,6 +38,7 @@ _RUBRIC_DIMENSIONS = (
     "cloud_focus",
     "actionability",
     "writing_quality",
+    "novelty",
 )
 
 _CLOUD_TECH_TERMS = {
@@ -529,6 +530,7 @@ def score_feedback_rubric(
         "cloud_focus": cloud_focus_score,
         "actionability": actionability_score,
         "writing_quality": writing_score,
+        "novelty": 10,  # assessed by critic LLM, not heuristic
     }
     total_score = int(sum(breakdown.values()))
 
@@ -596,6 +598,7 @@ async def _simulate_briefing_body(
                 mode=mode,
                 gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
                 gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
+                recent_briefings=recent_briefings,
             )
             gate_passed = bool(gate.get("passed", False))
             critic_passed = bool(critique.get("passed", False))
@@ -792,17 +795,19 @@ async def simulate_historical_briefings(
             hard_max_chars=hard_max_chars,
         )
 
-        actual_critic_eval = await critic.critique_briefing(actual_body,
-                                                            items,
-                                                            mode=mode)
-        simulated_critic_eval = await critic.critique_briefing(simulated_body,
-                                                               items,
-                                                               mode=mode)
+        actual_critic_eval = await critic.critique_briefing(
+            actual_body, items, mode=mode, recent_briefings=history)
+        simulated_critic_eval = await critic.critique_briefing(
+            simulated_body, items, mode=mode, recent_briefings=history)
 
         actual_style_score = actual_critic_eval.get("dimension_scores",
                                                     {}).get("style", 0)
         simulated_style_score = simulated_critic_eval.get(
             "dimension_scores", {}).get("style", 0)
+        actual_novelty_score = actual_critic_eval.get("dimension_scores",
+                                                     {}).get("novelty", 0)
+        simulated_novelty_score = simulated_critic_eval.get(
+            "dimension_scores", {}).get("novelty", 0)
 
         for note in actual_eval["notes"]:
             recurring_notes[str(note)] += 1
@@ -827,12 +832,20 @@ async def simulate_historical_briefings(
                 int(actual_style_score),
             "simulated_llm_tone_score":
                 int(simulated_style_score),
+            "actual_llm_novelty_score":
+                int(actual_novelty_score),
+            "simulated_llm_novelty_score":
+                int(simulated_novelty_score),
             "delta":
                 delta,
             "actual_breakdown":
                 actual_eval["breakdown"],
             "simulated_breakdown":
                 simulated_eval["breakdown"],
+            "actual_critic_dimension_scores":
+                actual_critic_eval.get("dimension_scores", {}),
+            "simulated_critic_dimension_scores":
+                simulated_critic_eval.get("dimension_scores", {}),
             "actual_notes":
                 actual_eval["notes"],
             "simulated_notes":
@@ -863,6 +876,12 @@ async def simulate_historical_briefings(
     simulated_llm_tone_scores = [
         int(r["simulated_llm_tone_score"]) for r in results
     ]
+    actual_llm_novelty_scores = [
+        int(r["actual_llm_novelty_score"]) for r in results
+    ]
+    simulated_llm_novelty_scores = [
+        int(r["simulated_llm_novelty_score"]) for r in results
+    ]
 
     summary = {
         "avg_actual_score":
@@ -880,6 +899,17 @@ async def simulate_historical_briefings(
                 mean(simulated_llm_tone_scores) -
                 mean(actual_llm_tone_scores), 2)
             if simulated_llm_tone_scores and actual_llm_tone_scores else 0.0,
+        "avg_actual_llm_novelty_score":
+            round(mean(actual_llm_novelty_scores), 2)
+            if actual_llm_novelty_scores else 0.0,
+        "avg_simulated_llm_novelty_score":
+            round(mean(simulated_llm_novelty_scores), 2)
+            if simulated_llm_novelty_scores else 0.0,
+        "avg_llm_novelty_score_change":
+            round(
+                mean(simulated_llm_novelty_scores) -
+                mean(actual_llm_novelty_scores), 2)
+            if simulated_llm_novelty_scores and actual_llm_novelty_scores else 0.0,
         "avg_delta":
             round(mean(deltas), 2) if deltas else 0.0,
         "improved":

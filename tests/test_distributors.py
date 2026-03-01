@@ -78,7 +78,7 @@ class TestTelegramDistributor:
                                             }
                                         }))
 
-        ok = await dist.send("*Title*\n\nBody text here")
+        ok = await dist.send({"content_markdown": "*Title*\n\nBody text here"})
         assert ok is True
         assert dist.last_result["ok"] is True
         assert dist.last_result["primary_message_id"] == 42
@@ -107,8 +107,8 @@ class TestTelegramDistributor:
                                         }))
 
         ok = await dist.send(
-            "*Title*\n\nBody text here",
-            cover_image_url="http://comfy:8188/view?filename=cover.png",
+            {"content_markdown": "*Title*\n\nBody text here",
+             "cover_image_url": "http://comfy:8188/view?filename=cover.png"},
         )
         assert ok is True
         assert dist.last_result["ok"] is True
@@ -126,10 +126,18 @@ class TestTelegramDistributor:
                                                 "message_id": 201
                                             }
                                         }))
+        respx.post("https://api.telegram.org/bot123:FAKE/sendMessage").mock(
+            return_value=httpx.Response(200,
+                                        json={
+                                            "ok": True,
+                                            "result": {
+                                                "message_id": 202
+                                            }
+                                        }))
         data_url = "data:image/png;base64," + base64.b64encode(
             b"\x89PNG\r\n").decode("ascii")
-        ok = await dist.send("*Title*\n\nBody text here",
-                             cover_image_url=data_url)
+        ok = await dist.send({"content_markdown": "*Title*\n\nBody text here",
+                              "cover_image_url": data_url})
         assert ok is True
         assert dist.last_result["used_cover_image"] is True
 
@@ -169,7 +177,7 @@ class TestSlackDistributor:
         respx.post("https://hooks.slack.com/fake").mock(
             return_value=httpx.Response(200, text="ok"))
 
-        ok = await dist.send("Briefing content")
+        ok = await dist.send({"content_markdown": "Briefing content"})
         assert ok is True
 
     @respx.mock
@@ -179,5 +187,5 @@ class TestSlackDistributor:
         respx.post("https://hooks.slack.com/fake").mock(
             return_value=httpx.Response(500, text="error"))
 
-        ok = await dist.send("content")
+        ok = await dist.send({"content_markdown": "content"})
         assert ok is False

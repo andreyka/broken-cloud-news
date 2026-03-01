@@ -47,6 +47,7 @@ class WriterLLM:
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
         style_memory = self._build_style_memory(recent_briefings or [])
+        topic_memory = self._build_topic_memory(recent_briefings or [])
         mode_block = (
             "Mode: quiet_day.\n"
             "- Fewer stories are acceptable.\n"
@@ -58,6 +59,8 @@ class WriterLLM:
                     cards_text)
         if style_memory:
             user_msg += "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
+        if topic_memory:
+            user_msg += "\n\n" + topic_memory
 
         return await self.client.chat_for_role(
             role="writer",
@@ -223,6 +226,52 @@ class WriterLLM:
             )
 
         return "\n".join(snippets)
+
+    def _build_topic_memory(self, recent_briefings: list[dict]) -> str:
+        """Build a list of previously covered topics, URLs, and CVEs.
+
+        This gives the writer explicit visibility into what was already
+        published so it can avoid repeating the same content.
+        """
+        all_urls: list[str] = []
+        all_topics: list[str] = []
+        all_cves: list[str] = []
+
+        for briefing in recent_briefings[:10]:
+            body = briefing.get("content_markdown", "") or ""
+
+            # Extract markdown links
+            urls = re.findall(r"\[.*?\]\((https?://[^\)]+)\)", body)
+            all_urls.extend(urls)
+
+            # Extract bold topic headings (e.g. **Title Here**)
+            topics = re.findall(r"\*\*(.+?)\*\*", body)
+            all_topics.extend(topics)
+
+            # Extract CVE IDs
+            cves = re.findall(r"CVE-\d{4}-\d+", body, flags=re.IGNORECASE)
+            all_cves.extend(cves)
+
+        # Deduplicate
+        seen_urls = list(dict.fromkeys(all_urls))
+        seen_topics = list(dict.fromkeys(all_topics))
+        seen_cves = list(dict.fromkeys(all_cves))
+
+        if not seen_urls and not seen_topics and not seen_cves:
+            return ""
+
+        parts: list[str] = []
+        if seen_urls:
+            parts.append("Previously used URLs (DO NOT reuse):\n" +
+                         "\n".join(f"- {u}" for u in seen_urls))
+        if seen_topics:
+            parts.append("Previously covered topics (DO NOT repeat):\n" +
+                         "\n".join(f"- {t}" for t in seen_topics[:30]))
+        if seen_cves:
+            parts.append("Previously mentioned CVEs:\n" +
+                         "\n".join(f"- {c}" for c in seen_cves))
+
+        return "\n\n".join(parts)
 
     async def _build_story_cards_markdown(self, entries: list[str],
                                           items: list[dict]) -> list[str]:
