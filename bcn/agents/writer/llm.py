@@ -34,6 +34,10 @@ class WriterLLM:
         self.client = client
         self.scraper = Scraper()
 
+    async def close(self) -> None:
+        """Release writer helper resources."""
+        await self.scraper.close()
+
     async def generate_briefing(
         self,
         items: list[dict],

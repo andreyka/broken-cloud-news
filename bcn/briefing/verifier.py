@@ -34,12 +34,16 @@ class BriefingFactVerifier:
                  llm_client: LLMClient | None = None) -> None:
         self.settings = settings
         base_client = llm_client or LLMClient.from_settings(settings)
+        self._owned_llm_client = llm_client is None
+        self._llm_client = base_client
         self.verifier_llm = VerifierLLM(base_client)
         self.scraper = Scraper()
         self._url_liveness_cache: dict[str, bool] = {}
 
     async def close(self) -> None:
         await self.scraper.close()
+        if self._owned_llm_client:
+            await self._llm_client.close()
 
     async def evaluate(
         self,

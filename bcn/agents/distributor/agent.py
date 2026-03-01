@@ -20,6 +20,7 @@ from bcn.common.config import Settings
 from bcn.common.db import get_latest_briefing
 from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
+from bcn.common.db import get_distribution_outcomes
 from bcn.common.db import upsert_distribution_outcome
 from bcn.common.url_policy import trusted_hosts_from_urls
 from bcn.distributors import Distributor
@@ -47,48 +48,54 @@ class DistributorExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.channels: list[tuple[str, Distributor]] = []
-        trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
 
-        if settings.telegram_bot_token and settings.telegram_chat_id:
-            self.channels.append((
+    def _build_channels(self) -> list[tuple[str, Distributor]]:
+        trusted_image_hosts = trusted_hosts_from_urls([self.settings.comfyui_url])
+        channels: list[tuple[str, Distributor]] = []
+
+        if self.settings.telegram_bot_token and self.settings.telegram_chat_id:
+            channels.append((
                 "telegram",
                 TelegramDistributor(
-                    settings.telegram_bot_token,
-                    settings.telegram_chat_id,
-                    overflow_mode=settings.telegram_overflow_mode,
+                    self.settings.telegram_bot_token,
+                    self.settings.telegram_chat_id,
+                    overflow_mode=self.settings.telegram_overflow_mode,
                     trusted_image_hosts=trusted_image_hosts,
                 ),
             ))
 
-        if settings.smtp_host and settings.email_recipients:
-            self.channels.append((
+        if self.settings.smtp_host and self.settings.email_recipients:
+            channels.append((
                 "email",
                 EmailDistributor(
-                    smtp_host=settings.smtp_host,
-                    smtp_port=settings.smtp_port,
-                    smtp_user=settings.smtp_user,
-                    smtp_password=settings.smtp_password,
-                    from_addr=settings.email_from,
-                    recipients=settings.email_recipients,
+                    smtp_host=self.settings.smtp_host,
+                    smtp_port=self.settings.smtp_port,
+                    smtp_user=self.settings.smtp_user,
+                    smtp_password=self.settings.smtp_password,
+                    from_addr=self.settings.email_from,
+                    recipients=self.settings.email_recipients,
                 ),
             ))
 
-        if settings.slack_webhook_url:
-            self.channels.append((
+        if self.settings.slack_webhook_url:
+            channels.append((
                 "slack",
-                SlackDistributor(settings.slack_webhook_url),
+                SlackDistributor(self.settings.slack_webhook_url),
             ))
 
-        if settings.discord_bot_token and settings.discord_channel_id:
-            self.channels.append((
+        if self.settings.discord_bot_token and self.settings.discord_channel_id:
+            channels.append((
                 "discord",
                 DiscordDistributor(
-                    settings.discord_bot_token,
-                    settings.discord_channel_id,
+                    self.settings.discord_bot_token,
+                    self.settings.discord_channel_id,
                     trusted_image_hosts=trusted_image_hosts,
                 ),
             ))
+        return channels
+
+    async def close(self) -> None:
+        """No persistent resources are held between executions."""
 
     @override
     async def execute(
@@ -122,16 +129,37 @@ class DistributorExecutor(AgentExecutor):
                     )
                     return
 
-        if not self.channels:
+        channels = self._build_channels()
+        if not channels:
             await enqueue_event_safe(
                 event_queue,
                 new_agent_text_message("No distribution channels configured"))
             return
 
+        previous = await get_distribution_outcomes(briefing_ids=[briefing["id"]])
+        previously_ok_channels: set[str] = set()
+        for row in previous:
+            try:
+                channel = str(row["channel"]).strip().lower()
+                status = str(row["status"] or "").strip().lower()
+            except Exception:
+                continue
+            if channel and status == "ok":
+                previously_ok_channels.add(channel)
+
         results: dict[str, str] = {}
 
         try:
-            for name, channel in self.channels:
+            for name, channel in channels:
+                if name in previously_ok_channels:
+                    logger.info(
+                        "Skipping channel %s for briefing %s (already sent successfully)",
+                        name,
+                        briefing["id"],
+                    )
+                    results[name] = "ok"
+                    continue
+
                 status = "failed"
                 metadata: dict[str, object] = {}
                 external_message_id: str | None = None
@@ -165,17 +193,23 @@ class DistributorExecutor(AgentExecutor):
                     logger.exception(
                         "Failed to persist distribution outcome for %s", name)
         finally:
-            for _name, channel in self.channels:
+            for _name, channel in channels:
                 try:
                     await channel.close()
                 except Exception:
                     logger.warning("Failed to close %s channel", _name)
 
-        await mark_briefing_distributed(briefing["id"], results)
-        item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
-        await mark_items_published(item_ids)
+        all_ok = bool(results) and all(status == "ok"
+                                       for status in results.values())
+        if all_ok:
+            await mark_briefing_distributed(briefing["id"], results)
+            item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
+            await mark_items_published(item_ids)
+            msg = f"Distributed to: {results}"
+        else:
+            msg = ("Distribution incomplete; kept briefing as DRAFT for retry. "
+                   f"results={results}")
 
-        msg = f"Distributed to: {results}"
         logger.info(msg)
         await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 

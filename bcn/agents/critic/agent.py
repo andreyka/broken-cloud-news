@@ -42,6 +42,10 @@ class CriticExecutor(AgentExecutor):
         self.critic_llm = CriticLLM(self.llm_client)
         self.quality = BriefingQualityGate(settings)
 
+    async def close(self) -> None:
+        """Release critic resources."""
+        await self.llm_client.close()
+
     @override
     async def execute(
         self,

@@ -288,6 +288,30 @@ class TestCollectorExecutor:
         assert any("All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e)
                    for e in eq.events)
 
+    @pytest.mark.asyncio
+    async def test_execute_does_not_close_resources_per_request(self):
+        from bcn.agents.collector.agent import CollectorExecutor
+
+        settings = _make_settings()
+        executor = CollectorExecutor(settings)
+
+        with (
+                patch.object(executor,
+                             "_collect_all",
+                             new_callable=AsyncMock,
+                             return_value=(0, 0, 0, 0)),
+                patch.object(executor.scraper, "close",
+                             new_callable=AsyncMock) as mock_scraper_close,
+                patch.object(executor._http, "aclose",
+                             new_callable=AsyncMock) as mock_http_close,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("collect")
+            await executor.execute(ctx, eq)
+
+        mock_scraper_close.assert_not_called()
+        mock_http_close.assert_not_called()
+
 
 # ── Analyst tests ────────────────────────────────────────────────────────
 
@@ -375,6 +399,76 @@ class TestAnalystExecutor:
 
         assert any("No new items" in str(e) for e in eq.events)
 
+    @pytest.mark.asyncio
+    async def test_execute_reports_failed_items(self):
+        from bcn.agents.analyst.agent import AnalystExecutor
+
+        settings = _make_settings()
+        executor = AnalystExecutor(settings)
+        fake_items = [{
+            "id": "a",
+            "title": "one",
+            "full_content": "x",
+            "url": "https://example.com/1",
+            "source_type": "rss",
+            "source_id": "1",
+            "raw_data": {},
+        }, {
+            "id": "b",
+            "title": "two",
+            "full_content": "x",
+            "url": "https://example.com/2",
+            "source_type": "rss",
+            "source_id": "2",
+            "raw_data": {},
+        }]
+
+        with (
+                patch("bcn.agents.analyst.agent.get_new_items",
+                      new_callable=AsyncMock,
+                      return_value=fake_items),
+                patch.object(
+                    executor,
+                    "_analyze_item_and_save",
+                    new_callable=AsyncMock,
+                    side_effect=[None, RuntimeError("boom")],
+                ),
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("analyze_new_items")
+            await executor.execute(ctx, eq)
+
+        assert any("Analyzed 1/2 items (1 failed)" in str(e) for e in eq.events)
+
+    @pytest.mark.asyncio
+    async def test_analyze_item_and_save_raises_on_llm_failure(self):
+        from bcn.agents.analyst.agent import AnalystExecutor
+
+        settings = _make_settings()
+        executor = AnalystExecutor(settings)
+        item = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "title": "K8s escape",
+            "full_content": "A container escape vulnerability...",
+            "url": "https://example.com",
+            "source_type": "rss",
+            "source_id": "rss-1",
+            "raw_data": {},
+        }
+
+        with (
+                patch.object(executor.analyst_llm,
+                             "analyze_item",
+                             new_callable=AsyncMock,
+                             side_effect=RuntimeError("llm down")),
+                patch("bcn.agents.analyst.agent.update_item_analyzed",
+                      new_callable=AsyncMock) as mock_update,
+        ):
+            with pytest.raises(RuntimeError):
+                await executor._analyze_item_and_save(item)
+
+        mock_update.assert_not_called()
+
 
 # ── Writer tests ─────────────────────────────────────────────────────────
 
@@ -397,6 +491,36 @@ class TestWriterExecutor:
             await executor.execute(ctx, eq)
 
         assert any("no items" in str(e).lower() for e in eq.events)
+
+    @pytest.mark.asyncio
+    async def test_execute_does_not_close_resources_per_request(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        with (
+                patch("bcn.agents.writer.agent.get_analyzed_items",
+                      new_callable=AsyncMock,
+                      return_value=[{
+                          "id": "x"
+                      }]),
+                patch.object(executor,
+                             "_execute_core",
+                             new_callable=AsyncMock),
+                patch.object(executor.llm_client,
+                             "close",
+                             new_callable=AsyncMock) as mock_llm_close,
+                patch.object(executor.comfyui,
+                             "close",
+                             new_callable=AsyncMock) as mock_comfy_close,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("generate_briefing")
+            await executor.execute(ctx, eq)
+
+        mock_llm_close.assert_not_called()
+        mock_comfy_close.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_critique_loop_honors_max_rewrites(self):
@@ -1271,3 +1395,131 @@ class TestDistributorExecutor:
         assert any("Latest draft is stale" in str(e) for e in eq.events)
         mock_mark.assert_not_called()
         mock_publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_partial_channel_failure_keeps_briefing_draft(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        class _FakeChannel:
+
+            def __init__(self, ok: bool):
+                self.ok = ok
+                self.sent = 0
+                self.closed = 0
+                self.last_result = {"primary_message_id": "1"} if ok else {}
+
+            async def send(self, briefing):
+                self.sent += 1
+                return self.ok
+
+            async def close(self):
+                self.closed += 1
+
+        settings = _make_settings()
+        executor = DistributorExecutor(settings)
+        briefing = {
+            "id": uuid4(),
+            "created_at": datetime.now(timezone.utc),
+            "content_markdown": "**Draft**",
+            "content_html": "<p>Draft</p>",
+            "cover_image_url": "",
+            "item_ids": [uuid4()],
+        }
+        ok_channel = _FakeChannel(True)
+        fail_channel = _FakeChannel(False)
+
+        with (
+                patch("bcn.agents.distributor.agent.get_latest_briefing",
+                      new_callable=AsyncMock,
+                      return_value=briefing),
+                patch("bcn.agents.distributor.agent.get_distribution_outcomes",
+                      new_callable=AsyncMock,
+                      return_value=[]),
+                patch.object(executor,
+                             "_build_channels",
+                             return_value=[("telegram", ok_channel),
+                                           ("slack", fail_channel)]),
+                patch("bcn.agents.distributor.agent.upsert_distribution_outcome",
+                      new_callable=AsyncMock),
+                patch("bcn.agents.distributor.agent.mark_briefing_distributed",
+                      new_callable=AsyncMock) as mock_mark,
+                patch("bcn.agents.distributor.agent.mark_items_published",
+                      new_callable=AsyncMock) as mock_publish,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("distribute")
+            await executor.execute(ctx, eq)
+
+        assert any("incomplete" in str(e).lower() for e in eq.events)
+        assert ok_channel.sent == 1
+        assert fail_channel.sent == 1
+        assert ok_channel.closed == 1
+        assert fail_channel.closed == 1
+        mock_mark.assert_not_called()
+        mock_publish.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_previously_successful_channels_and_finishes_distribution(
+            self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        class _FakeChannel:
+
+            def __init__(self):
+                self.sent = 0
+                self.closed = 0
+                self.last_result = {"primary_message_id": "42"}
+
+            async def send(self, briefing):
+                self.sent += 1
+                return True
+
+            async def close(self):
+                self.closed += 1
+
+        settings = _make_settings()
+        executor = DistributorExecutor(settings)
+        briefing = {
+            "id": uuid4(),
+            "created_at": datetime.now(timezone.utc),
+            "content_markdown": "**Draft**",
+            "content_html": "<p>Draft</p>",
+            "cover_image_url": "",
+            "item_ids": [uuid4()],
+        }
+        telegram = _FakeChannel()
+        slack = _FakeChannel()
+
+        with (
+                patch("bcn.agents.distributor.agent.get_latest_briefing",
+                      new_callable=AsyncMock,
+                      return_value=briefing),
+                patch(
+                    "bcn.agents.distributor.agent.get_distribution_outcomes",
+                    new_callable=AsyncMock,
+                    return_value=[{
+                        "channel": "telegram",
+                        "status": "ok"
+                    }],
+                ),
+                patch.object(executor,
+                             "_build_channels",
+                             return_value=[("telegram", telegram),
+                                           ("slack", slack)]),
+                patch("bcn.agents.distributor.agent.upsert_distribution_outcome",
+                      new_callable=AsyncMock),
+                patch("bcn.agents.distributor.agent.mark_briefing_distributed",
+                      new_callable=AsyncMock) as mock_mark,
+                patch("bcn.agents.distributor.agent.mark_items_published",
+                      new_callable=AsyncMock) as mock_publish,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("distribute")
+            await executor.execute(ctx, eq)
+
+        assert telegram.sent == 0
+        assert slack.sent == 1
+        assert telegram.closed == 1
+        assert slack.closed == 1
+        mock_mark.assert_called_once()
+        mock_publish.assert_called_once()

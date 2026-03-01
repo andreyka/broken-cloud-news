@@ -60,16 +60,13 @@ class AnalystExecutor(AgentExecutor):
 
         analyzed = 0
         failed = 0
-        try:
-            for item in items:
-                try:
-                    await self._analyze_item_and_save(item)
-                    analyzed += 1
-                except Exception:
-                    logger.exception("Failed to analyze item %s", item.get("id"))
-                    failed += 1
-        finally:
-            await self.scraper.close()
+        for item in items:
+            try:
+                await self._analyze_item_and_save(item)
+                analyzed += 1
+            except Exception:
+                logger.exception("Failed to analyze item %s", item.get("id"))
+                failed += 1
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
         if failed:
@@ -112,28 +109,29 @@ class AnalystExecutor(AgentExecutor):
         if not content:
             content = title
 
-        try:
-            result = await self.analyst_llm.analyze_item(title,
-                                                         content,
-                                                         url=item["url"] or "")
-            await update_item_analyzed(
-                item_id=item["id"],
-                summary=result.summary,
-                relevance_score=result.relevance_score,
-                ai_tags=result.tags,
-                full_content=(content
-                              if content != title else item["full_content"]),
-                image_prompt=result.image_prompt,
-                canonical_url=result.canonical_url,
-            )
-            logger.info(
-                "Analyzed %s [%s] score=%d",
-                item["source_id"],
-                item["source_type"],
-                result.relevance_score,
-            )
-        except Exception:
-            logger.exception("Failed to analyze item %s", item["id"])
+        result = await self.analyst_llm.analyze_item(title,
+                                                     content,
+                                                     url=item["url"] or "")
+        await update_item_analyzed(
+            item_id=item["id"],
+            summary=result.summary,
+            relevance_score=result.relevance_score,
+            ai_tags=result.tags,
+            full_content=(content if content != title else item["full_content"]),
+            image_prompt=result.image_prompt,
+            canonical_url=result.canonical_url,
+        )
+        logger.info(
+            "Analyzed %s [%s] score=%d",
+            item["source_id"],
+            item["source_type"],
+            result.relevance_score,
+        )
+
+    async def close(self) -> None:
+        """Release analyst resources."""
+        await self.scraper.close()
+        await self.llm_client.close()
 
     @override
     async def cancel(
