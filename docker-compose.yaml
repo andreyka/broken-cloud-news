@@ -29,6 +29,17 @@ services:
       - app_internal
       - egress_public
 
+  dns_resolver:
+    image: coredns/coredns:1.11.1
+    restart: always
+    command: -conf /etc/coredns/Corefile
+    volumes:
+      - ./infra/coredns/Corefile:/etc/coredns/Corefile:ro
+    networks:
+      app_internal:
+        ipv4_address: 172.29.0.53
+      egress_public:
+
   bcn:
     build: .
     restart: always
@@ -40,6 +51,8 @@ services:
       - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
       - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui}
       - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui}
+    dns:
+      - 172.29.0.53
     ports:
       - "9001:9001"
       - "9002:9002"
@@ -52,6 +65,8 @@ services:
         condition: service_healthy
       egress_proxy:
         condition: service_started
+      dns_resolver:
+        condition: service_started
     networks:
       - app_internal
 
@@ -59,6 +74,9 @@ networks:
   app_internal:
     driver: bridge
     internal: true
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
   egress_public:
     driver: bridge
 
