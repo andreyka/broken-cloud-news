@@ -44,9 +44,10 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
 async def close_pool() -> None:
     """Close the shared connection pool if it is open."""
     global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    async with _pool_lock:
+        if _pool is not None:
+            await _pool.close()
+            _pool = None
 
 
 # ---------------------------------------------------------------------------

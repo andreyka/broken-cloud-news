@@ -23,6 +23,7 @@ class SlackDistributor:
     def __init__(self, webhook_url: str) -> None:
         self.webhook_url: str = webhook_url
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
+        self.last_result: dict[str, Any] = {}
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""

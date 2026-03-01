@@ -100,6 +100,18 @@ class WriterExecutor(AgentExecutor):
             return
 
         item_dicts = [dict(i) for i in items]
+        try:
+            await self._execute_core(item_dicts, event_queue)
+        finally:
+            await self.llm_client.close()
+            await self.comfyui.close()
+
+    async def _execute_core(
+        self,
+        item_dicts: list[dict],
+        event_queue: EventQueue,
+    ) -> None:
+        """Core briefing generation logic, separated for resource cleanup."""
         if bool(self.settings.briefing_skip_if_no_high_signal):
             high_signal = self.selector.high_signal_count(item_dicts)
             min_high_signal = max(
@@ -445,6 +457,8 @@ class WriterExecutor(AgentExecutor):
         msg = f"Briefing {briefing_id} created with {len(selected_items)} items"
         logger.info(msg)
         await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+
+    # -- delegate methods (unchanged signatures) --
 
     def _select_items_for_briefing(
         self,

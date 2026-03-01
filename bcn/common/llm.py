@@ -11,12 +11,10 @@ import logging
 import random
 import re
 from typing import Any, TYPE_CHECKING
-from urllib.parse import parse_qsl
-from urllib.parse import urlencode
-from urllib.parse import urlparse
 
 import httpx
 
+from bcn.briefing.text import canonical_url_key
 from bcn.common.models import AnalysisResult
 
 if TYPE_CHECKING:
@@ -24,20 +22,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TRACKING_PARAM_NAMES = frozenset({
-    "fbclid",
-    "gclid",
-    "igshid",
-    "mc_cid",
-    "mc_eid",
-    "mkt_tok",
-    "msclkid",
-    "rb_clickid",
-    "s_cid",
-    "vero_conv",
-    "vero_id",
-    "yclid",
-})
 
 LLM_ROLES = ("analyst", "writer", "critic", "verifier", "cover")
 
@@ -412,35 +396,7 @@ class LLMClient:
                     continue
         raise json.JSONDecodeError("unable to parse json", cleaned, 0)
 
-    @staticmethod
-    def _normalized_url_key(url: str) -> str:
-        if not url:
-            return ""
-        trimmed = str(url).strip().rstrip(").,;!?")
-        if not trimmed:
-            return ""
-        try:
-            parsed = urlparse(trimmed)
-        except Exception:
-            return trimmed
-        scheme = parsed.scheme.lower() or "https"
-        netloc = parsed.netloc.lower()
-        if netloc.startswith("www."):
-            netloc = netloc[4:]
-        path = parsed.path.rstrip("/")
-        query_params: list[tuple[str, str]] = []
-        for raw_key, raw_value in parse_qsl(parsed.query,
-                                            keep_blank_values=True):
-            key = raw_key.lower()
-            if key.startswith("utm_") or key.startswith(
-                    "mc_") or key in _TRACKING_PARAM_NAMES:
-                continue
-            query_params.append((key, raw_value))
-        query_params.sort()
-        query = urlencode(query_params, doseq=True)
-        if query:
-            return f"{scheme}://{netloc}{path}?{query}"
-        return f"{scheme}://{netloc}{path}"
+    _normalized_url_key = staticmethod(canonical_url_key)
 
     @staticmethod
     def _headers(endpoint: _EndpointConfig) -> dict[str, str]:
