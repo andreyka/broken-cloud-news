@@ -38,7 +38,8 @@ class AnalysisResult(BaseModel):
     image_prompt: str = "cloud security concept art"
     canonical_url: Optional[str] = Field(
         default=None,
-        description="The most authoritative primary source URL found, if any.")
+        description="The most authoritative primary source URL found, if any.",
+    )
 
 
 class Briefing(BaseModel):

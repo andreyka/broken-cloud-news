@@ -103,33 +103,25 @@ class CriticExecutor(AgentExecutor):
         threshold_passed = self._passes_thresholds(critique)
 
         response = {
-            "source":
-                source,
-            "gate_passed":
-                bool(gate.get("passed", False)),
-            "critic_passed":
-                bool(critique.get("passed", False)),
-            "critic_score":
-                int(critique.get("score", 0) or 0),
-            "critic_dimension_scores":
-                critique.get("dimension_scores", {}),
-            "threshold_passed":
-                threshold_passed,
+            "source": source,
+            "gate_passed": bool(gate.get("passed", False)),
+            "critic_passed": bool(critique.get("passed", False)),
+            "critic_score": int(critique.get("score", 0) or 0),
+            "critic_dimension_scores": critique.get("dimension_scores", {}),
+            "threshold_passed": threshold_passed,
             "thresholds": {
-                "min_score":
-                    int(self.settings.briefing_critic_min_score),
-                "min_actionability":
-                    int(self.settings.briefing_critic_min_actionability),
-                "min_source_diversity":
-                    int(self.settings.briefing_critic_min_source_diversity),
-                "min_link_hygiene":
-                    int(self.settings.briefing_critic_min_link_hygiene),
+                "min_score": int(self.settings.briefing_critic_min_score),
+                "min_actionability": int(
+                    self.settings.briefing_critic_min_actionability
+                ),
+                "min_source_diversity": int(
+                    self.settings.briefing_critic_min_source_diversity
+                ),
+                "min_link_hygiene": int(self.settings.briefing_critic_min_link_hygiene),
             },
             "gate_issues": [str(i) for i in gate.get("issues", [])],
             "critic_issues": [str(i) for i in critique.get("issues", [])],
-            "recommendations": [
-                str(i) for i in critique.get("recommendations", [])
-            ],
+            "recommendations": [str(i) for i in critique.get("recommendations", [])],
         }
         logger.info(
             "Critique done for %s: gate=%s critic=%s score=%s",
@@ -140,8 +132,7 @@ class CriticExecutor(AgentExecutor):
         )
         await enqueue_event_safe(
             event_queue,
-            new_agent_text_message(
-                json.dumps(response, ensure_ascii=False, indent=2)),
+            new_agent_text_message(json.dumps(response, ensure_ascii=False, indent=2)),
         )
 
     @override
@@ -163,10 +154,10 @@ class CriticExecutor(AgentExecutor):
         actionability = int(dims.get("actionability", 0) or 0)
         source_diversity = int(dims.get("source_diversity", 0) or 0)
         link_hygiene = int(dims.get("link_hygiene", 0) or 0)
-        return (score >= int(self.settings.briefing_critic_min_score) and
-                actionability >= int(
-                    self.settings.briefing_critic_min_actionability) and
-                source_diversity >= int(
-                    self.settings.briefing_critic_min_source_diversity) and
-                link_hygiene >= int(
-                    self.settings.briefing_critic_min_link_hygiene))
+        return (
+            score >= int(self.settings.briefing_critic_min_score)
+            and actionability >= int(self.settings.briefing_critic_min_actionability)
+            and source_diversity
+            >= int(self.settings.briefing_critic_min_source_diversity)
+            and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
+        )

@@ -16,7 +16,6 @@ from bcn.common.models import NewsItem
 
 
 class TestAnalysisResult:
-
     def test_valid(self):
         r = AnalysisResult(
             summary="A critical vuln",
@@ -46,7 +45,6 @@ class TestAnalysisResult:
 
 
 class TestNewsItem:
-
     def test_minimal(self):
         item = NewsItem(
             id=uuid4(),
@@ -76,7 +74,6 @@ class TestNewsItem:
 
 
 class TestBriefing:
-
     def test_defaults(self):
         b = Briefing(
             id=uuid4(),
@@ -89,7 +86,6 @@ class TestBriefing:
 
 
 class TestGenerationRoundArtifact:
-
     def test_defaults(self):
         row = GenerationRoundArtifact(round_index=0, draft_input="draft")
         assert row.phase == "initial"
@@ -98,7 +94,6 @@ class TestGenerationRoundArtifact:
 
 
 class TestGenerationRunTrace:
-
     def test_defaults(self):
         run = GenerationRunTrace(
             id=uuid4(),
@@ -110,7 +105,6 @@ class TestGenerationRunTrace:
 
 
 class TestHumanReview:
-
     def test_defaults(self):
         review = HumanReview(
             id=uuid4(),
@@ -123,7 +117,6 @@ class TestHumanReview:
 
 
 class TestDistributionOutcome:
-
     def test_defaults(self):
         outcome = DistributionOutcome(
             id=1,

@@ -19,13 +19,13 @@ def _mock_dns(monkeypatch):
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
-        lambda *args, **kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "",
-                                  ("93.184.216.34", 443))],
+        lambda *args, **kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+        ],
     )
 
 
 class TestScraper:
-
     @pytest.mark.asyncio
     async def test_returns_article_content(self, scraper):
         with patch("bcn.common.scraper.async_playwright") as mock_pw_start:
@@ -43,7 +43,8 @@ class TestScraper:
 
             mock_el = AsyncMock()
             mock_el.inner_text = AsyncMock(
-                return_value="This is the article body with enough content.")
+                return_value="This is the article body with enough content."
+            )
             mock_page.query_selector = AsyncMock(return_value=mock_el)
 
             result = await scraper.scrape("https://example.com/post")
@@ -69,13 +70,14 @@ class TestScraper:
 
             mock_el_long = AsyncMock()
             mock_el_long.inner_text = AsyncMock(
-                return_value="Fallback body content that is long enough.")
+                return_value="Fallback body content that is long enough."
+            )
 
             # The selectors are ["article", ".markdown-body", "main", "body"]
             # Return short for the first three, long for the last
-            mock_page.query_selector = AsyncMock(side_effect=[
-                mock_el_short, mock_el_short, mock_el_short, mock_el_long
-            ])
+            mock_page.query_selector = AsyncMock(
+                side_effect=[mock_el_short, mock_el_short, mock_el_short, mock_el_long]
+            )
 
             result = await scraper.scrape("https://example.com/post")
             assert "Fallback body" in result
@@ -131,8 +133,7 @@ class TestScraper:
             mock_context.new_page = AsyncMock(return_value=mock_page)
 
             # Make page.goto throw an exception
-            mock_page.goto = AsyncMock(
-                side_effect=Exception("Failed to load page"))
+            mock_page.goto = AsyncMock(side_effect=Exception("Failed to load page"))
 
             result = await scraper.scrape("https://example.com/post")
             assert result == ""

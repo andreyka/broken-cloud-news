@@ -85,7 +85,8 @@ class TelegramDistributor:
             if cover_image_url:
                 try:
                     filename, mime_type, img_bytes = await self._load_cover_image_bytes(
-                        cover_image_url)
+                        cover_image_url
+                    )
                     resp = await self._client.post(
                         f"{self.api}/sendPhoto",
                         data={
@@ -154,7 +155,8 @@ class TelegramDistributor:
             return False
 
     async def _load_cover_image_bytes(
-            self, cover_image_url: str) -> tuple[str, str, bytes]:
+        self, cover_image_url: str
+    ) -> tuple[str, str, bytes]:
         """Load image bytes from an HTTP URL or data URI."""
         if cover_image_url.startswith("data:image/"):
             return self._decode_data_image_uri(cover_image_url)
@@ -169,8 +171,10 @@ class TelegramDistributor:
 
         img_resp = await self._client.get(cover_image_url, timeout=30)
         img_resp.raise_for_status()
-        content_type = img_resp.headers.get(
-            "content-type", "image/png").split(";")[0].strip() or "image/png"
+        content_type = (
+            img_resp.headers.get("content-type", "image/png").split(";")[0].strip()
+            or "image/png"
+        )
         ext = content_type.rsplit("/", 1)[-1] if "/" in content_type else "png"
         filename = f"cover.{ext}"
         return filename, content_type, img_resp.content
@@ -181,8 +185,9 @@ class TelegramDistributor:
         header, sep, payload = value.partition(",")
         if not sep or ";base64" not in header:
             raise ValueError("Unsupported data URI format for cover image")
-        mime_type = header[5:header.index(";")] if header.startswith(
-            "data:") else "image/png"
+        mime_type = (
+            header[5 : header.index(";")] if header.startswith("data:") else "image/png"
+        )
         raw = base64.b64decode(payload)
         ext = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
         return f"cover.{ext}", mime_type, raw
@@ -202,8 +207,7 @@ class TelegramDistributor:
         """
         if len(text) <= TELEGRAM_MAX_CAPTION:
             return text
-        split_at = TelegramDistributor._find_split_at(text,
-                                                      TELEGRAM_MAX_CAPTION)
+        split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_CAPTION)
         return text[:split_at].rstrip("\n")
 
     @staticmethod
@@ -228,8 +232,7 @@ class TelegramDistributor:
                 chunks.append(text)
                 break
 
-            split_at = TelegramDistributor._find_split_at(
-                text, TELEGRAM_MAX_MESSAGE)
+            split_at = TelegramDistributor._find_split_at(text, TELEGRAM_MAX_MESSAGE)
             if split_at <= 0:
                 split_at = TELEGRAM_MAX_MESSAGE
 
@@ -308,8 +311,9 @@ class TelegramDistributor:
 
         if re.search(r"https?://", overflow):
             return True
-        if re.search(r"(cve-\d{4}-\d+|ghsa-|patch|fix|exploit|advisory)",
-                     overflow, re.I):
+        if re.search(
+            r"(cve-\d{4}-\d+|ghsa-|patch|fix|exploit|advisory)", overflow, re.I
+        ):
             return True
 
         # Drop short trailing remarks to avoid needless second messages.

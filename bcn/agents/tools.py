@@ -21,7 +21,8 @@ _allowed_tool_url_keys: ContextVar[frozenset[str]] = ContextVar(
 def allow_tool_urls(urls: Iterable[str] | None):
     """Temporarily allow tool fetches only for the provided URL set."""
     keys = frozenset(
-        key for key in (canonical_url_key(str(u)) for u in (urls or [])) if key)
+        key for key in (canonical_url_key(str(u)) for u in (urls or [])) if key
+    )
     token = _allowed_tool_url_keys.set(keys)
     try:
         yield
@@ -31,8 +32,8 @@ def allow_tool_urls(urls: Iterable[str] | None):
 
 async def fetch_page_content(url: str) -> str:
     """Fetch the actual page content of a provided URL.
-    
-    Use this tool when you need more context about an item (like exploit details, 
+
+    Use this tool when you need more context about an item (like exploit details,
     affected versions, or patch links) than what is provided in the initial context.
     """
     logger.info("Agent LLM called tool: fetch_page_content(%s)", url)
@@ -45,8 +46,7 @@ async def fetch_page_content(url: str) -> str:
     key = canonical_url_key(url)
     allowed = _allowed_tool_url_keys.get()
     if not key or key not in allowed:
-        logger.warning("Tool fetch_page_content blocked non-allowlisted URL: %s",
-                       url)
+        logger.warning("Tool fetch_page_content blocked non-allowlisted URL: %s", url)
         return "Blocked URL by security policy."
 
     scraper = Scraper()

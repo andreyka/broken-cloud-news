@@ -18,8 +18,9 @@ _CTF_EVENT_PATTERN = re.compile(
     r"\b(ctf|capture[-\s]the[-\s]flag|challenge|webinar|conference|meetup|call for papers)\b",
     re.IGNORECASE,
 )
-_GHSA_ID_PATTERN = re.compile(r"\bGHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}\b",
-                              re.IGNORECASE)
+_GHSA_ID_PATTERN = re.compile(
+    r"\bGHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}\b", re.IGNORECASE
+)
 _GITHUB_ADVISORY_URL_PATTERN = re.compile(
     r"https?://github\.com/advisories/(GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})",
     re.IGNORECASE,
@@ -29,9 +30,7 @@ _GITHUB_ADVISORY_URL_PATTERN = re.compile(
 class BriefingFactVerifier:
     """Runs factual checks (deterministic + LLM) before publishing."""
 
-    def __init__(self,
-                 settings: Settings,
-                 llm_client: LLMClient | None = None) -> None:
+    def __init__(self, settings: Settings, llm_client: LLMClient | None = None) -> None:
         self.settings = settings
         base_client = llm_client or LLMClient.from_settings(settings)
         self._owned_llm_client = llm_client is None
@@ -62,24 +61,24 @@ class BriefingFactVerifier:
         dead_urls = await self._find_dead_urls(all_urls)
         if dead_urls:
             deterministic_hard_issues.append(
-                "Dead or unreachable links detected: " +
-                ", ".join(dead_urls[:3]))
-            recommendations.append(
-                "Replace or remove dead links before publishing.")
+                "Dead or unreachable links detected: " + ", ".join(dead_urls[:3])
+            )
+            recommendations.append("Replace or remove dead links before publishing.")
 
         top_story_is_ctf_or_event = self._top_story_is_ctf_or_event(body, items)
         if top_story_is_ctf_or_event:
             deterministic_hard_issues.append(
-                "Top story appears to be CTF/event-style announcement.")
+                "Top story appears to be CTF/event-style announcement."
+            )
             recommendations.append(
                 "Promote a production-impact cloud-security story above event/CTF items."
             )
-        unselected_mentions = self._find_unselected_advisory_mentions(
-            body, items)
+        unselected_mentions = self._find_unselected_advisory_mentions(body, items)
         if unselected_mentions:
             deterministic_hard_issues.append(
                 "Briefing mentions advisory identifiers not present in selected items: "
-                + ", ".join(unselected_mentions[:4]))
+                + ", ".join(unselected_mentions[:4])
+            )
             recommendations.append(
                 "Remove references to advisories not present in selected items."
             )
@@ -95,26 +94,24 @@ class BriefingFactVerifier:
         hard_issues = list(deterministic_hard_issues)
         hard_issues.extend(llm_hard_issues)
         soft_issues.extend([str(i) for i in llm_report.get("soft_issues", [])])
-        recommendations.extend(
-            [str(i) for i in llm_report.get("recommendations", [])])
+        recommendations.extend([str(i) for i in llm_report.get("recommendations", [])])
 
         # Deduplicate while preserving order.
         deterministic_hard_issues = list(
-            dict.fromkeys([i for i in deterministic_hard_issues if i]))[:16]
-        llm_hard_issues = list(dict.fromkeys([i for i in llm_hard_issues if i
-                                             ]))[:16]
+            dict.fromkeys([i for i in deterministic_hard_issues if i])
+        )[:16]
+        llm_hard_issues = list(dict.fromkeys([i for i in llm_hard_issues if i]))[:16]
         hard_issues = list(dict.fromkeys([i for i in hard_issues if i]))[:16]
         soft_issues = list(dict.fromkeys([i for i in soft_issues if i]))[:16]
-        recommendations = list(dict.fromkeys([i for i in recommendations if i
-                                             ]))[:16]
+        recommendations = list(dict.fromkeys([i for i in recommendations if i]))[:16]
 
         llm_passed = bool(llm_report.get("passed", False))
         llm_score = int(llm_report.get("score", 0) or 0)
         hard_penalty = min(35, len(hard_issues) * 12)
         score = max(0, llm_score - hard_penalty)
         llm_hard_blocking = bool(
-            self.settings.briefing_verifier_block_on_llm_hard) and bool(
-                llm_hard_issues)
+            self.settings.briefing_verifier_block_on_llm_hard
+        ) and bool(llm_hard_issues)
         passed = not deterministic_hard_issues and not llm_hard_blocking
 
         return {
@@ -158,8 +155,7 @@ class BriefingFactVerifier:
             url = normalize_url(match.group(0))
             ghsa = str(match.group(1) or "").upper()
             key = f"url:{url.lower()}"
-            if url in selected_urls or ghsa.lower(
-            ) in selected_ghsas or key in seen:
+            if url in selected_urls or ghsa.lower() in selected_ghsas or key in seen:
                 continue
             seen.add(key)
             mentions.append(url)
@@ -170,11 +166,13 @@ class BriefingFactVerifier:
     def _collect_selected_ghsa_ids(items: list[dict[str, Any]]) -> set[str]:
         selected: set[str] = set()
         for item in items:
-            text = " ".join([
-                str(item.get("title") or ""),
-                str(item.get("summary") or ""),
-                str(item.get("url") or ""),
-            ])
+            text = " ".join(
+                [
+                    str(item.get("title") or ""),
+                    str(item.get("summary") or ""),
+                    str(item.get("url") or ""),
+                ]
+            )
             for match in _GHSA_ID_PATTERN.finditer(text):
                 selected.add(match.group(0).lower())
         return selected
@@ -200,15 +198,15 @@ class BriefingFactVerifier:
         alive_status = {200, 401, 403, 405, 429}
         alive = False
         try:
-            status, _ = await self.scraper.fetch_text(url,
-                                                      method="HEAD",
-                                                      timeout_ms=10000)
+            status, _ = await self.scraper.fetch_text(
+                url, method="HEAD", timeout_ms=10000
+            )
             alive = status in alive_status
             if not alive and status >= 500:
                 # Some sources reject HEAD; retry with GET.
-                status, _ = await self.scraper.fetch_text(url,
-                                                          method="GET",
-                                                          timeout_ms=10000)
+                status, _ = await self.scraper.fetch_text(
+                    url, method="GET", timeout_ms=10000
+                )
                 alive = status in alive_status
         except Exception:
             alive = False
@@ -222,8 +220,7 @@ class BriefingFactVerifier:
         return list(dict.fromkeys(raw))
 
     @staticmethod
-    def _top_story_is_ctf_or_event(markdown: str,
-                                   items: list[dict[str, Any]]) -> bool:
+    def _top_story_is_ctf_or_event(markdown: str, items: list[dict[str, Any]]) -> bool:
         body = (markdown or "").strip()
         link_match = re.search(r"\[([^\]]+)]\((https?://[^)]+)\)", body)
         if not link_match:
@@ -233,8 +230,8 @@ class BriefingFactVerifier:
         top_url = normalize_url(link_match.group(2))
         top_title = top_label
         by_url = {
-            normalize_url(str(item.get("url", ""))):
-                str(item.get("title") or "") for item in items
+            normalize_url(str(item.get("url", ""))): str(item.get("title") or "")
+            for item in items
         }
         if top_url in by_url and by_url[top_url]:
             top_title = by_url[top_url]
