@@ -22,6 +22,7 @@ class ComfyUIClient:
         poll_interval: int = 2,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
         self.poll_interval = poll_interval
         self._client = httpx.AsyncClient(timeout=timeout)
 
