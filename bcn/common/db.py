@@ -197,6 +197,37 @@ async def get_analyzed_items(
     )
 
 
+async def get_top_items_for_period(
+    *,
+    days: int = 31,
+    min_score: int = 7,
+    limit: int = 40,
+) -> list[asyncpg.Record]:
+    """Fetch high-signal items for broader period newsletters.
+
+    Unlike ``get_analyzed_items``, this query includes both ``ANALYZED`` and
+    ``PUBLISHED`` rows so monthly newsletters can summarize the most relevant
+    items of the full period.
+    """
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT *
+        FROM news_items
+        WHERE status = ANY($1::text[])
+          AND relevance_score >= $2
+          AND summary IS NOT NULL
+          AND published_at > NOW() - make_interval(days => $3)
+        ORDER BY relevance_score DESC, published_at DESC
+        LIMIT $4
+        """,
+        ["ANALYZED", "PUBLISHED"],
+        min_score,
+        days,
+        limit,
+    )
+
+
 async def mark_items_published(ids: list[UUID]) -> None:
     """Transition a batch of items to ``PUBLISHED`` status.
 
@@ -375,6 +406,27 @@ async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
     )
 
 
+async def claim_draft_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
+    """Atomically claim a specific draft briefing for distribution."""
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        UPDATE briefings
+        SET status = 'DISTRIBUTING', updated_at = NOW()
+        WHERE id = $1
+          AND (
+            status = 'DRAFT'
+            OR (
+                status = 'DISTRIBUTING'
+                AND updated_at < NOW() - INTERVAL '30 minutes'
+            )
+          )
+        RETURNING *
+        """,
+        briefing_id,
+    )
+
+
 async def release_briefing_for_retry(briefing_id: UUID) -> None:
     """Return a claimed briefing back to ``DRAFT`` for retry."""
     pool = await get_pool()
@@ -418,6 +470,93 @@ async def mark_briefing_distributed(
         """,
         json.dumps(channels),
         briefing_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Newsletter Subscribers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_subscriber_email(value: str) -> str:
+    """Normalize subscriber email for stable storage/lookup."""
+    return str(value or "").strip().lower()
+
+
+async def ensure_newsletter_tables() -> None:
+    """Create newsletter subscriber tables if they do not already exist."""
+    pool = await get_pool()
+    await pool.execute("""
+        CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+            id BIGSERIAL PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+        """)
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_newsletter_subscribers_active_email "
+        "ON newsletter_subscribers (is_active, email)"
+    )
+
+
+async def add_newsletter_subscriber(email: str) -> bool:
+    """Add or reactivate one newsletter subscriber email."""
+    normalized = _normalize_subscriber_email(email)
+    if not normalized or "@" not in normalized:
+        raise ValueError("Invalid email address")
+    await ensure_newsletter_tables()
+    pool = await get_pool()
+    status = await pool.execute(
+        """
+        INSERT INTO newsletter_subscribers (email, is_active, updated_at)
+        VALUES ($1, TRUE, NOW())
+        ON CONFLICT (email) DO UPDATE
+        SET is_active = TRUE, updated_at = NOW()
+        """,
+        normalized,
+    )
+    return status.startswith("INSERT")
+
+
+async def remove_newsletter_subscriber(email: str) -> bool:
+    """Soft-delete one newsletter subscriber by deactivating it."""
+    normalized = _normalize_subscriber_email(email)
+    if not normalized:
+        return False
+    await ensure_newsletter_tables()
+    pool = await get_pool()
+    status = await pool.execute(
+        """
+        UPDATE newsletter_subscribers
+        SET is_active = FALSE, updated_at = NOW()
+        WHERE email = $1 AND is_active = TRUE
+        """,
+        normalized,
+    )
+    return status == "UPDATE 1"
+
+
+async def get_newsletter_subscribers(*, active_only: bool = True) -> list[asyncpg.Record]:
+    """Return newsletter subscribers ordered by email."""
+    await ensure_newsletter_tables()
+    pool = await get_pool()
+    if active_only:
+        return await pool.fetch(
+            """
+            SELECT id, email, is_active, created_at, updated_at
+            FROM newsletter_subscribers
+            WHERE is_active = TRUE
+            ORDER BY email ASC
+            """
+        )
+    return await pool.fetch(
+        """
+        SELECT id, email, is_active, created_at, updated_at
+        FROM newsletter_subscribers
+        ORDER BY email ASC
+        """
     )
 
 
@@ -1020,6 +1159,35 @@ async def finalize_generation_run(
         briefing_id,
         run_id,
     )
+
+
+async def finalize_stale_pending_generation_runs(
+    *,
+    max_age_minutes: int = 180,
+    decision: str = "BLOCKED",
+    decision_reason: str = "auto_finalized_stale_pending_run",
+) -> int:
+    """Finalize stale ``PENDING`` generation runs to avoid dangling traces."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    threshold = max(1, int(max_age_minutes))
+    rows = await pool.fetch(
+        """
+        UPDATE generation_runs
+        SET
+            updated_at = NOW(),
+            decision = $1,
+            decision_reason = COALESCE(NULLIF(decision_reason, ''), $2),
+            final_draft = COALESCE(NULLIF(final_draft, ''), initial_draft)
+        WHERE decision = 'PENDING'
+          AND created_at < NOW() - make_interval(mins => $3)
+        RETURNING id
+        """,
+        (decision or "BLOCKED").strip().upper(),
+        decision_reason,
+        threshold,
+    )
+    return len(rows)
 
 
 async def get_latest_generation_run_for_briefing(

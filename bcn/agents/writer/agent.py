@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import re
 import subprocess
 import time
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from a2a.server.agent_execution import AgentExecutor
@@ -27,15 +29,25 @@ from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.db import append_generation_round
 from bcn.common.db import create_generation_run
+from bcn.common.db import finalize_stale_pending_generation_runs
 from bcn.common.db import finalize_generation_run
 from bcn.common.db import get_analyzed_items
 from bcn.common.db import get_recent_briefings
 from bcn.common.db import get_recent_published_items
+from bcn.common.db import get_top_items_for_period
 from bcn.common.db import insert_briefing
 from bcn.common.db import insert_generation_preference_pair
 from bcn.common.llm import LLMClient
 
 logger = logging.getLogger(__name__)
+REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
+AD_HOC_MODE = "ad_hoc"
+REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
+_SUPPORTED_WORKFLOW_MODES = {
+    REGULAR_DAILY_BRIEFING_MODE,
+    AD_HOC_MODE,
+    REGULAR_MONTHLY_NEWSLETTER_MODE,
+}
 _CRITIC_BLOCKING_TERMS = (
     "factual overreach",
     "contradiction",
@@ -52,9 +64,18 @@ SKILLS = [
     AgentSkill(
         id="generate_briefing",
         name="Generate Briefing",
-        description="Generate a security briefing with cover image from top-scored items",
+        description=(
+            "Generate a security briefing with cover image. "
+            "Supports mode suffixes: regular_daily_briefing, ad_hoc, regular_monthly_newsletter."
+        ),
         tags=["briefing", "writer"],
-        examples=["write", "generate_briefing", "generate briefing"],
+        examples=[
+            "write",
+            "generate_briefing",
+            "generate_briefing::regular_daily_briefing",
+            "generate_briefing::ad_hoc",
+            "generate_briefing::regular_monthly_newsletter",
+        ],
     ),
 ]
 
@@ -83,23 +104,62 @@ class WriterExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Generate a briefing from top-scored items and store it as DRAFT."""
-        items = await get_analyzed_items(
-            min_score=self.settings.relevance_threshold,
-            hours=self.settings.briefing_lookback_hours,
+        workflow_mode = self._resolve_workflow_mode(context.get_user_input() or "")
+        stale_minutes = int(
+            getattr(self.settings, "generation_run_stale_pending_minutes", 180)
         )
+        if stale_minutes > 0:
+            try:
+                finalized = await finalize_stale_pending_generation_runs(
+                    max_age_minutes=max(1, stale_minutes),
+                    decision="BLOCKED",
+                    decision_reason="writer_auto_finalize_stale_pending_run",
+                )
+                if finalized:
+                    logger.warning(
+                        "Auto-finalized %d stale PENDING generation runs before writer execution",
+                        finalized,
+                    )
+            except Exception:
+                logger.exception("Failed to auto-finalize stale PENDING generation runs")
+
+        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+            items = await get_top_items_for_period(
+                days=max(1, int(self.settings.monthly_newsletter_lookback_days)),
+                min_score=max(1, int(self.settings.monthly_newsletter_min_score)),
+                limit=max(
+                    int(self.settings.monthly_newsletter_max_items) * 4,
+                    int(self.settings.monthly_newsletter_min_items),
+                ),
+            )
+        else:
+            items = await get_analyzed_items(
+                min_score=self.settings.relevance_threshold,
+                hours=self.settings.briefing_lookback_hours,
+            )
 
         if not items:
-            msg = (
-                f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
-                f"in the last {self.settings.briefing_lookback_hours}h. "
-                f"Skipping briefing."
-            )
+            if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+                msg = (
+                    "Monthly newsletter skipped: no high-signal items found "
+                    f"in last {self.settings.monthly_newsletter_lookback_days} days."
+                )
+            else:
+                msg = (
+                    f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
+                    f"in the last {self.settings.briefing_lookback_hours}h. "
+                    "Skipping briefing."
+                )
             logger.info(msg)
             await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
 
         item_dicts = [dict(i) for i in items]
-        await self._execute_core(item_dicts, event_queue)
+        await self._execute_core(
+            item_dicts=item_dicts,
+            event_queue=event_queue,
+            workflow_mode=workflow_mode,
+        )
 
     async def close(self) -> None:
         """Release writer resources."""
@@ -112,36 +172,49 @@ class WriterExecutor(AgentExecutor):
         self,
         item_dicts: list[dict],
         event_queue: EventQueue,
+        workflow_mode: str,
     ) -> None:
         """Core briefing generation logic, separated for resource cleanup."""
-        if bool(self.settings.briefing_skip_if_no_high_signal):
-            high_signal = self.selector.high_signal_count(item_dicts)
-            min_high_signal = max(
-                1, int(self.settings.briefing_min_high_signal_to_publish)
-            )
-            if high_signal < min_high_signal:
-                msg = (
-                    "Quiet day — not enough high-signal items "
-                    f"({high_signal} < {min_high_signal}). Skipping briefing."
+        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+            mode = "monthly_newsletter"
+            selected_items = self._select_items_for_monthly_newsletter(item_dicts)
+        else:
+            if bool(self.settings.briefing_skip_if_no_high_signal):
+                high_signal = self.selector.high_signal_count(item_dicts)
+                min_high_signal = max(
+                    1, int(self.settings.briefing_min_high_signal_to_publish)
                 )
-                logger.info(msg)
-                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
-                return
+                if high_signal < min_high_signal:
+                    msg = (
+                        "Quiet day — not enough high-signal items "
+                        f"({high_signal} < {min_high_signal}). Skipping briefing."
+                    )
+                    logger.info(msg)
+                    await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                    return
 
-        recent_published = await get_recent_published_items(
-            hours=self.settings.briefing_novelty_lookback_hours,
-            limit=self.settings.briefing_novelty_max_items,
-        )
-        quiet_mode = self._is_quiet_day(item_dicts)
-        mode = "quiet_day" if quiet_mode else "standard"
-
-        selected_items = self._select_items_for_briefing(
-            item_dicts,
-            recent_published=[dict(r) for r in recent_published],
-            quiet_mode=quiet_mode,
-        )
+            recent_published = await get_recent_published_items(
+                hours=self.settings.briefing_novelty_lookback_hours,
+                limit=self.settings.briefing_novelty_max_items,
+            )
+            quiet_mode = self._is_quiet_day(item_dicts)
+            mode = "quiet_day" if quiet_mode else "standard"
+            selected_items = self._select_items_for_briefing(
+                item_dicts,
+                recent_published=[dict(r) for r in recent_published],
+                quiet_mode=quiet_mode,
+            )
         if not selected_items:
-            msg = "No items remained after quality/diversity filtering. Skipping briefing."
+            if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+                msg = (
+                    "Monthly newsletter skipped: not enough diverse high-signal items "
+                    "after selection constraints."
+                )
+            else:
+                msg = (
+                    "No items remained after quality/diversity filtering. "
+                    "Skipping briefing."
+                )
             logger.info(msg)
             await enqueue_event_safe(event_queue, new_agent_text_message(msg))
             return
@@ -189,86 +262,175 @@ class WriterExecutor(AgentExecutor):
             "issues": [],
             "recommendations": [],
         }
-        while True:
-            min_chars, target_chars, hard_max_chars = self._char_limits(
-                mode,
-                selected_count=len(selected_items),
-            )
-            briefing_body = self._enforce_release_link_hygiene(
-                briefing_body,
-                selected_items,
-                hard_max_chars=hard_max_chars,
-            )
-            round_input = briefing_body
-            last_gate = self._quality_gate(
-                markdown=briefing_body,
-                selected_items=selected_items,
-                mode=mode,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
-            )
-            if self.settings.briefing_critique_enabled:
-                last_critique = await self.critic_llm.critique_briefing(
-                    draft_markdown=briefing_body,
-                    items=selected_items,
-                    mode=mode,
-                    gate_hard_issues=[str(i) for i in last_gate.get("hard_issues", [])],
-                    gate_soft_issues=[str(i) for i in last_gate.get("soft_issues", [])],
-                    recent_briefings=history_items,
+        trace_finalized = False
+        try:
+            while True:
+                min_chars, target_chars, hard_max_chars = self._char_limits(
+                    mode,
+                    selected_count=len(selected_items),
                 )
-            else:
-                last_critique = {
-                    "passed": True,
-                    "score": 100,
-                    "dimension_scores": {
-                        "actionability": 100,
-                        "source_diversity": 100,
-                        "link_hygiene": 100,
-                        "clarity": 100,
-                        "style": 100,
-                        "novelty": 100,
-                    },
-                    "issues": [],
-                    "recommendations": [],
-                }
-
-            if self.settings.briefing_verifier_enabled:
-                last_verification = await self.verifier.evaluate(
+                briefing_body = self._enforce_release_link_hygiene(
                     briefing_body,
                     selected_items,
+                    hard_max_chars=hard_max_chars,
+                )
+                round_input = briefing_body
+                last_gate = self._quality_gate(
+                    markdown=briefing_body,
+                    selected_items=selected_items,
                     mode=mode,
+                    min_chars=min_chars,
+                    hard_max_chars=hard_max_chars,
+                )
+                if self.settings.briefing_critique_enabled:
+                    last_critique = await self.critic_llm.critique_briefing(
+                        draft_markdown=briefing_body,
+                        items=selected_items,
+                        mode=mode,
+                        gate_hard_issues=[str(i) for i in last_gate.get("hard_issues", [])],
+                        gate_soft_issues=[str(i) for i in last_gate.get("soft_issues", [])],
+                        recent_briefings=history_items,
+                    )
+                else:
+                    last_critique = {
+                        "passed": True,
+                        "score": 100,
+                        "dimension_scores": {
+                            "actionability": 100,
+                            "source_diversity": 100,
+                            "link_hygiene": 100,
+                            "clarity": 100,
+                            "style": 100,
+                            "novelty": 100,
+                        },
+                        "issues": [],
+                        "recommendations": [],
+                    }
+
+                if self.settings.briefing_verifier_enabled:
+                    last_verification = await self.verifier.evaluate(
+                        briefing_body,
+                        selected_items,
+                        mode=mode,
+                    )
+
+                gate_passed = bool(last_gate.get("passed", False))
+                critique_passed = self._passes_critic_thresholds(last_critique)
+                verification_passed = bool(last_verification.get("passed", True))
+                release_passed = gate_passed and critique_passed and verification_passed
+
+                feedback: list[str] = []
+                rewritten_output: str | None = None
+
+                if release_passed:
+                    logger.info(
+                        "Briefing approved after %d rewrite(s) (critic_score=%s verifier_score=%s)",
+                        rewrites,
+                        last_critique.get("score"),
+                        last_verification.get("score"),
+                    )
+                    await self._trace_round(
+                        run_id=trace_run_id,
+                        round_index=trace_round_index,
+                        phase="initial" if trace_round_index == 0 else "rewrite",
+                        draft_input=round_input,
+                        gate_result=last_gate,
+                        critique_result=last_critique,
+                        verifier_result=last_verification,
+                        feedback=feedback,
+                        rewrite_output=rewritten_output,
+                        passed=True,
+                    )
+                    break
+
+                if rewrites >= max_rewrites:
+                    await self._trace_round(
+                        run_id=trace_run_id,
+                        round_index=trace_round_index,
+                        phase="initial" if trace_round_index == 0 else "rewrite",
+                        draft_input=round_input,
+                        gate_result=last_gate,
+                        critique_result=last_critique,
+                        verifier_result=last_verification,
+                        feedback=feedback,
+                        rewrite_output=rewritten_output,
+                        passed=False,
+                    )
+                    break
+
+                feedback.extend([str(i) for i in last_gate.get("issues", [])])
+                feedback.extend([str(i) for i in last_critique.get("issues", [])])
+                feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
+                feedback.extend([str(i) for i in last_verification.get("issues", [])])
+                feedback.extend(
+                    [str(i) for i in last_verification.get("recommendations", [])]
+                )
+                missing_items = self._missing_items_for_markdown(
+                    briefing_body, selected_items
+                )
+                missing_urls = [
+                    str(i.get("url", "")) for i in missing_items if i.get("url")
+                ]
+
+                # If coverage keeps regressing, inject deterministic fallback links
+                # before asking the model to rewrite again.
+                if missing_items:
+                    logger.warning(
+                        "URL coverage regression detected before rewrite; appending %d missing references.",
+                        len(missing_items),
+                    )
+                    briefing_body = self._append_missing_items_section(
+                        briefing_body, missing_items
+                    )
+                    briefing_body = self._normalize_section_headings(
+                        self._dedupe_markdown_links(briefing_body.strip())
+                    )
+                    briefing_body = self._de_template_fields(briefing_body)
+
+                feedback_context = self._build_rewrite_feedback_context(
+                    gate=last_gate,
+                    critique=last_critique,
+                    verification=last_verification,
+                    mode=mode,
+                    min_chars=min_chars,
+                    target_chars=target_chars,
+                    hard_max_chars=hard_max_chars,
+                    rewrite_attempt=rewrites + 1,
+                    max_rewrites=max_rewrites,
+                    selected_items=selected_items,
+                    missing_selected_urls=missing_urls,
                 )
 
-            gate_passed = bool(last_gate.get("passed", False))
-            critique_passed = self._passes_critic_thresholds(last_critique)
-            verification_passed = bool(last_verification.get("passed", True))
-            release_passed = gate_passed and critique_passed and verification_passed
-
-            feedback: list[str] = []
-            rewritten_output: str | None = None
-
-            if release_passed:
+                rewrites += 1
                 logger.info(
-                    "Briefing approved after %d rewrite(s) (critic_score=%s verifier_score=%s)",
+                    "Briefing failed release checks; rewrite %d/%d "
+                    "(gate=%s critique=%s verifier=%s score=%s verifier_score=%s)",
                     rewrites,
+                    max_rewrites,
+                    gate_passed,
+                    critique_passed,
+                    verification_passed,
                     last_critique.get("score"),
                     last_verification.get("score"),
                 )
-                await self._trace_round(
-                    run_id=trace_run_id,
-                    round_index=trace_round_index,
-                    phase="initial" if trace_round_index == 0 else "rewrite",
-                    draft_input=round_input,
-                    gate_result=last_gate,
-                    critique_result=last_critique,
-                    verifier_result=last_verification,
+                rewritten_output = await self.writer_llm.revise_briefing(
+                    draft_markdown=briefing_body,
+                    items=selected_items,
                     feedback=feedback,
-                    rewrite_output=rewritten_output,
-                    passed=True,
+                    feedback_context=feedback_context,
+                    mode=mode,
+                    min_chars=min_chars,
+                    target_chars=target_chars,
+                    hard_max_chars=hard_max_chars,
                 )
-                break
-
-            if rewrites >= max_rewrites:
+                rewritten_output = await self._postprocess_briefing(
+                    briefing_body=rewritten_output,
+                    selected_items=selected_items,
+                    mode=mode,
+                    min_chars=min_chars,
+                    target_chars=target_chars,
+                    hard_max_chars=hard_max_chars,
+                )
                 await self._trace_round(
                     run_id=trace_run_id,
                     round_index=trace_round_index,
@@ -281,182 +443,118 @@ class WriterExecutor(AgentExecutor):
                     rewrite_output=rewritten_output,
                     passed=False,
                 )
-                break
-
-            feedback.extend([str(i) for i in last_gate.get("issues", [])])
-            feedback.extend([str(i) for i in last_critique.get("issues", [])])
-            feedback.extend([str(i) for i in last_critique.get("recommendations", [])])
-            feedback.extend([str(i) for i in last_verification.get("issues", [])])
-            feedback.extend(
-                [str(i) for i in last_verification.get("recommendations", [])]
-            )
-            missing_items = self._missing_items_for_markdown(
-                briefing_body, selected_items
-            )
-            missing_urls = [
-                str(i.get("url", "")) for i in missing_items if i.get("url")
-            ]
-
-            # If coverage keeps regressing, inject deterministic fallback links
-            # before asking the model to rewrite again.
-            if missing_items:
-                logger.warning(
-                    "URL coverage regression detected before rewrite; appending %d missing references.",
-                    len(missing_items),
+                await self._trace_preference_pair(
+                    run_id=trace_run_id,
+                    round_index=trace_round_index + 1,
+                    chosen_text=rewritten_output,
+                    rejected_text=round_input,
+                    rationale=self._build_rationale(feedback),
                 )
-                briefing_body = self._append_missing_items_section(
-                    briefing_body, missing_items
+                briefing_body = rewritten_output
+                trace_round_index += 1
+
+            if not release_passed:
+                msg = (
+                    "Blocking publish: briefing did not meet release thresholds after "
+                    f"{rewrites} rewrite(s). gate={bool(last_gate.get('passed', False))} "
+                    f"critic={self._passes_critic_thresholds(last_critique)} "
+                    f"verifier={bool(last_verification.get('passed', True))}"
                 )
-                briefing_body = self._normalize_section_headings(
-                    self._dedupe_markdown_links(briefing_body.strip())
+                logger.warning(msg)
+                await self._trace_finalize_run(
+                    run_id=trace_run_id,
+                    decision="BLOCKED",
+                    decision_reason=msg,
+                    rewrite_count=rewrites,
+                    final_draft=briefing_body,
+                    final_gate=last_gate,
+                    final_critique=last_critique,
+                    final_verifier=last_verification,
+                    briefing_id=None,
                 )
-                briefing_body = self._de_template_fields(briefing_body)
+                trace_finalized = True
+                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                return
 
-            feedback_context = self._build_rewrite_feedback_context(
-                gate=last_gate,
-                critique=last_critique,
-                verification=last_verification,
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-                rewrite_attempt=rewrites + 1,
-                max_rewrites=max_rewrites,
-                selected_items=selected_items,
-                missing_selected_urls=missing_urls,
-            )
+            briefing_body = self._normalize_section_headings(briefing_body)
+            briefing_body = self._de_template_fields(briefing_body)
 
-            rewrites += 1
-            logger.info(
-                "Briefing failed release checks; rewrite %d/%d "
-                "(gate=%s critique=%s verifier=%s score=%s verifier_score=%s)",
-                rewrites,
-                max_rewrites,
-                gate_passed,
-                critique_passed,
-                verification_passed,
-                last_critique.get("score"),
-                last_verification.get("score"),
-            )
-            rewritten_output = await self.writer_llm.revise_briefing(
-                draft_markdown=briefing_body,
-                items=selected_items,
-                feedback=feedback,
-                feedback_context=feedback_context,
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-            )
-            rewritten_output = await self._postprocess_briefing(
-                briefing_body=rewritten_output,
-                selected_items=selected_items,
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-            )
-            await self._trace_round(
-                run_id=trace_run_id,
-                round_index=trace_round_index,
-                phase="initial" if trace_round_index == 0 else "rewrite",
-                draft_input=round_input,
-                gate_result=last_gate,
-                critique_result=last_critique,
-                verifier_result=last_verification,
-                feedback=feedback,
-                rewrite_output=rewritten_output,
-                passed=False,
-            )
-            await self._trace_preference_pair(
-                run_id=trace_run_id,
-                round_index=trace_round_index + 1,
-                chosen_text=rewritten_output,
-                rejected_text=round_input,
-                rationale=self._build_rationale(feedback),
-            )
-            briefing_body = rewritten_output
-            trace_round_index += 1
+            logger.info("LLM briefing generated (%d chars)", len(briefing_body))
 
-        if not release_passed:
-            msg = (
-                "Blocking publish: briefing did not meet release thresholds after "
-                f"{rewrites} rewrite(s). gate={bool(last_gate.get('passed', False))} "
-                f"critic={self._passes_critic_thresholds(last_critique)} "
-                f"verifier={bool(last_verification.get('passed', True))}"
+            topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in selected_items)
+            cover_prompt = await self.writer_llm.generate_cover_prompt(topics)
+            logger.info("Cover prompt: %s", cover_prompt[:100])
+
+            cover_url = ""
+            if self.writer_llm.supports_cover_image_generation():
+                try:
+                    cover_url = (
+                        await self.writer_llm.generate_cover_image_data_url(cover_prompt)
+                        or ""
+                    )
+                    if cover_url:
+                        logger.info("Cover image generated via Gemini image model")
+                except Exception:
+                    logger.exception(
+                        "Failed to generate Gemini cover image, falling back to ComfyUI"
+                    )
+            try:
+                if not cover_url:
+                    timestamp = int(time.time() * 1000)
+                    prefix = f"Digest_Cover_{timestamp}"
+                    cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
+                    logger.info("Cover image: %s", cover_url)
+            except Exception:
+                logger.exception("Failed to generate cover image, continuing without it")
+
+            markdown = self._format_markdown(briefing_body, cover_url, mode=mode)
+            html = self._format_html(briefing_body, cover_url, mode=mode)
+
+            item_ids = [i["id"] for i in selected_items]
+            briefing_id = await insert_briefing(
+                content_markdown=markdown,
+                content_html=html,
+                cover_image_url=cover_url,
+                cover_image_prompt=cover_prompt,
+                item_ids=item_ids,
             )
-            logger.warning(msg)
             await self._trace_finalize_run(
                 run_id=trace_run_id,
-                decision="BLOCKED",
-                decision_reason=msg,
+                decision="PUBLISHED",
+                decision_reason="release_checks_passed",
                 rewrite_count=rewrites,
                 final_draft=briefing_body,
                 final_gate=last_gate,
                 final_critique=last_critique,
                 final_verifier=last_verification,
-                briefing_id=None,
+                briefing_id=briefing_id,
             )
+            trace_finalized = True
+
+            msg = f"Briefing created: id={briefing_id} items={len(selected_items)}"
+            logger.info(msg)
             await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+        except Exception as exc:
+            logger.exception("Writer execution failed")
+            if not trace_finalized:
+                await self._trace_finalize_run(
+                    run_id=trace_run_id,
+                    decision="BLOCKED",
+                    decision_reason=f"writer_internal_error:{type(exc).__name__}",
+                    rewrite_count=rewrites,
+                    final_draft=briefing_body,
+                    final_gate=last_gate,
+                    final_critique=last_critique,
+                    final_verifier=last_verification,
+                    briefing_id=None,
+                )
+            await enqueue_event_safe(
+                event_queue,
+                new_agent_text_message(
+                    "Blocking publish: internal writer error during generation."
+                ),
+            )
             return
-
-        briefing_body = self._normalize_section_headings(briefing_body)
-        briefing_body = self._de_template_fields(briefing_body)
-
-        logger.info("LLM briefing generated (%d chars)", len(briefing_body))
-
-        topics = "\n".join(f"- {i['title']}: {i['summary']}" for i in selected_items)
-        cover_prompt = await self.writer_llm.generate_cover_prompt(topics)
-        logger.info("Cover prompt: %s", cover_prompt[:100])
-
-        cover_url = ""
-        if self.writer_llm.supports_cover_image_generation():
-            try:
-                cover_url = (
-                    await self.writer_llm.generate_cover_image_data_url(cover_prompt)
-                    or ""
-                )
-                if cover_url:
-                    logger.info("Cover image generated via Gemini image model")
-            except Exception:
-                logger.exception(
-                    "Failed to generate Gemini cover image, falling back to ComfyUI"
-                )
-        try:
-            if not cover_url:
-                timestamp = int(time.time() * 1000)
-                prefix = f"Digest_Cover_{timestamp}"
-                cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
-                logger.info("Cover image: %s", cover_url)
-        except Exception:
-            logger.exception("Failed to generate cover image, continuing without it")
-
-        markdown = self._format_markdown(briefing_body, cover_url)
-        html = self._format_html(briefing_body, cover_url)
-
-        item_ids = [i["id"] for i in selected_items]
-        briefing_id = await insert_briefing(
-            content_markdown=markdown,
-            content_html=html,
-            cover_image_url=cover_url,
-            cover_image_prompt=cover_prompt,
-            item_ids=item_ids,
-        )
-        await self._trace_finalize_run(
-            run_id=trace_run_id,
-            decision="PUBLISHED",
-            decision_reason="release_checks_passed",
-            rewrite_count=rewrites,
-            final_draft=briefing_body,
-            final_gate=last_gate,
-            final_critique=last_critique,
-            final_verifier=last_verification,
-            briefing_id=briefing_id,
-        )
-
-        msg = f"Briefing {briefing_id} created with {len(selected_items)} items"
-        logger.info(msg)
-        await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
     # -- delegate methods (unchanged signatures) --
 
@@ -485,6 +583,50 @@ class WriterExecutor(AgentExecutor):
 
     def _is_quiet_day(self, items: list[dict]) -> bool:
         return self.selector.is_quiet_day(items)
+
+    @staticmethod
+    def _resolve_workflow_mode(text: str) -> str:
+        """Resolve workflow mode from incoming skill text."""
+        for token in str(text or "").split("::"):
+            candidate = token.strip().lower()
+            if candidate.startswith("mode="):
+                candidate = candidate.split("=", 1)[1].strip().lower()
+            if candidate in _SUPPORTED_WORKFLOW_MODES:
+                return candidate
+        return REGULAR_DAILY_BRIEFING_MODE
+
+    def _select_items_for_monthly_newsletter(
+        self,
+        items: list[dict],
+    ) -> list[dict]:
+        """Select a broader, diverse set of high-signal items for monthly mode."""
+        min_items = max(1, int(self.settings.monthly_newsletter_min_items))
+        max_items = max(min_items, int(self.settings.monthly_newsletter_max_items))
+        per_domain_cap = max(
+            1, int(self.settings.monthly_newsletter_max_items_per_domain)
+        )
+
+        ranked = sorted(
+            items,
+            key=lambda item: (
+                int(item.get("relevance_score", 0) or 0),
+                self._priority_score(item),
+            ),
+            reverse=True,
+        )
+        selected: list[dict] = []
+        domain_counts: dict[str, int] = {}
+        for item in ranked:
+            url = str(item.get("url", "") or "")
+            domain = (urlparse(url).netloc or "").strip().lower()
+            if domain and domain_counts.get(domain, 0) >= per_domain_cap:
+                continue
+            selected.append(item)
+            if domain:
+                domain_counts[domain] = domain_counts.get(domain, 0) + 1
+            if len(selected) >= max_items:
+                break
+        return selected if len(selected) >= min_items else []
 
     def _char_limits(
         self, mode: str, selected_count: int | None = None
@@ -1096,7 +1238,12 @@ class WriterExecutor(AgentExecutor):
             prefix for prefix in ("ghsa_", "rss_", "reddit_", "twitter_", "scrape_")
         )
         writer_keys = tuple(
-            prefix for prefix in ("briefing_", "telegram_overflow_mode")
+            prefix
+            for prefix in (
+                "briefing_",
+                "telegram_overflow_mode",
+                "monthly_newsletter_",
+            )
         )
         collector = {
             key: filtered[key] for key in filtered if key.startswith(collector_keys)
@@ -1167,31 +1314,133 @@ class WriterExecutor(AgentExecutor):
         raise NotImplementedError("cancel not supported")
 
     @staticmethod
-    def _format_markdown(briefing_body: str, cover_url: str) -> str:
+    def _format_markdown(
+        briefing_body: str,
+        cover_url: str,
+        *,
+        mode: str = "standard",
+    ) -> str:
         """Wrap the briefing body with an optional cover image in Markdown."""
         md = ""
         if cover_url and cover_url.startswith(("http://", "https://")):
-            md += f"![Daily Cover]({cover_url})\n\n"
+            alt = "Monthly Newsletter Cover" if mode == "monthly_newsletter" else "Daily Cover"
+            md += f"![{alt}]({cover_url})\n\n"
         md += briefing_body
         return md
 
     @staticmethod
-    def _format_html(briefing_body: str, cover_url: str) -> str:
-        """Convert the briefing body to basic HTML."""
-        html_body = briefing_body
-        html_body = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_body, flags=re.MULTILINE)
-        html_body = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_body, flags=re.MULTILINE)
-        html_body = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_body)
-        html_body = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_body)
-        html_body = re.sub(r"\[([^\]]+)]\(([^)]+)\)", r'<a href="\2">\1</a>', html_body)
-        html_body = re.sub(r"\n{2,}", "</p>\n<p>", html_body)
-        html_body = f"<p>{html_body}</p>"
+    def _format_html(
+        briefing_body: str,
+        cover_url: str,
+        *,
+        mode: str = "standard",
+    ) -> str:
+        """Convert briefing markdown-ish text to styled HTML email markup."""
+        if mode == "monthly_newsletter":
+            title = "Broken Cloud News Monthly Newsletter"
+            subtitle = "Most interesting cloud security developments from the last month."
+        else:
+            title = "Broken Cloud News Briefing"
+            subtitle = "Cloud security highlights, analysis, and operator guidance."
 
-        parts = ["<html><body>"]
-        if cover_url and cover_url.startswith(("http://", "https://")):
-            parts.append(
-                f'<img src="{cover_url}" alt="Daily Cover" style="max-width:600px"/>'
+        body_html = WriterExecutor._render_html_body(briefing_body)
+        cover_block = ""
+        if cover_url and cover_url.startswith(("http://", "https://", "data:image/")):
+            safe_cover = html.escape(cover_url, quote=True)
+            cover_block = (
+                "<div style=\"margin:0 0 20px 0;\">"
+                f"<img src=\"{safe_cover}\" alt=\"Briefing cover\" "
+                "style=\"display:block;width:100%;max-width:760px;border-radius:14px;border:1px solid #d7e3ef;\"/>"
+                "</div>"
             )
-        parts.append(html_body)
-        parts.append("</body></html>")
+
+        return (
+            "<html><body style=\"margin:0;padding:24px;background:#f4f7fb;"
+            "font-family:'Segoe UI',Arial,sans-serif;color:#142033;\">"
+            "<div style=\"max-width:820px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ee;"
+            "border-radius:16px;overflow:hidden;box-shadow:0 10px 26px rgba(16,40,69,0.08);\">"
+            "<div style=\"padding:20px 24px;background:linear-gradient(120deg,#0f243f,#1a4f7a);color:#eaf3fb;\">"
+            f"<h1 style=\"margin:0 0 8px 0;font-size:28px;line-height:1.2;\">{html.escape(title)}</h1>"
+            f"<p style=\"margin:0;font-size:14px;opacity:0.93;\">{html.escape(subtitle)}</p>"
+            "</div>"
+            "<div style=\"padding:22px 24px 26px 24px;\">"
+            f"{cover_block}"
+            f"{body_html}"
+            "</div>"
+            "</div></body></html>"
+        )
+
+    @staticmethod
+    def _render_html_body(markdown: str) -> str:
+        """Render markdown-ish digest text into readable HTML blocks."""
+        parts: list[str] = []
+        in_list = False
+        for raw in str(markdown or "").splitlines():
+            line = raw.strip()
+            if not line:
+                if in_list:
+                    parts.append("</ul>")
+                    in_list = False
+                continue
+
+            heading_text = ""
+            heading_tag = ""
+            if line.startswith("## "):
+                heading_text = line[3:].strip()
+                heading_tag = "h2"
+            elif line.startswith("### "):
+                heading_text = line[4:].strip()
+                heading_tag = "h3"
+            else:
+                bold_heading = re.fullmatch(r"\*\*(.+?)\*\*", line)
+                if bold_heading:
+                    heading_text = bold_heading.group(1).strip()
+                    heading_tag = "h3"
+
+            if heading_tag:
+                if in_list:
+                    parts.append("</ul>")
+                    in_list = False
+                parts.append(
+                    f"<{heading_tag} style=\"margin:18px 0 10px 0;color:#143154;\">"
+                    f"{WriterExecutor._inline_markdown_to_html(heading_text)}"
+                    f"</{heading_tag}>"
+                )
+                continue
+
+            if line.startswith("- ") or line.startswith("* "):
+                if not in_list:
+                    parts.append("<ul style=\"margin:8px 0 14px 18px;padding:0;\">")
+                    in_list = True
+                parts.append(
+                    "<li style=\"margin:0 0 8px 0;line-height:1.5;\">"
+                    f"{WriterExecutor._inline_markdown_to_html(line[2:].strip())}"
+                    "</li>"
+                )
+                continue
+
+            if in_list:
+                parts.append("</ul>")
+                in_list = False
+            parts.append(
+                "<p style=\"margin:0 0 12px 0;line-height:1.6;color:#1a2940;\">"
+                f"{WriterExecutor._inline_markdown_to_html(line)}"
+                "</p>"
+            )
+
+        if in_list:
+            parts.append("</ul>")
         return "\n".join(parts)
+
+    @staticmethod
+    def _inline_markdown_to_html(value: str) -> str:
+        """Convert basic markdown inline syntax to safe HTML."""
+        text = html.escape(value or "", quote=True)
+        text = re.sub(
+            r"\[([^\]]+)\]\((https?://[^)]+)\)",
+            r'<a href="\2" style="color:#1c5f96;text-decoration:underline;">\1</a>',
+            text,
+        )
+        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+        text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
+        return text

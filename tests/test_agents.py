@@ -23,6 +23,7 @@ def _make_settings(**overrides) -> Settings:
         llm_model="test-model",
         comfyui_url="http://fake-comfy:8188",
         github_token="ghp_fake",
+        generation_run_stale_pending_minutes=0,
     )
     defaults.update(overrides)
     return Settings(**defaults)
@@ -514,6 +515,46 @@ class TestAnalystExecutor:
 
 
 class TestWriterExecutor:
+    def test_resolve_workflow_mode(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        assert (
+            WriterExecutor._resolve_workflow_mode(
+                "generate_briefing::regular_monthly_newsletter"
+            )
+            == "regular_monthly_newsletter"
+        )
+        assert (
+            WriterExecutor._resolve_workflow_mode("generate_briefing")
+            == "regular_daily_briefing"
+        )
+
+    @pytest.mark.asyncio
+    async def test_monthly_mode_uses_period_query(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        with (
+            patch(
+                "bcn.agents.writer.agent.get_top_items_for_period",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_period,
+            patch(
+                "bcn.agents.writer.agent.get_analyzed_items",
+                new_callable=AsyncMock,
+            ) as mock_daily,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("generate_briefing::regular_monthly_newsletter")
+            await executor.execute(ctx, eq)
+
+        mock_period.assert_awaited_once()
+        mock_daily.assert_not_called()
+        assert any("monthly newsletter skipped" in str(e).lower() for e in eq.events)
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_no_items(self):
@@ -1385,11 +1426,183 @@ class TestWriterExecutor:
 
         assert executor._passes_critic_thresholds(critique) is False
 
+    @pytest.mark.asyncio
+    async def test_unhandled_writer_error_finalizes_trace_as_blocked(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_critique_enabled=False,
+            briefing_verifier_enabled=False,
+        )
+        executor = WriterExecutor(settings)
+        selected = [
+            {
+                "id": str(uuid4()),
+                "title": "Cloud issue",
+                "summary": "Patch guidance",
+                "relevance_score": 9,
+                "source_type": "rss",
+                "url": "https://example.com/advisory",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        run_id = uuid4()
+
+        with (
+            patch(
+                "bcn.agents.writer.agent.get_analyzed_items",
+                new_callable=AsyncMock,
+                return_value=selected,
+            ),
+            patch(
+                "bcn.agents.writer.agent.get_recent_published_items",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "bcn.agents.writer.agent.get_recent_briefings",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "bcn.agents.writer.agent.create_generation_run",
+                new_callable=AsyncMock,
+                return_value=run_id,
+            ),
+            patch(
+                "bcn.agents.writer.agent.finalize_generation_run",
+                new_callable=AsyncMock,
+            ) as mock_finalize,
+            patch(
+                "bcn.agents.writer.agent.append_generation_round",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "bcn.agents.writer.agent.insert_briefing",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db down"),
+            ),
+            patch.object(executor, "_select_items_for_briefing", return_value=selected),
+            patch.object(
+                executor,
+                "_postprocess_briefing",
+                new_callable=AsyncMock,
+                side_effect=lambda **kw: kw["briefing_body"],
+            ),
+            patch.object(
+                executor,
+                "_quality_gate",
+                return_value={
+                    "passed": True,
+                    "hard_issues": [],
+                    "soft_issues": [],
+                    "issues": [],
+                },
+            ),
+            patch.object(
+                executor.writer_llm,
+                "generate_briefing",
+                new_callable=AsyncMock,
+                return_value="**Cloud issue**\n[Ref](https://example.com/advisory)",
+            ),
+            patch.object(
+                executor.writer_llm,
+                "generate_cover_prompt",
+                new_callable=AsyncMock,
+                return_value="cover prompt",
+            ),
+            patch.object(
+                executor.comfyui,
+                "generate_image",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
+            patch(
+                "bcn.agents.writer.agent.finalize_stale_pending_generation_runs",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("generate_briefing")
+            await executor.execute(ctx, eq)
+
+        assert mock_finalize.await_count == 1
+        assert mock_finalize.await_args.kwargs["run_id"] == run_id
+        assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
+        assert any("internal writer error" in str(e).lower() for e in eq.events)
+
 
 # ── Distributor tests ────────────────────────────────────────────────────
 
 
 class TestDistributorExecutor:
+    def test_build_channels_daily_mode_only_telegram_and_discord(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        settings = _make_settings(
+            telegram_bot_token="123:abc",
+            telegram_chat_id="@broken-cloud",
+            discord_bot_token="discord-token",
+            discord_channel_id="12345",
+            smtp_host="smtp.example.com",
+            smtp_user="user",
+            smtp_password="pass",
+            email_from="news@example.com",
+            email_recipients=["team@example.com"],
+            slack_webhook_url="https://hooks.slack.com/services/T/B/X",
+        )
+        executor = DistributorExecutor(settings)
+        channels = executor._build_channels(mode="regular_daily_briefing")
+        names = [name for name, _channel in channels]
+        assert names == ["telegram", "discord"]
+
+    def test_build_channels_monthly_mode_email_only(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        settings = _make_settings(
+            telegram_bot_token="123:abc",
+            telegram_chat_id="@broken-cloud",
+            discord_bot_token="discord-token",
+            discord_channel_id="12345",
+            smtp_host="smtp.example.com",
+            smtp_user="user",
+            smtp_password="pass",
+            email_from="news@example.com",
+            email_recipients=["team@example.com"],
+        )
+        executor = DistributorExecutor(settings)
+        channels = executor._build_channels(
+            mode="regular_monthly_newsletter",
+            newsletter_recipients=["avkovaleff@gmail.com"],
+        )
+        names = [name for name, _channel in channels]
+        assert names == ["email"]
+
+    def test_build_channels_monthly_mode_without_recipients_skips_email(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        settings = _make_settings(
+            smtp_host="smtp.example.com",
+            smtp_user="user",
+            smtp_password="pass",
+            email_from="news@example.com",
+        )
+        executor = DistributorExecutor(settings)
+        channels = executor._build_channels(
+            mode="regular_monthly_newsletter",
+            newsletter_recipients=[],
+        )
+        assert channels == []
+
+    def test_extract_requested_mode(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        mode = DistributorExecutor._extract_requested_mode(
+            "distribute_briefing::123e4567-e89b-12d3-a456-426614174000::regular_monthly_newsletter"
+        )
+        assert mode == "regular_monthly_newsletter"
+
     @pytest.mark.asyncio
     async def test_no_briefing(self):
         from bcn.agents.distributor.agent import DistributorExecutor
@@ -1407,6 +1620,47 @@ class TestDistributorExecutor:
             await executor.execute(ctx, eq)
 
         assert any("No new briefing" in str(e) for e in eq.events)
+
+    @pytest.mark.asyncio
+    async def test_claims_requested_briefing_id_when_provided(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        settings = _make_settings()
+        executor = DistributorExecutor(settings)
+        briefing_id = uuid4()
+        briefing = {
+            "id": briefing_id,
+            "created_at": datetime.now(timezone.utc),
+            "content_markdown": "**Draft**",
+            "content_html": "<p>Draft</p>",
+            "cover_image_url": "",
+            "item_ids": [],
+        }
+
+        with (
+            patch(
+                "bcn.agents.distributor.agent.claim_draft_briefing_by_id",
+                new_callable=AsyncMock,
+                return_value=briefing,
+            ) as mock_claim_by_id,
+            patch(
+                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
+                new_callable=AsyncMock,
+            ) as mock_claim_latest,
+            patch.object(executor, "_build_channels", return_value=[]),
+            patch(
+                "bcn.agents.distributor.agent.release_briefing_for_retry",
+                new_callable=AsyncMock,
+            ) as mock_release,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context(f"distribute_briefing::{briefing_id}")
+            await executor.execute(ctx, eq)
+
+        mock_claim_by_id.assert_called_once_with(briefing_id)
+        mock_claim_latest.assert_not_called()
+        mock_release.assert_called_once_with(briefing_id)
+        assert any("No distribution channels configured" in str(e) for e in eq.events)
 
     @pytest.mark.asyncio
     async def test_skips_stale_latest_draft(self):

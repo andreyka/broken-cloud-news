@@ -7,12 +7,32 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 from uuid import uuid4
 
 import click
 import httpx
 
 from bcn.common.config import Settings
+from bcn.workflows.automation import build_regular_briefing_trigger
+from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.automation import configure_scheduler_runtime
+from bcn.workflows.automation import extract_briefing_id
+from bcn.workflows.automation import job_analyze_items
+from bcn.workflows.automation import job_collect_ghsa
+from bcn.workflows.automation import job_collect_reddit
+from bcn.workflows.automation import job_collect_rss
+from bcn.workflows.automation import job_collect_twitter
+from bcn.workflows.automation import (
+    job_publish_regular_briefing as _job_daily_digest,
+)
+from bcn.workflows.automation import (
+    job_publish_regular_monthly_newsletter as _job_monthly_newsletter,
+)
+from bcn.workflows.modes import AD_HOC_MODE
+from bcn.workflows.modes import ALL_MODES
+from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,14 +40,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bcn")
 
-# Module-level settings reference (set by the ``run`` command for scheduler jobs).
-_settings: Settings | None = None
+# Backward-compatible aliases kept for tests and external imports.
+_build_daily_digest_trigger = build_regular_briefing_trigger
+_build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
+_WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
+
+
+def _extract_briefing_id(text: str) -> UUID | None:
+    """Compatibility wrapper around workflow-level briefing id extraction."""
+    return extract_briefing_id(text)
 
 
 # ---------------------------------------------------------------------------
 # A2A client helpers
 # ---------------------------------------------------------------------------
-async def _send_to_agent(port: int, skill: str) -> str:
+async def _send_to_agent(
+    port: int, skill: str, *, timeout_seconds: int = 180
+) -> str:
     """Send a JSON-RPC message to a local A2A agent and return its reply.
 
     Args:
@@ -43,8 +72,7 @@ async def _send_to_agent(port: int, skill: str) -> str:
     from a2a.types import SendMessageRequest
     from a2a.types import TextPart
 
-    timeout = _settings.a2a_request_timeout_seconds if _settings else 180
-    async with httpx.AsyncClient(timeout=timeout) as http_client:
+    async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
         client = A2AClient(http_client, url=f"http://localhost:{port}")
 
         message = Message(
@@ -71,61 +99,6 @@ async def _send_to_agent(port: int, skill: str) -> str:
             return str(msg) if msg else str(result)
         except (KeyError, IndexError):
             return str(result)
-
-
-# ---------------------------------------------------------------------------
-# Scheduler job functions (must be top-level for APScheduler 4.x serialization)
-# ---------------------------------------------------------------------------
-
-
-async def _job_collect_ghsa() -> None:
-    """Scheduled job: trigger GHSA collection."""
-    await _send_to_agent(_settings.collector_port, "collect_ghsa")
-
-
-async def _job_collect_rss() -> None:
-    """Scheduled job: trigger RSS collection."""
-    await _send_to_agent(_settings.collector_port, "collect_rss")
-
-
-async def _job_collect_twitter() -> None:
-    """Scheduled job: trigger Twitter/X collection."""
-    await _send_to_agent(_settings.collector_port, "collect_twitter")
-
-
-async def _job_collect_reddit() -> None:
-    """Scheduled job: trigger Reddit collection."""
-    await _send_to_agent(_settings.collector_port, "collect_reddit")
-
-
-async def _job_analyze() -> None:
-    """Scheduled job: trigger item analysis."""
-    await _send_to_agent(_settings.analyst_port, "analyze_new_items")
-
-
-async def _job_daily_digest() -> None:
-    """Scheduled job: generate and distribute a daily briefing."""
-    await _send_to_agent(_settings.writer_port, "generate_briefing")
-    await _send_to_agent(_settings.distributor_port, "distribute_briefing")
-
-
-def _daily_digest_hour_expression(settings: Settings) -> str:
-    """Build cron hour expression from multi-hour or legacy single-hour settings."""
-    hours = settings.distribute_hours or [settings.distribute_hour]
-    # Cron expressions are clearer when sorted and deduplicated.
-    normalized = sorted({int(hour) for hour in hours})
-    return ",".join(str(hour) for hour in normalized)
-
-
-def _build_daily_digest_trigger(settings: Settings):
-    """Build the cron trigger for daily digest publication."""
-    from apscheduler.triggers.cron import CronTrigger
-
-    return CronTrigger(
-        hour=_daily_digest_hour_expression(settings),
-        minute=settings.distribute_minute,
-        timezone=settings.distribute_timezone,
-    )
 
 
 async def _run_agent_directly(
@@ -281,7 +254,14 @@ def analyze() -> None:
 
 
 @cli.command()
-def write() -> None:
+@click.option(
+    "--mode",
+    type=_WORKFLOW_MODE_CHOICES,
+    default=REGULAR_DAILY_BRIEFING_MODE,
+    show_default=True,
+    help="Workflow mode for briefing generation.",
+)
+def write(mode: str) -> None:
     """Generate a briefing with cover image from top-scored items."""
     settings = Settings()
 
@@ -291,7 +271,7 @@ def write() -> None:
         result = await _run_agent_directly(
             executor_cls=WriterExecutor,
             settings=settings,
-            skill="generate_briefing",
+            skill=f"generate_briefing::{mode}",
         )
         click.echo(result)
 
@@ -573,171 +553,124 @@ def simulate(
 
 
 @cli.command()
-def distribute() -> None:
+@click.option("--briefing-id", type=str, help="Distribute a specific DRAFT briefing UUID.")
+@click.option(
+    "--mode",
+    type=_WORKFLOW_MODE_CHOICES,
+    default=REGULAR_DAILY_BRIEFING_MODE,
+    show_default=True,
+    help="Workflow mode controlling channel policy.",
+)
+def distribute(briefing_id: str | None, mode: str) -> None:
     """Send the latest briefing to configured distribution channels."""
     settings = Settings()
 
-    async def _run():
+    async def _run() -> None:
+        from bcn.agents.distributor.agent import DistributorExecutor
 
-        from bcn.common.db import claim_latest_draft_briefing
+        skill = f"distribute_briefing::{mode}"
+        if briefing_id:
+            try:
+                parsed_briefing_id = UUID(briefing_id)
+            except ValueError as exc:
+                raise click.ClickException(
+                    f"Invalid briefing UUID: {briefing_id}"
+                ) from exc
+            skill = f"distribute_briefing::{parsed_briefing_id}::{mode}"
+
+        result = await _run_agent_directly(
+            executor_cls=DistributorExecutor,
+            settings=settings,
+            skill=skill,
+        )
+        click.echo(result)
+
+    asyncio.run(_run())
+
+
+@cli.group("newsletter-subscribers")
+def newsletter_subscribers() -> None:
+    """Manage monthly newsletter email subscribers."""
+
+
+@newsletter_subscribers.command("list")
+@click.option(
+    "--all",
+    "include_inactive",
+    is_flag=True,
+    help="Include inactive subscribers.",
+)
+def newsletter_subscribers_list(include_inactive: bool) -> None:
+    """List newsletter subscribers from the database."""
+    settings = Settings()
+
+    async def _run() -> None:
         from bcn.common.db import close_pool
-        from bcn.common.db import get_distribution_outcomes
+        from bcn.common.db import get_newsletter_subscribers
         from bcn.common.db import get_pool
-        from bcn.common.db import mark_items_published
-        from bcn.common.db import mark_briefing_distributed
-        from bcn.common.db import release_briefing_for_retry
-        from bcn.common.db import upsert_distribution_outcome
-        from bcn.common.url_policy import trusted_hosts_from_urls
-        from bcn.distributors.discord import DiscordDistributor
-        from bcn.distributors.email import EmailDistributor
-        from bcn.distributors.slack import SlackDistributor
-        from bcn.distributors.telegram import TelegramDistributor
 
         await get_pool(settings)
-        briefing: dict[str, Any] | None = None
-        channels: list[tuple[str, Any]] = []
-        should_release_for_retry = False
-
-        try:
-            claimed = await claim_latest_draft_briefing()
-            if not claimed:
-                click.echo("No new briefing to distribute")
-                return
-            briefing = dict(claimed)
-            should_release_for_retry = True
-
-            trusted_image_hosts = trusted_hosts_from_urls([settings.comfyui_url])
-            if settings.telegram_bot_token and settings.telegram_chat_id:
-                channels.append(
-                    (
-                        "telegram",
-                        TelegramDistributor(
-                            settings.telegram_bot_token,
-                            settings.telegram_chat_id,
-                            overflow_mode=settings.telegram_overflow_mode,
-                            trusted_image_hosts=trusted_image_hosts,
-                        ),
-                    )
-                )
-            if settings.smtp_host and settings.email_recipients:
-                channels.append(
-                    (
-                        "email",
-                        EmailDistributor(
-                            settings.smtp_host,
-                            settings.smtp_port,
-                            settings.smtp_user,
-                            settings.smtp_password,
-                            settings.email_from,
-                            settings.email_recipients,
-                        ),
-                    )
-                )
-            if settings.slack_webhook_url:
-                channels.append(("slack", SlackDistributor(settings.slack_webhook_url)))
-            if settings.discord_bot_token and settings.discord_channel_id:
-                channels.append(
-                    (
-                        "discord",
-                        DiscordDistributor(
-                            settings.discord_bot_token,
-                            settings.discord_channel_id,
-                            trusted_image_hosts=trusted_image_hosts,
-                        ),
-                    )
-                )
-
-            if not channels:
-                click.echo("No distribution channels configured")
-                return
-
-            previous = await get_distribution_outcomes(briefing_ids=[briefing["id"]])
-            previously_ok_channels: set[str] = set()
-            for row in previous:
-                try:
-                    channel = str(row["channel"]).strip().lower()
-                    status = str(row["status"] or "").strip().lower()
-                except Exception:
-                    continue
-                if channel and status == "ok":
-                    previously_ok_channels.add(channel)
-
-            results: dict[str, str] = {}
-
-            for name, channel in channels:
-                if name in previously_ok_channels:
-                    results[name] = "ok"
-                    click.echo(f"  {name}: ok (already sent, skipped)")
-                    continue
-
-                status = "failed"
-                metadata: dict[str, Any] = {}
-                external_message_id: str | None = None
-                try:
-                    ok = await channel.send(briefing)
-
-                    if hasattr(channel, "last_result") and isinstance(
-                        channel.last_result, dict
-                    ):
-                        metadata = dict(channel.last_result)
-                        msg_id = metadata.get("primary_message_id")
-                        if msg_id is not None:
-                            external_message_id = str(msg_id)
-
-                    status = "ok" if ok else "failed"
-                    results[name] = status
-                    click.echo(f"  {name}: {status}")
-                except Exception as exc:
-                    status = "error"
-                    results[name] = status
-                    metadata = {"error": str(exc)}
-                    click.echo(f"  {name}: error - {exc}", err=True)
-
-                try:
-                    await upsert_distribution_outcome(
-                        briefing_id=briefing["id"],
-                        channel=name,
-                        status=status,
-                        external_message_id=external_message_id,
-                        metrics={},
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    click.echo(
-                        f"  {name}: warning - failed to persist distribution outcome: {exc}",
-                        err=True,
-                    )
-
-            all_ok = bool(results) and all(
-                status == "ok" for status in results.values()
-            )
-            if all_ok:
-                await mark_briefing_distributed(briefing["id"], results)
-                item_ids = list(briefing["item_ids"]) if briefing["item_ids"] else []
-                await mark_items_published(item_ids)
-                should_release_for_retry = False
-                click.echo("Distribution complete")
-            else:
-                click.echo(
-                    f"Distribution incomplete; briefing remains DRAFT for retry ({results})"
-                )
-        finally:
-            for _name, channel in channels:
-                try:
-                    await channel.close()
-                except Exception as exc:
-                    click.echo(
-                        f"  {_name}: warning - failed to close channel: {exc}", err=True
-                    )
-            if briefing and should_release_for_retry:
-                try:
-                    await release_briefing_for_retry(briefing["id"])
-                except Exception as exc:
-                    click.echo(
-                        f"warning - failed to release briefing for retry: {exc}",
-                        err=True,
-                    )
+        rows = await get_newsletter_subscribers(active_only=not include_inactive)
+        if not rows:
+            click.echo("No newsletter subscribers found")
             await close_pool()
+            return
+
+        for row in rows:
+            payload = dict(row)
+            status = "active" if payload.get("is_active") else "inactive"
+            click.echo(
+                f"{payload.get('email')} | status={status} "
+                f"| updated_at={payload.get('updated_at').isoformat()}"
+            )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@newsletter_subscribers.command("add")
+@click.argument("email", type=str)
+def newsletter_subscribers_add(email: str) -> None:
+    """Add or reactivate a newsletter subscriber."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import add_newsletter_subscriber
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+
+        await get_pool(settings)
+        try:
+            inserted = await add_newsletter_subscriber(email)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(
+            f"{'Added' if inserted else 'Reactivated'} newsletter subscriber: "
+            f"{email.strip().lower()}"
+        )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@newsletter_subscribers.command("remove")
+@click.argument("email", type=str)
+def newsletter_subscribers_remove(email: str) -> None:
+    """Deactivate a newsletter subscriber."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.common.db import remove_newsletter_subscriber
+
+        await get_pool(settings)
+        removed = await remove_newsletter_subscriber(email)
+        if removed:
+            click.echo(f"Removed newsletter subscriber: {email.strip().lower()}")
+        else:
+            click.echo(f"Subscriber not found or already inactive: {email.strip().lower()}")
+        await close_pool()
 
     asyncio.run(_run())
 
@@ -1002,9 +935,22 @@ def export_training(
         from bcn.common.db import get_pool
 
         def _iso(value: Any) -> str | None:
+            if isinstance(value, UUID):
+                return str(value)
             if hasattr(value, "isoformat"):
                 return value.isoformat()
             return str(value) if value is not None else None
+
+        def _json_safe(value: Any) -> Any:
+            if isinstance(value, UUID):
+                return str(value)
+            if hasattr(value, "isoformat"):
+                return value.isoformat()
+            if isinstance(value, dict):
+                return {str(k): _json_safe(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_json_safe(v) for v in value]
+            return value
 
         def _normalize_json(value: Any, default: Any) -> Any:
             if isinstance(value, type(default)):
@@ -1063,9 +1009,7 @@ def export_training(
         outcomes_by_briefing: dict[str, list[dict[str, Any]]] = {}
         for row in outcomes:
             raw_payload = dict(row)
-            payload: dict[str, Any] = {}
-            for key, value in raw_payload.items():
-                payload[key] = _iso(value) if hasattr(value, "isoformat") else value
+            payload: dict[str, Any] = _json_safe(raw_payload)
             briefing_key = (
                 str(payload["briefing_id"]) if payload.get("briefing_id") else ""
             )
@@ -1258,10 +1202,10 @@ def export_training(
 
         with sft_path.open("w", encoding="utf-8") as handle:
             for row in sft_rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         with pref_path.open("w", encoding="utf-8") as handle:
             for row in pref_rows:
-                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         with trace_path.open("w", encoding="utf-8") as handle:
             for row in trace_rows:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -1300,8 +1244,53 @@ def export_training(
     asyncio.run(_run())
 
 
+@cli.command("finalize-pending-runs")
+@click.option(
+    "--max-age-minutes",
+    type=int,
+    default=180,
+    show_default=True,
+    help="Only finalize PENDING generation runs older than this threshold.",
+)
+@click.option(
+    "--decision",
+    type=click.Choice(["blocked", "skipped"]),
+    default="blocked",
+    show_default=True,
+    help="Decision label to set on stale PENDING runs.",
+)
+def finalize_pending_runs(max_age_minutes: int, decision: str) -> None:
+    """Finalize stale PENDING generation runs to avoid dangling traces."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import finalize_stale_pending_generation_runs
+        from bcn.common.db import get_pool
+
+        await get_pool(settings)
+        updated = await finalize_stale_pending_generation_runs(
+            max_age_minutes=max(1, int(max_age_minutes)),
+            decision=decision.upper(),
+            decision_reason=f"manual_finalize_stale_pending_run:{decision.lower()}",
+        )
+        click.echo(
+            f"Finalized {updated} stale PENDING generation runs as {decision.upper()}"
+        )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
 @cli.command()
-def pipeline() -> None:
+@click.option(
+    "--mode",
+    type=_WORKFLOW_MODE_CHOICES,
+    default=REGULAR_DAILY_BRIEFING_MODE,
+    show_default=True,
+    help="Workflow mode for write/distribute stages.",
+)
+def pipeline(mode: str) -> None:
     """Run the full pipeline: collect, analyze, write, distribute."""
     ctx = click.get_current_context()
 
@@ -1310,20 +1299,55 @@ def pipeline() -> None:
     click.echo("\n=== ANALYZE ===")
     ctx.invoke(analyze)
     click.echo("\n=== WRITE ===")
-    ctx.invoke(write)
+    ctx.invoke(write, mode=mode)
     click.echo("\n=== DISTRIBUTE ===")
-    ctx.invoke(distribute)
+    ctx.invoke(distribute, mode=mode)
     click.echo("\nPipeline complete.")
+
+
+@cli.command("workflow-run")
+@click.option(
+    "--mode",
+    type=_WORKFLOW_MODE_CHOICES,
+    default=AD_HOC_MODE,
+    show_default=True,
+    help="Workflow mode to execute as a single write->distribute handoff.",
+)
+def workflow_run(mode: str) -> None:
+    """Run one workflow mode cycle without daemon scheduler."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.writer.agent import WriterExecutor
+
+        writer_result = await _run_agent_directly(
+            executor_cls=WriterExecutor,
+            settings=settings,
+            skill=f"generate_briefing::{mode}",
+        )
+        click.echo(writer_result)
+        briefing_id = extract_briefing_id(writer_result)
+        if not briefing_id:
+            click.echo("Writer did not return a briefing id; skipping distribution.")
+            return
+
+        distribute_result = await _run_agent_directly(
+            executor_cls=DistributorExecutor,
+            settings=settings,
+            skill=f"distribute_briefing::{briefing_id}::{mode}",
+        )
+        click.echo(distribute_result)
+
+    asyncio.run(_run())
 
 
 @cli.command()
 def run() -> None:
     """Start daemon mode with all A2A agents and the scheduler."""
-    global _settings
     settings = Settings()
-    _settings = settings
 
-    async def _daemon():
+    async def _daemon() -> None:
         from apscheduler import AsyncScheduler
         from apscheduler.triggers.interval import IntervalTrigger
 
@@ -1342,9 +1366,34 @@ def run() -> None:
         from bcn.agents.writer.agent import SKILLS as WRIT_SKILLS
         from bcn.agents.writer.agent import WriterExecutor
         from bcn.common.db import close_pool
+        from bcn.common.db import finalize_stale_pending_generation_runs
         from bcn.common.db import get_pool
 
+        async def _send_with_runtime_timeout(port: int, skill: str) -> str:
+            return await _send_to_agent(
+                port,
+                skill,
+                timeout_seconds=settings.a2a_request_timeout_seconds,
+            )
+
+        configure_scheduler_runtime(settings, _send_with_runtime_timeout)
+
         await get_pool(settings)
+        try:
+            finalized = await finalize_stale_pending_generation_runs(
+                max_age_minutes=max(
+                    1, int(getattr(settings, "generation_run_stale_pending_minutes", 180))
+                ),
+                decision="BLOCKED",
+                decision_reason="daemon_auto_finalize_stale_pending_run",
+            )
+            if finalized:
+                logger.warning(
+                    "Auto-finalized %d stale PENDING generation runs during daemon startup",
+                    finalized,
+                )
+        except Exception:
+            logger.exception("Failed to auto-finalize stale PENDING generation runs")
 
         click.echo("Starting Broken Cloud News agents...")
 
@@ -1440,39 +1489,45 @@ def run() -> None:
             async with AsyncScheduler() as scheduler:
                 # Collection schedules
                 await scheduler.add_schedule(
-                    _job_collect_ghsa,
+                    job_collect_ghsa,
                     IntervalTrigger(hours=settings.ghsa_interval_hours),
                     id="ghsa_collector",
                 )
                 await scheduler.add_schedule(
-                    _job_collect_rss,
+                    job_collect_rss,
                     IntervalTrigger(hours=settings.rss_interval_hours),
                     id="rss_collector",
                 )
                 await scheduler.add_schedule(
-                    _job_collect_reddit,
+                    job_collect_reddit,
                     IntervalTrigger(hours=settings.reddit_interval_hours),
                     id="reddit_collector",
                 )
                 await scheduler.add_schedule(
-                    _job_collect_twitter,
+                    job_collect_twitter,
                     IntervalTrigger(hours=settings.twitter_interval_hours),
                     id="twitter_collector",
                 )
 
                 # Analyst schedule
                 await scheduler.add_schedule(
-                    _job_analyze,
+                    job_analyze_items,
                     IntervalTrigger(minutes=settings.analyst_interval_minutes),
                     id="analyst",
                 )
 
-                # Daily digest: write + distribute
+                # Regular briefing cycle: write + distribute
                 await scheduler.add_schedule(
                     _job_daily_digest,
-                    _build_daily_digest_trigger(settings),
-                    id="daily_digest",
+                    build_regular_briefing_trigger(settings),
+                    id=REGULAR_DAILY_BRIEFING_MODE,
                 )
+                if settings.monthly_newsletter_enabled:
+                    await scheduler.add_schedule(
+                        _job_monthly_newsletter,
+                        build_regular_monthly_newsletter_trigger(settings),
+                        id=REGULAR_MONTHLY_NEWSLETTER_MODE,
+                    )
 
                 await scheduler.start_in_background()
                 click.echo("Scheduler started. Press Ctrl+C to stop.")

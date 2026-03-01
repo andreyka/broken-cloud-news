@@ -24,4 +24,5 @@ def settings():
         email_from="test@example.com",
         email_recipients=["a@b.com"],
         slack_webhook_url="https://hooks.slack.com/fake",
+        generation_run_stale_pending_minutes=0,
     )

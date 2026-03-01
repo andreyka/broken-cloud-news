@@ -91,16 +91,40 @@ class Settings(BaseSettings):
                 seen.add(hour)
         return normalized
 
-    @field_validator("distribute_timezone")
+    @field_validator("distribute_timezone", "monthly_newsletter_timezone")
     @classmethod
-    def _validate_distribute_timezone(cls, v: str) -> str:
-        """Validate IANA timezone used by digest cron scheduling."""
+    def _validate_schedule_timezone(cls, v: str) -> str:
+        """Validate IANA timezone used by cron scheduling."""
         value = (v or "").strip() or "UTC"
         try:
             ZoneInfo(value)
         except ZoneInfoNotFoundError as exc:
-            raise ValueError(f"Invalid distribute timezone '{value}'") from exc
+            raise ValueError(f"Invalid timezone '{value}'") from exc
         return value
+
+    @field_validator("monthly_newsletter_day")
+    @classmethod
+    def _validate_monthly_day(cls, v: int) -> int:
+        day = int(v)
+        if day < 1 or day > 28:
+            raise ValueError("monthly_newsletter_day must be between 1 and 28")
+        return day
+
+    @field_validator("monthly_newsletter_hour")
+    @classmethod
+    def _validate_monthly_hour(cls, v: int) -> int:
+        hour = int(v)
+        if hour < 0 or hour > 23:
+            raise ValueError("monthly_newsletter_hour must be between 0 and 23")
+        return hour
+
+    @field_validator("monthly_newsletter_minute")
+    @classmethod
+    def _validate_monthly_minute(cls, v: int) -> int:
+        minute = int(v)
+        if minute < 0 or minute > 59:
+            raise ValueError("monthly_newsletter_minute must be between 0 and 59")
+        return minute
 
     @field_validator("telegram_overflow_mode")
     @classmethod
@@ -334,7 +358,13 @@ class Settings(BaseSettings):
     distribute_minute: int = 0
     distribute_hours: list[int] = []
     distribute_timezone: str = "UTC"
+    monthly_newsletter_enabled: bool = True
+    monthly_newsletter_day: int = 1
+    monthly_newsletter_hour: int = 9
+    monthly_newsletter_minute: int = 0
+    monthly_newsletter_timezone: str = "UTC"
     a2a_request_timeout_seconds: int = 180
+    generation_run_stale_pending_minutes: int = 180
 
     # Scraping
     scrape_content_limit: int = 10000
@@ -374,6 +404,9 @@ class Settings(BaseSettings):
     briefing_quiet_day_min_chars: int = 900
     briefing_quiet_day_target_chars: int = 1300
     briefing_quiet_day_hard_max_chars: int = 1800
+    briefing_monthly_min_chars: int = 2600
+    briefing_monthly_target_chars: int = 4200
+    briefing_monthly_hard_max_chars: int = 7800
     briefing_skip_if_no_high_signal: bool = True
     briefing_min_high_signal_to_publish: int = 1
     briefing_single_item_min_chars: int = 450
@@ -394,6 +427,11 @@ class Settings(BaseSettings):
     briefing_critic_min_actionability: int = 70
     briefing_critic_min_source_diversity: int = 65
     briefing_critic_min_link_hygiene: int = 80
+    monthly_newsletter_lookback_days: int = 31
+    monthly_newsletter_min_score: int = 7
+    monthly_newsletter_min_items: int = 6
+    monthly_newsletter_max_items: int = 12
+    monthly_newsletter_max_items_per_domain: int = 3
 
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never
