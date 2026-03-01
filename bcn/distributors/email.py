@@ -5,6 +5,7 @@ from __future__ import annotations
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import logging
+from typing import Any
 
 import aiosmtplib
 
@@ -39,12 +40,11 @@ class EmailDistributor:
         self.from_addr: str = from_addr
         self.recipients: list[str] = recipients
 
-    async def send(self, subject: str, html_body: str) -> bool:
+    async def send(self, briefing: Any) -> bool:
         """Send an HTML email to all configured recipients.
 
         Args:
-            subject: Email subject line.
-            html_body: HTML content for the email body.
+            briefing: The briefing dataset record.
 
         Returns:
             ``True`` if the email was sent successfully.
@@ -54,6 +54,11 @@ class EmailDistributor:
             return False
 
         try:
+            created_at = briefing.get("created_at")
+            date_str = created_at.strftime("%Y-%m-%d") if created_at else ""
+            subject = f"Broken Cloud News - {date_str}"
+            html_body = str(briefing.get("content_html") or briefing.get("content_markdown") or "")
+
             msg = MIMEMultipart("alternative")
             msg["From"] = self.from_addr
             msg["To"] = ", ".join(self.recipients)

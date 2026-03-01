@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from typing import Any
 
 import httpx
 
@@ -45,8 +46,7 @@ class TelegramDistributor:
 
     async def send(
         self,
-        markdown: str,
-        cover_image_url: str | None = None,
+        briefing: Any,
     ) -> bool:
         """Send a briefing to Telegram as a photo+caption message.
 
@@ -55,12 +55,13 @@ class TelegramDistributor:
         to plain text if no cover image is available.
 
         Args:
-            markdown: Briefing text in Markdown format.
-            cover_image_url: Optional URL to a cover image.
+            briefing: The briefing dataset record.
 
         Returns:
             ``True`` if the message was sent successfully.
         """
+        markdown = str(briefing.get("content_markdown") or "")
+        cover_image_url = briefing.get("cover_image_url")
 
         # Strip markdown image tags — Telegram doesn't render them
         clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown)

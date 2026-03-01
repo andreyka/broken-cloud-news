@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 
@@ -29,19 +30,19 @@ class SlackDistributor:
 
     async def send(
         self,
-        markdown: str,
-        cover_image_url: str | None = None,
+        briefing: Any,
     ) -> bool:
         """Send a briefing to Slack via the configured webhook.
 
         Args:
-            markdown: Briefing text in Markdown format.
-            cover_image_url: Optional URL to a cover image.
+            briefing: The briefing dataset record.
 
         Returns:
             ``True`` if the webhook request succeeded.
         """
         try:
+            markdown = str(briefing.get("content_markdown") or "")
+            cover_image_url = briefing.get("cover_image_url")
             blocks = self._build_blocks(markdown, cover_image_url)
             resp = await self._client.post(
                 self.webhook_url,

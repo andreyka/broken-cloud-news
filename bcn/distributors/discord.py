@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 import base64
+import json
 import httpx
 
 from bcn.common.models import Briefing
@@ -22,7 +23,7 @@ class DiscordDistributor:
         )
         self.last_result: dict[str, Any] = {}
 
-    async def send(self, markdown_text: str, image_url: str | None = None) -> bool:
+    async def send(self, briefing: Any) -> bool:
         """Send the briefing to Discord.
 
         Splits long messages if necessary and attaches the cover image to the first message.
@@ -31,10 +32,14 @@ class DiscordDistributor:
             logger.warning("Discord distributor skipped: missing token or channel_id")
             return False
 
+        markdown_text = str(briefing.get("content_markdown") or "")
+        image_url = briefing.get("cover_image_url")
+
         chunks = self._chunk_text(markdown_text, limit=1900)
         
         # Determine image files to send for the first chunk
         files = None
+        attachments = None
         if image_url:
             if image_url.startswith("data:image/"):
                 try:
@@ -42,14 +47,18 @@ class DiscordDistributor:
                     mime_type = header[5:header.index(";")] if header.startswith("data:") else "image/png"
                     ext = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
                     img_bytes = base64.b64decode(payload)
-                    files = {"file": (f"cover.{ext}", img_bytes, mime_type)}
+                    filename = f"cover.{ext}"
+                    files = {"files[0]": (filename, img_bytes, mime_type)}
+                    attachments = [{"id": 0, "filename": filename}]
                 except Exception as e:
                     logger.warning(f"Error parsing data uri: {e}")
             else:
                 try:
                     resp = await self._client.get(image_url)
                     resp.raise_for_status()
-                    files = {"file": ("cover.png", resp.content, "image/png")}
+                    filename = "cover.png"
+                    files = {"files[0]": (filename, resp.content, "image/png")}
+                    attachments = [{"id": 0, "filename": filename}]
                 except Exception as e:
                     logger.warning(f"Error fetching image: {e}")
 
@@ -57,11 +66,16 @@ class DiscordDistributor:
         first_message_id = None
         
         try:
-            import json
             for i, chunk in enumerate(chunks):
                 if i == 0 and files:
-                    payload = {"payload_json": json.dumps({"content": chunk})}
-                    resp = await self._client.post(self.api, data=payload, files=files)
+                    payload_dict = {"content": chunk}
+                    if attachments:
+                        payload_dict["attachments"] = attachments
+                    files["payload_json"] = (None, json.dumps(payload_dict), "application/json")
+                    resp = await self._client.post(self.api, files=files)
+                    
+                    # Remove payload_json from files so we don't accidentally send it again if chunks looped somehow
+                    files.pop("payload_json", None)
                 else:
                     payload = {"content": chunk}
                     resp = await self._client.post(self.api, json=payload)
