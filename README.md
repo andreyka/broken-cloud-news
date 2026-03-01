@@ -178,11 +178,11 @@ BCN_LLM_MODEL_ANALYST=gemini-3.1-pro-preview
 BCN_LLM_MODEL_WRITER=gemini-3.1-pro-preview
 BCN_LLM_MODEL_CRITIC=gemini-3.1-pro-preview
 BCN_LLM_MODEL_VERIFIER=gemini-3.1-pro-preview
-BCN_LLM_MODEL_COVER=gemini-3-pro-image-preview
+BCN_LLM_MODEL_COVER=nanobanana-pro2
 ```
 Notes:
 - `vertexai` routes text roles to Vertex `streamGenerateContent`.
-- Cover role can return inline PNG image data when set to `gemini-3-pro-image-preview`.
+- Cover role can return inline PNG image data when set to an image-capable Gemini/Vertex model such as `nanobanana-pro2`.
 - If cover image generation fails, writer falls back to ComfyUI automatically.
 
 Important briefing-quality knobs:
@@ -225,9 +225,9 @@ The simplest deployment uses Google's Vertex AI / Gemini API for both text and i
    BCN_LLM_MODEL_WRITER=gemini-3.1-pro-preview
    BCN_LLM_MODEL_CRITIC=gemini-3.1-pro-preview
    BCN_LLM_MODEL_VERIFIER=gemini-3.1-pro-preview
-   BCN_LLM_MODEL_COVER=gemini-3-pro-image-preview
+   BCN_LLM_MODEL_COVER=nanobanana-pro2
    ```
-*(Note: Using `gemini-3-pro-image-preview` for the cover role enables native image generation without needing ComfyUI).*
+*(Note: Using an image-capable cover model such as `nanobanana-pro2` enables native image generation without needing ComfyUI in the success path).*
 
 ### Option 2: DGX Spark (On-Premise)
 

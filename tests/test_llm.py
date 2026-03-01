@@ -210,6 +210,56 @@ class TestGenerateCoverPrompt:
         assert "cyberpunk server room" in result
 
 
+class TestCoverImageSupport:
+    def test_supports_gemini_image_model(self):
+        client = LLMClient(
+            base_url="https://aiplatform.googleapis.com/v1",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="vertexai",
+            role_overrides={
+                "cover": {
+                    "provider": "vertexai",
+                    "base_url": "https://aiplatform.googleapis.com/v1",
+                    "model": "gemini-3-pro-image-preview",
+                }
+            },
+        )
+        assert WriterLLM(client).supports_cover_image_generation() is True
+
+    def test_supports_nanobanana_cover_model(self):
+        client = LLMClient(
+            base_url="https://aiplatform.googleapis.com/v1",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="vertexai",
+            role_overrides={
+                "cover": {
+                    "provider": "vertexai",
+                    "base_url": "https://aiplatform.googleapis.com/v1",
+                    "model": "nanobanana-pro2",
+                }
+            },
+        )
+        assert WriterLLM(client).supports_cover_image_generation() is True
+
+    def test_rejects_text_only_cover_model(self):
+        client = LLMClient(
+            base_url="https://aiplatform.googleapis.com/v1",
+            model="gemini-3.1-pro-preview",
+            timeout=5,
+            provider="vertexai",
+            role_overrides={
+                "cover": {
+                    "provider": "vertexai",
+                    "base_url": "https://aiplatform.googleapis.com/v1",
+                    "model": "gemini-3.1-pro-preview",
+                }
+            },
+        )
+        assert WriterLLM(client).supports_cover_image_generation() is False
+
+
 class TestStoryCards:
     @respx.mock
     @pytest.mark.asyncio
