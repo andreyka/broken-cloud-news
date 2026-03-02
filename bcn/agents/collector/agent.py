@@ -587,18 +587,12 @@ class CollectorExecutor(AgentExecutor):
                 post_id = self._extract_reddit_post_id(source_id, permalink)
                 engagement = engagement_map.get(post_id, {})
                 references = self._extract_reddit_reference_urls(permalink, engagement)
-                url = self._select_reddit_primary_url(
-                    permalink,
-                    references,
-                    title=title,
-                    summary=summary,
-                )
                 full_content = self._build_reddit_full_content(title, summary, references)
 
                 inserted = await insert_news_item(
                     source_type="reddit",
                     source_id=source_id,
-                    url=url,
+                    url=permalink,
                     title=title,
                     published_at=published,
                     raw_data={
