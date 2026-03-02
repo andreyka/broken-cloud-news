@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from typing import Iterable, Optional
 from urllib.parse import urljoin
 
@@ -19,6 +20,7 @@ from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
+_ALIVE_STATUS_CODES = frozenset({200, 401, 403, 405, 429})
 
 
 class Scraper:
@@ -232,3 +234,73 @@ class Scraper:
         except Exception as exc:
             logger.warning("Playwright fetch failed for %s: %s", url, exc)
             return 0, ""
+
+    async def fetch_text_or_raise(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_ms: int = 45000,
+    ) -> str:
+        """Fetch text and raise when response is not usable."""
+        status, text = await self.fetch_text(
+            url=url,
+            method="GET",
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+        if 200 <= status < 400 and text:
+            return text
+        raise RuntimeError(f"Failed to fetch {url} (status={status})")
+
+    async def fetch_json(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout_ms: int = 20000,
+    ) -> dict:
+        """Fetch JSON payload and validate top-level shape."""
+        text = await self.fetch_text_or_raise(
+            url=url,
+            headers=headers,
+            timeout_ms=timeout_ms,
+        )
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse JSON from {url}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Unexpected JSON shape from {url}")
+        return payload
+
+    async def is_url_live(
+        self,
+        url: str,
+        *,
+        cache: dict[str, bool] | None = None,
+        timeout_ms: int = 10000,
+    ) -> bool:
+        """Check URL liveness with shared HEAD->GET fallback semantics."""
+        if not url.startswith(("http://", "https://")):
+            return False
+        if cache is not None and url in cache:
+            return cache[url]
+
+        alive = False
+        try:
+            status, _ = await self.fetch_text(url, method="HEAD", timeout_ms=timeout_ms)
+            alive = status in _ALIVE_STATUS_CODES
+            if not alive and status >= 500:
+                status, _ = await self.fetch_text(
+                    url,
+                    method="GET",
+                    timeout_ms=timeout_ms,
+                )
+                alive = status in _ALIVE_STATUS_CODES
+        except Exception:
+            alive = False
+
+        if cache is not None:
+            cache[url] = alive
+        return alive

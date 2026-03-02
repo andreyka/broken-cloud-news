@@ -17,7 +17,6 @@ from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
-from bcn.workflows.automation import extract_briefing_id
 from bcn.workflows.automation import job_analyze_items
 from bcn.workflows.automation import job_collect_ghsa
 from bcn.workflows.automation import job_collect_reddit
@@ -33,6 +32,7 @@ from bcn.workflows.modes import AD_HOC_MODE
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.modes.common import run_writer_distributor_handoff
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,11 +44,6 @@ logger = logging.getLogger("bcn")
 _build_daily_digest_trigger = build_regular_briefing_trigger
 _build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
-
-
-def _extract_briefing_id(text: str) -> UUID | None:
-    """Compatibility wrapper around workflow-level briefing id extraction."""
-    return extract_briefing_id(text)
 
 
 # ---------------------------------------------------------------------------
@@ -1321,22 +1316,30 @@ def workflow_run(mode: str) -> None:
         from bcn.agents.distributor.agent import DistributorExecutor
         from bcn.agents.writer.agent import WriterExecutor
 
-        writer_result = await _run_agent_directly(
-            executor_cls=WriterExecutor,
-            settings=settings,
-            skill=f"generate_briefing::{mode}",
+        async def _run_writer(skill: str) -> str:
+            return await _run_agent_directly(
+                executor_cls=WriterExecutor,
+                settings=settings,
+                skill=skill,
+            )
+
+        async def _run_distributor(skill: str) -> str:
+            return await _run_agent_directly(
+                executor_cls=DistributorExecutor,
+                settings=settings,
+                skill=skill,
+            )
+
+        writer_result, distribute_result = await run_writer_distributor_handoff(
+            mode=mode,
+            run_writer=_run_writer,
+            run_distributor=_run_distributor,
         )
         click.echo(writer_result)
-        briefing_id = extract_briefing_id(writer_result)
-        if not briefing_id:
+        if not distribute_result:
             click.echo("Writer did not return a briefing id; skipping distribution.")
             return
 
-        distribute_result = await _run_agent_directly(
-            executor_cls=DistributorExecutor,
-            settings=settings,
-            skill=f"distribute_briefing::{briefing_id}::{mode}",
-        )
         click.echo(distribute_result)
 
     asyncio.run(_run())

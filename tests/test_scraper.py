@@ -167,3 +167,26 @@ class TestScraper:
 
         route.abort.assert_awaited_once()
         route.continue_.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_is_url_live_retries_get_on_head_5xx(self, scraper):
+        scraper.fetch_text = AsyncMock(side_effect=[(503, ""), (200, "ok")])
+
+        alive = await scraper.is_url_live("https://example.com/article")
+
+        assert alive is True
+        assert scraper.fetch_text.await_count == 2
+        assert scraper.fetch_text.await_args_list[0].kwargs["method"] == "HEAD"
+        assert scraper.fetch_text.await_args_list[1].kwargs["method"] == "GET"
+
+    @pytest.mark.asyncio
+    async def test_is_url_live_uses_cache(self, scraper):
+        scraper.fetch_text = AsyncMock(return_value=(200, "ok"))
+        cache: dict[str, bool] = {}
+
+        first = await scraper.is_url_live("https://example.com/item", cache=cache)
+        second = await scraper.is_url_live("https://example.com/item", cache=cache)
+
+        assert first is True
+        assert second is True
+        assert scraper.fetch_text.await_count == 1

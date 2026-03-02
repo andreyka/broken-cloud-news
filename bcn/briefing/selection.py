@@ -10,7 +10,7 @@ import math
 import re
 from urllib.parse import urlparse
 
-from bcn.briefing.text import normalize_url
+from bcn.briefing.text import canonical_url_key
 from bcn.briefing.text import to_dict
 from bcn.common.config import Settings
 
@@ -608,13 +608,13 @@ class BriefingSelector:
         if not others:
             return False
 
-        cur_url = normalize_url(str(item.get("url", "")))
+        cur_url = canonical_url_key(str(item.get("url", "")))
         cur_title = self._normalize_title(str(item.get("title", "")))
         cur_issue_keys = self._issue_keys(item)
         threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
 
         for other in others:
-            other_url = normalize_url(str(other.get("url", "")))
+            other_url = canonical_url_key(str(other.get("url", "")))
             if cur_url and other_url and cur_url == other_url:
                 return True
 
@@ -636,7 +636,7 @@ class BriefingSelector:
         if not recent_published:
             return 0.0
 
-        cur_url = normalize_url(str(item.get("url", "")))
+        cur_url = canonical_url_key(str(item.get("url", "")))
         cur_title = self._normalize_title(str(item.get("title", "")))
         cur_issue_keys = self._issue_keys(item)
         best_title_similarity = 0.0
@@ -644,7 +644,7 @@ class BriefingSelector:
         same_url_seen = False
 
         for prev in recent_published:
-            prev_url = normalize_url(str(prev.get("url", "")))
+            prev_url = canonical_url_key(str(prev.get("url", "")))
             if cur_url and prev_url and cur_url == prev_url:
                 same_url_seen = True
                 best_title_similarity = 1.0

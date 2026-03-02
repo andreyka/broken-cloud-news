@@ -31,6 +31,7 @@ _TRACKING_PARAM_NAMES = frozenset(
         "yclid",
     }
 )
+_URL_PATTERN = re.compile(r"https?://[^\s)\]>]+")
 
 
 def normalize_url(url: str) -> str:
@@ -49,10 +50,28 @@ def normalize_url(url: str) -> str:
     return f"{scheme}://{netloc}{path}{query}"
 
 
+def extract_raw_urls(markdown: str) -> list[str]:
+    """Extract raw HTTP(S) URLs from markdown/plain text."""
+    return _URL_PATTERN.findall(markdown or "")
+
+
+def extract_urls_in_order(markdown: str) -> list[str]:
+    """Extract raw HTTP(S) URLs preserving first-seen order."""
+    return list(dict.fromkeys(extract_raw_urls(markdown)))
+
+
 def extract_urls(markdown: str) -> set[str]:
     """Extract normalized HTTP(S) URLs from markdown/plain text."""
-    raw_urls = re.findall(r"https?://[^\s)\]>]+", markdown)
+    raw_urls = extract_raw_urls(markdown)
     return {normalize_url(u) for u in raw_urls if u}
+
+
+def extract_url_keys(markdown: str) -> set[str]:
+    """Extract canonical URL keys for robust URL inclusion checks."""
+    raw_urls = extract_raw_urls(markdown)
+    return {
+        key for key in (canonical_url_key(u) for u in raw_urls if u) if key
+    }
 
 
 def dedupe_markdown_links(markdown: str) -> str:
@@ -107,11 +126,11 @@ def canonical_url_key(url: str) -> str:
 
 def missing_items_for_markdown(markdown: str, items: list[dict]) -> list[dict]:
     """Return selected items whose main URLs are missing from markdown."""
-    present_urls = extract_urls(markdown)
+    present_keys = extract_url_keys(markdown)
     missing: list[dict] = []
     for item in items:
-        url = normalize_url(str(item.get("url", "")))
-        if url and url not in present_urls:
+        url_key = canonical_url_key(str(item.get("url", "")))
+        if url_key and url_key not in present_keys:
             missing.append(item)
     return missing
 

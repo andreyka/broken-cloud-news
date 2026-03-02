@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections import Counter
 import re
 
-from bcn.briefing.text import normalize_url
+from bcn.briefing.text import canonical_url_key
+from bcn.briefing.text import extract_raw_urls
 from bcn.common.config import Settings
 
 _AI_STAMP_PATTERNS = (
@@ -108,11 +109,13 @@ class BriefingQualityGate:
                     soft_issues.append(issue)
 
         url_counts: Counter[str] = Counter()
-        for raw_url in re.findall(r"https?://[^\s)\]>]+", body):
-            url_counts[normalize_url(raw_url)] += 1
+        for raw_url in extract_raw_urls(body):
+            key = canonical_url_key(raw_url)
+            if key:
+                url_counts[key] += 1
 
         for item in selected_items:
-            expected = normalize_url(str(item.get("url", "")))
+            expected = canonical_url_key(str(item.get("url", "")))
             if not expected:
                 continue
             count = url_counts.get(expected, 0)

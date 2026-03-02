@@ -462,19 +462,11 @@ class WriterLLM:
             return False
         if "github.com" not in url:
             return True
-        if url in self.client._url_status_cache:
-            return self.client._url_status_cache[url]
-
-        try:
-            status, _ = await self.scraper.fetch_text(
-                url, method="HEAD", timeout_ms=10000
-            )
-            alive = status in {200, 401, 403, 405, 429}
-        except Exception:
-            alive = False
-
-        self.client._url_status_cache[url] = alive
-        return alive
+        return await self.scraper.is_url_live(
+            url,
+            cache=self.client._url_status_cache,
+            timeout_ms=10000,
+        )
 
     @staticmethod
     def _strip_cover_image(markdown: str) -> str:

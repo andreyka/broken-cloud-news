@@ -18,6 +18,7 @@ from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.modes.common import run_writer_distributor_handoff
 
 
 def test_build_regular_briefing_trigger_from_multi_hours():
@@ -49,6 +50,46 @@ def test_extract_briefing_id_from_writer_message():
     briefing_id = uuid4()
     result = extract_briefing_id(f"Briefing created: id={briefing_id} items=3")
     assert result == briefing_id
+
+
+@pytest.mark.asyncio
+async def test_run_writer_distributor_handoff_uses_shared_skill_format():
+    briefing_id = uuid4()
+    run_writer = AsyncMock(return_value=f"Briefing created: id={briefing_id} items=3")
+    run_distributor = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
+
+    writer_result, distributor_result = await run_writer_distributor_handoff(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        run_writer=run_writer,
+        run_distributor=run_distributor,
+    )
+
+    assert "Briefing created" in writer_result
+    assert "Distributed to:" in str(distributor_result)
+    run_writer.assert_awaited_once_with(
+        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
+    )
+    run_distributor.assert_awaited_once_with(
+        f"distribute_briefing::{briefing_id}::{REGULAR_DAILY_BRIEFING_MODE}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_writer_distributor_handoff_skips_distribution_without_briefing_id():
+    run_writer = AsyncMock(return_value="No publishable draft")
+    run_distributor = AsyncMock(return_value="unused")
+
+    _writer_result, distributor_result = await run_writer_distributor_handoff(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        run_writer=run_writer,
+        run_distributor=run_distributor,
+    )
+
+    assert distributor_result is None
+    run_writer.assert_awaited_once_with(
+        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
+    )
+    run_distributor.assert_not_awaited()
 
 
 def test_build_regular_monthly_newsletter_trigger():
