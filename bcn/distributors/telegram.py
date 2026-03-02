@@ -69,8 +69,8 @@ class TelegramDistributor:
         markdown = str(briefing.get("content_markdown") or "")
         cover_image_url = briefing.get("cover_image_url")
 
-        # Strip markdown image tags — Telegram doesn't render them
-        clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown)
+        # Strip markdown image tags — Telegram doesn't render them.
+        clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown).strip()
         result: dict[str, object] = {
             "ok": False,
             "chat_id": self.chat_id,
@@ -84,6 +84,12 @@ class TelegramDistributor:
 
             if cover_image_url:
                 try:
+                    caption_raw = self._truncate_caption(clean_text)
+                    caption = caption_raw.strip()
+                    overflow = clean_text[len(caption_raw) :].lstrip("\n")
+                    if not caption:
+                        caption = "Broken Cloud briefing"
+
                     filename, mime_type, img_bytes = await self._load_cover_image_bytes(
                         cover_image_url
                     )
@@ -91,6 +97,8 @@ class TelegramDistributor:
                         f"{self.api}/sendPhoto",
                         data={
                             "chat_id": self.chat_id,
+                            "caption": caption,
+                            "parse_mode": "Markdown",
                         },
                         files={"photo": (filename, img_bytes, mime_type)},
                     )
@@ -99,29 +107,33 @@ class TelegramDistributor:
                     photo_msg_id = payload.get("result", {}).get("message_id")
                     if photo_msg_id is not None:
                         result["used_cover_image"] = True
+                        result["caption_chars"] = len(caption)
                         result["message_ids"] = [photo_msg_id]
                 except Exception as exc:
                     logger.warning("Failed to send cover photo: %s", exc)
                     result["cover_image_error"] = str(exc)
 
             if photo_msg_id is not None:
-                # Send the entire text as a reply to the photo
-                for chunk in self._split_message(clean_text):
-                    resp = await self._client.post(
-                        f"{self.api}/sendMessage",
-                        json={
-                            "chat_id": self.chat_id,
-                            "text": chunk,
-                            "parse_mode": "Markdown",
-                            "disable_web_page_preview": True,
-                            "reply_to_message_id": photo_msg_id,
-                        },
-                    )
-                    resp.raise_for_status()
-                    payload = resp.json()
-                    msg_id = payload.get("result", {}).get("message_id")
-                    if msg_id is not None and isinstance(result["message_ids"], list):
-                        result["message_ids"].append(msg_id)
+                # Send overflow as a follow-up reply only when useful.
+                overflow = clean_text[len(self._truncate_caption(clean_text)) :].lstrip("\n")
+                if overflow and self._should_send_overflow(overflow):
+                    result["overflow_sent"] = True
+                    for chunk in self._split_message(overflow):
+                        resp = await self._client.post(
+                            f"{self.api}/sendMessage",
+                            json={
+                                "chat_id": self.chat_id,
+                                "text": chunk,
+                                "parse_mode": "Markdown",
+                                "disable_web_page_preview": True,
+                                "reply_to_message_id": photo_msg_id,
+                            },
+                        )
+                        resp.raise_for_status()
+                        payload = resp.json()
+                        msg_id = payload.get("result", {}).get("message_id")
+                        if msg_id is not None and isinstance(result["message_ids"], list):
+                            result["message_ids"].append(msg_id)
             else:
                 # Fallback: no photo, send as plain text message(s)
                 sent_ids: list[int] = []

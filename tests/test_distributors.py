@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -140,6 +141,87 @@ class TestTelegramDistributor:
         )
         assert ok is True
         assert dist.last_result["used_cover_image"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_with_cover_sets_non_empty_caption(self):
+        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
+        dist._load_cover_image_bytes = AsyncMock(
+            return_value=("cover.png", "image/png", b"\x89PNG\r\n")
+        )
+
+        photo_response = httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 301}},
+            request=httpx.Request("POST", "https://api.telegram.org/bot123:FAKE/sendPhoto"),
+        )
+
+        calls: list[tuple[str, dict]] = []
+
+        async def _fake_post(url: str, **kwargs):
+            calls.append((url, kwargs))
+            return photo_response
+
+        dist._client.post = AsyncMock(side_effect=_fake_post)
+
+        ok = await dist.send(
+            {
+                "content_markdown": "*Title*\n\nBody text here",
+                "cover_image_url": "http://ignored.example/cover.png",
+            }
+        )
+        assert ok is True
+        assert len(calls) == 1
+        assert calls[0][0].endswith("/sendPhoto")
+        data = calls[0][1]["data"]
+        assert data["caption"] == "*Title*\n\nBody text here"
+        assert data["parse_mode"] == "Markdown"
+        assert dist.last_result["overflow_sent"] is False
+
+    @pytest.mark.asyncio
+    async def test_send_with_cover_sends_overflow_followup_when_actionable(self):
+        dist = TelegramDistributor(bot_token="123:FAKE", chat_id="-100")
+        dist._load_cover_image_bytes = AsyncMock(
+            return_value=("cover.png", "image/png", b"\x89PNG\r\n")
+        )
+
+        photo_response = httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 401}},
+            request=httpx.Request("POST", "https://api.telegram.org/bot123:FAKE/sendPhoto"),
+        )
+        message_response = httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 402}},
+            request=httpx.Request(
+                "POST", "https://api.telegram.org/bot123:FAKE/sendMessage"
+            ),
+        )
+
+        calls: list[tuple[str, dict]] = []
+
+        async def _fake_post(url: str, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/sendPhoto"):
+                return photo_response
+            return message_response
+
+        dist._client.post = AsyncMock(side_effect=_fake_post)
+        long_actionable = (
+            "Intro\n\n"
+            + ("line\n" * 300)
+            + "\nPatch details: CVE-2026-1234 https://example.com/advisory"
+        )
+        ok = await dist.send(
+            {
+                "content_markdown": long_actionable,
+                "cover_image_url": "http://ignored.example/cover.png",
+            }
+        )
+        assert ok is True
+        assert any(url.endswith("/sendPhoto") for url, _ in calls)
+        assert any(url.endswith("/sendMessage") for url, _ in calls)
+        assert dist.last_result["overflow_sent"] is True
+        assert dist.last_result["message_ids"] == [401, 402]
 
 
 class TestSlackDistributor:
