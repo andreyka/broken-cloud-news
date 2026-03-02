@@ -103,10 +103,45 @@ async def insert_news_item(
     return row["id"] if row else None
 
 
-async def get_new_items() -> list[asyncpg.Record]:
-    """Fetch all news items with status ``NEW``."""
+async def get_new_items(
+    *,
+    limit: int = 250,
+    stale_analyzing_minutes: int = 120,
+) -> list[asyncpg.Record]:
+    """Atomically claim ``NEW`` items for analysis.
+
+    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent analyst workers do not process
+    the same items. Stale ``ANALYZING`` rows are automatically reclaimed.
+    """
     pool = await get_pool()
-    return await pool.fetch("SELECT * FROM news_items WHERE status = 'NEW'")
+    return await pool.fetch(
+        """
+        WITH candidate AS (
+            SELECT id
+            FROM news_items
+            WHERE status = 'NEW'
+               OR (
+                    status = 'ANALYZING'
+                    AND updated_at < NOW() - make_interval(mins => $2)
+               )
+            ORDER BY published_at DESC
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1
+        ),
+        claimed AS (
+            UPDATE news_items AS n
+            SET status = 'ANALYZING', updated_at = NOW()
+            FROM candidate
+            WHERE n.id = candidate.id
+            RETURNING n.*
+        )
+        SELECT *
+        FROM claimed
+        ORDER BY published_at DESC
+        """,
+        max(1, int(limit)),
+        max(1, int(stale_analyzing_minutes)),
+    )
 
 
 async def update_item_scraped(item_id: UUID, full_content: str) -> None:
@@ -125,6 +160,21 @@ async def update_item_scraped(item_id: UUID, full_content: str) -> None:
         """,
         full_content,
         item_id,
+    )
+
+
+async def release_items_from_analyzing(ids: list[UUID]) -> None:
+    """Release claimed ``ANALYZING`` items back to ``NEW`` for retry."""
+    if not ids:
+        return
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE news_items
+        SET status = 'NEW', updated_at = NOW()
+        WHERE id = ANY($1::uuid[]) AND status = 'ANALYZING'
+        """,
+        ids,
     )
 
 
@@ -170,30 +220,67 @@ async def update_item_analyzed(
 async def get_analyzed_items(
     min_score: int = 7,
     hours: int = 24,
+    *,
+    limit: int = 250,
+    stale_writing_minutes: int = 180,
 ) -> list[asyncpg.Record]:
-    """Fetch analyzed items above a relevance threshold within a time window.
+    """Atomically claim analyzed items for writer selection.
 
-    Args:
-        min_score: Minimum ``relevance_score`` to include.
-        hours: Lookback window in hours from now.
-
-    Returns:
-        Records ordered by ``relevance_score`` descending.
+    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent writer workers do not process
+    the same candidate set. Stale ``WRITING`` rows are automatically reclaimed.
     """
     pool = await get_pool()
     return await pool.fetch(
         """
-        SELECT * FROM news_items
-        WHERE status = 'ANALYZED'
-          AND relevance_score >= $1
-          AND published_at > NOW() - make_interval(hours => $2)
-          AND NOT EXISTS (
-              SELECT 1 FROM briefings WHERE news_items.id = ANY(briefings.item_ids)
-          )
-        ORDER BY relevance_score DESC
+        WITH candidate AS (
+            SELECT id
+            FROM news_items
+            WHERE (
+                    status = 'ANALYZED'
+                    OR (
+                        status = 'WRITING'
+                        AND updated_at < NOW() - make_interval(mins => $3)
+                    )
+                  )
+              AND relevance_score >= $1
+              AND published_at > NOW() - make_interval(hours => $2)
+              AND NOT EXISTS (
+                  SELECT 1 FROM briefings WHERE news_items.id = ANY(briefings.item_ids)
+              )
+            ORDER BY relevance_score DESC, published_at DESC
+            FOR UPDATE SKIP LOCKED
+            LIMIT $4
+        ),
+        claimed AS (
+            UPDATE news_items AS n
+            SET status = 'WRITING', updated_at = NOW()
+            FROM candidate
+            WHERE n.id = candidate.id
+            RETURNING n.*
+        )
+        SELECT *
+        FROM claimed
+        ORDER BY relevance_score DESC, published_at DESC
         """,
         min_score,
         hours,
+        max(1, int(stale_writing_minutes)),
+        max(1, int(limit)),
+    )
+
+
+async def release_items_from_writing(ids: list[UUID]) -> None:
+    """Release claimed ``WRITING`` items back to ``ANALYZED``."""
+    if not ids:
+        return
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE news_items
+        SET status = 'ANALYZED', updated_at = NOW()
+        WHERE id = ANY($1::uuid[]) AND status = 'WRITING'
+        """,
+        ids,
     )
 
 

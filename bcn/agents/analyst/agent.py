@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from uuid import UUID
 
 from a2a.server.agent_execution import AgentExecutor
 from a2a.server.agent_execution import RequestContext
@@ -16,6 +17,7 @@ from bcn.agents.analyst.llm import AnalystLLM
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
 from bcn.common.db import get_new_items
+from bcn.common.db import release_items_from_analyzing
 from bcn.common.db import update_item_analyzed
 from bcn.common.llm import LLMClient
 from bcn.common.scraper import Scraper
@@ -66,6 +68,16 @@ class AnalystExecutor(AgentExecutor):
                 analyzed += 1
             except Exception:
                 logger.exception("Failed to analyze item %s", item.get("id"))
+                if str(item.get("status", "")).upper() == "ANALYZING":
+                    item_id = self._coerce_uuid(item.get("id"))
+                    if item_id:
+                        try:
+                            await release_items_from_analyzing([item_id])
+                        except Exception:
+                            logger.exception(
+                                "Failed to release ANALYZING item %s after analysis error",
+                                item_id,
+                            )
                 failed += 1
 
         msg = f"Analyzed {analyzed}/{len(items)} items"
@@ -134,6 +146,15 @@ class AnalystExecutor(AgentExecutor):
             item["source_type"],
             result.relevance_score,
         )
+
+    @staticmethod
+    def _coerce_uuid(value: object) -> UUID | None:
+        if isinstance(value, UUID):
+            return value
+        try:
+            return UUID(str(value))
+        except Exception:
+            return None
 
     async def close(self) -> None:
         """Release analyst resources."""
