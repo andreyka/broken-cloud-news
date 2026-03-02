@@ -6,7 +6,7 @@
 
 ## Architecture
 
-Four A2A agents work together, coordinated by an internal scheduler. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
+Six A2A agents work together (four scheduled pipeline agents plus critic and verifier quality agents), coordinated by an internal scheduler. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
 
 <div align="center">
 
@@ -32,6 +32,7 @@ flowchart TB
         Analyst["Analyst"]:::agent
         Writer["Writer"]:::agent
         Critic["Critic"]:::agent
+        Verifier["Verifier"]:::agent
         Distributor["Distributor"]:::agent
     end
 
@@ -42,8 +43,8 @@ flowchart TB
 
     subgraph Channels["Distribution"]
         TG["Telegram"]:::channel
+        Discord["Discord"]:::channel
         Email["Email"]:::channel
-        Slack["Slack"]:::channel
     end
 
     GHSA --> Collector
@@ -59,14 +60,18 @@ flowchart TB
     Writer -->|Draft Briefing| LLM
     Writer -->|Draft| Critic
     Critic -->|Quality Feedback| Writer
+    Writer -->|Fact Check| Verifier
+    Verifier -->|Verification Feedback| Writer
     Writer -->|Generate Cover| ImageGen
     LLM -->|Briefing Text| Writer
+    LLM -->|Critique/Verification| Critic
+    LLM -->|Critique/Verification| Verifier
     ImageGen -->|Cover Image| Writer
     Writer -->|Store Briefing| DB
     DB -->|Latest Briefing| Distributor
     Distributor --> TG
+    Distributor --> Discord
     Distributor -.-> Email
-    Distributor -.-> Slack
 ```
 
 </div>
@@ -76,9 +81,10 @@ flowchart TB
 | Agent | Port | Trigger | Role |
 |-------|------|---------|------|
 | **Collector** | 9001 | Every 2-6h | Fetches GHSA, RSS (CISA/AWS/Cloudflare), Reddit RSS, Twitter/X via API v2 |
-| **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via Qwen LLM |
+| **Analyst** | 9002 | Every 15m | Scores relevance (1-10) and summarizes via configured LLM |
 | **Writer** | 9003 | Daily + Monthly | Generates briefings/newsletters and cover images (Gemini image or Flux fallback) |
 | **Critic** | 9005 | On-demand | Scores/criticizes briefing quality (LLM + deterministic gate) |
+| **Verifier** | 9006 | On-demand | Verifies factual grounding, link hygiene, and hard issue checks |
 | **Distributor** | 9004 | After Writer | Mode-aware distribution (daily/ad-hoc: Telegram+Discord, monthly: email) |
 
 All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The scheduler orchestrates the pipeline automatically in daemon mode.
@@ -97,17 +103,11 @@ All agents communicate via the **A2A JSON-RPC protocol** and share state through
 git clone https://github.com/andreyka/broken-cloud-news.git
 cd broken-cloud-news
 
-# Start PostgreSQL
-docker compose up -d postgres
-
-# Install Python package
-pip install -e .
-playwright install chromium
-
-# Configure
-cp .env.example .env
-# Edit .env with your tokens and endpoints
+# Interactive setup (handles docker vs managed DB, channel tokens, and startup checks)
+./setup.sh
 ```
+
+Manual setup is still supported if needed (`cp .env.example .env`, edit values, then `docker compose up -d`).
 
 ### Run
 
@@ -131,7 +131,7 @@ bcn record-outcome --briefing-id <uuid> --channel telegram --views 1200 --clicks
 bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets
 bcn distribute --mode regular_daily_briefing
 bcn distribute --mode regular_monthly_newsletter --briefing-id <uuid>
-bcn newsletter-subscribers add avkovaleff@gmail.com
+bcn newsletter-subscribers add you@example.com
 bcn newsletter-subscribers list
 bcn workflow-run --mode ad_hoc
 bcn pipeline --mode regular_daily_briefing
@@ -160,6 +160,7 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `BCN_SETUP_DATABASE_MODE` | `docker` | Setup hint for `setup.sh` (`docker` or `managed`) |
 | `BCN_DATABASE_URL` | `postgresql://...` | PostgreSQL connection string |
 | `BCN_LLM_PROVIDER` | `openai_compat` | LLM provider (`openai_compat`, `gemini`, or `vertexai`) |
 | `BCN_LLM_BASE_URL` | `http://host.docker.internal:8000/v1` | Qwen API endpoint |
@@ -173,6 +174,8 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_TWITTER_BEARER_TOKEN` | - | X API v2 bearer token |
 | `BCN_TELEGRAM_BOT_TOKEN` | - | Telegram bot token |
 | `BCN_TELEGRAM_CHAT_ID` | - | Telegram channel chat ID |
+| `BCN_DISCORD_BOT_TOKEN` | - | Discord bot token |
+| `BCN_DISCORD_CHANNEL_ID` | - | Discord target channel ID |
 | `BCN_RELEVANCE_THRESHOLD` | `7` | Min score (1-10) to include in briefing |
 | `BCN_DISTRIBUTE_HOURS` | empty | Optional comma/JSON list of digest hours (e.g. `9,13,19`) |
 | `BCN_DISTRIBUTE_HOUR` | `9` | Legacy single digest hour fallback when `BCN_DISTRIBUTE_HOURS` is empty |
@@ -287,24 +290,12 @@ docker run --rm -it \
 
 #### 2. Flux.1-schnell (Cover Image Generation)
 
-Runs **ComfyUI** with Flux model:
+Runs **ComfyUI** with a Flux-compatible checkpoint. This repo does not ship a
+ComfyUI Dockerfile; deploy ComfyUI separately and point BCN at it:
 
 ```bash
-# Build image
-docker build -t comfyui:arm64-cuda -f Dockerfile.comfyui .
-
-# Download model
-mkdir -p ~/comfyui/models/checkpoints
-wget -O ~/comfyui/models/checkpoints/flux1-schnell.safetensors \
-  https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
-
-# Run
-docker run --rm -it \
-  --gpus all --shm-size=32g \
-  -p 8188:8188 \
-  -v ~/comfyui/models:/opt/ComfyUI/models \
-  -v ~/comfyui/output:/opt/ComfyUI/output \
-  comfyui:arm64-cuda
+# Example endpoint configuration after ComfyUI is running:
+BCN_COMFYUI_URL=http://<comfyui-host>:8188
 ```
 
 ---
@@ -317,11 +308,23 @@ Each agent exposes a standard Google A2A interface:
 
 ```python
 from a2a.client import A2AClient
+from a2a.types import Message
+from a2a.types import MessageSendParams
+from a2a.types import SendMessageRequest
+from a2a.types import TextPart
 import httpx
+from uuid import uuid4
 
-async with httpx.AsyncClient() as http:
-    client = await A2AClient.get_client_from_agent_card_url(
-        http, "http://localhost:9001"
+async with httpx.AsyncClient(timeout=180) as http:
+    client = A2AClient(http, url="http://localhost:9001")
+    message = Message(
+        role="user",
+        parts=[TextPart(text="collect_rss")],
+        message_id=uuid4().hex,
+    )
+    request = SendMessageRequest(
+        id=uuid4().hex,
+        params=MessageSendParams(message=message),
     )
     response = await client.send_message(request)
 ```
@@ -332,35 +335,47 @@ async with httpx.AsyncClient() as http:
 ```
 bcn/
   cli.py              CLI command wiring (thin entrypoint)
+  simulation.py       Historical briefing replay + comparison scoring
+  common/
+    config.py         Pydantic Settings (env vars)
+    db.py             asyncpg database layer
+    models.py         Pydantic data models
+    llm.py            Role-aware LLM router/client (analysis + briefing)
+    comfyui.py        ComfyUI Flux client (cover images)
+    scraper.py        Playwright headless Chromium scraper
+    url_policy.py     SSRF policy + URL normalization helpers
   workflows/
     runtime.py        Shared runtime wiring (settings + sender)
     automation.py     Scheduler jobs + mode facade
     modes/
+      common.py
       regular_daily_briefing.py
       ad_hoc.py
       regular_monthly_newsletter.py
-  config.py           Pydantic Settings (env vars)
-  db.py               asyncpg database layer
-  models.py           Pydantic data models
-  llm.py              Role-aware LLM router/client (analysis + briefing)
-  simulation.py       Historical briefing replay + comparison scoring
-  comfyui.py          ComfyUI Flux client (cover images)
-  scraper.py          Playwright headless Chromium scraper
   agents/
     base.py           A2A agent boilerplate
-    collector.py      Data collection (GHSA, RSS, Reddit, Twitter/X)
-    analyst.py        LLM relevance scoring + summarization
-    writer.py         Briefing + cover image generation
-    critic.py         Briefing critique and quality assessment
-    distributor.py    Multi-channel distribution
+    collector/
+      agent.py        Data collection (GHSA, RSS, Reddit, Twitter/X)
+    analyst/
+      agent.py        LLM relevance scoring + summarization
+    writer/
+      agent.py        Briefing + cover image generation
+    critic/
+      agent.py        Briefing critique and quality assessment
+    verifier/
+      agent.py        Briefing factual verification
+    distributor/
+      agent.py        Mode-aware multi-channel distribution
   briefing/
     selection.py      Ranking + diversity-aware item selection
     quality.py        Deterministic quality gate checks
+    verifier.py       Fact-check orchestration for writer loop
     text.py           Markdown normalization and fallback formatting
   distributors/
     telegram.py       Telegram Bot API (photo + caption)
+    discord.py        Discord Bot API
     email.py          SMTP email
-    slack.py          Slack webhook
+    slack.py          Slack webhook client (available, not in default mode policy)
 assets/
   logo.png            Project logo
 ```

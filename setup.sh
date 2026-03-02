@@ -21,6 +21,8 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yaml"
+PROJECT_NAME="${BCN_COMPOSE_PROJECT_NAME:-broken-cloud-news}"
+COMPOSE_CMD=""
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -31,6 +33,16 @@ ok()      { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 err()     { echo -e "${RED}[ERROR]${NC} $*"; }
 header()  { echo -e "\n${BOLD}=== $* ===${NC}\n"; }
+
+show_banner() {
+    cat <<'BANNER'
+ ____             _                ____ _                 _ _   _
+| __ )  ___  __ _| | _____ _ __   / ___| | ___  _   _  __| | \ | | _____      _____
+|  _ \ / _ \/ _` | |/ / _ \ '_ \ | |   | |/ _ \| | | |/ _` |  \| |/ _ \ \ /\ / / __|
+| |_) |  __/ (_| |   <  __/ | | || |___| | (_) | |_| | (_| | |\  |  __/\ V  V /\__ \
+|____/ \___|\__,_|_|\_\___|_| |_| \____|_|\___/ \__,_|\__,_|_| \_|\___| \_/\_/ |___/
+BANNER
+}
 
 REPLY_VALUE=""
 prompt_value() {
@@ -102,25 +114,184 @@ check_command() {
     ok "$1 found: $(command -v "$1")"
 }
 
+detect_compose_command() {
+    if docker compose version &>/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+    elif command -v docker-compose &>/dev/null; then
+        COMPOSE_CMD="docker-compose"
+    else
+        err "Neither 'docker compose' nor 'docker-compose' found."
+        exit 1
+    fi
+}
+
+compose_hint() {
+    if [[ -z "$COMPOSE_CMD" ]]; then
+        detect_compose_command
+    fi
+    if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+        echo "docker compose -p $PROJECT_NAME -f $COMPOSE_FILE"
+    else
+        echo "docker-compose -p $PROJECT_NAME -f $COMPOSE_FILE"
+    fi
+}
+
+compose_run() {
+    if [[ -z "$COMPOSE_CMD" ]]; then
+        detect_compose_command
+    fi
+    if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
+        docker compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+    else
+        docker-compose -p "$PROJECT_NAME" -f "$COMPOSE_FILE" "$@"
+    fi
+}
+
+cleanup_legacy_stack() {
+    local legacy_containers
+    local legacy_networks
+
+    legacy_containers="$(
+        docker ps -a --format '{{.Names}}' \
+        | grep -E '^broken_cloud_news-(bcn|postgres|dns_resolver|egress_proxy)-1$' \
+        || true
+    )"
+    legacy_networks="$(
+        docker network ls --format '{{.Name}}' \
+        | grep -E '^broken_cloud_news_(app_internal|default|egress_public|n8n_network)$' \
+        || true
+    )"
+
+    if [[ -z "$legacy_containers" && -z "$legacy_networks" ]]; then
+        return
+    fi
+
+    warn "Detected legacy stack resources from old project naming (broken_cloud_news)."
+    if [[ -n "$legacy_containers" ]]; then
+        echo "  Containers:"
+        while IFS= read -r c; do
+            [[ -n "$c" ]] && echo "    - $c"
+        done <<< "$legacy_containers"
+    fi
+    if [[ -n "$legacy_networks" ]]; then
+        echo "  Networks:"
+        while IFS= read -r n; do
+            [[ -n "$n" ]] && echo "    - $n"
+        done <<< "$legacy_networks"
+    fi
+
+    if ! prompt_yes_no "Remove legacy resources now to avoid network/port conflicts?" "y"; then
+        warn "Leaving legacy resources in place; compose startup may fail due to overlap."
+        return
+    fi
+
+    if [[ -n "$legacy_containers" ]]; then
+        while IFS= read -r c; do
+            [[ -n "$c" ]] && docker rm -f "$c" >/dev/null 2>&1 || true
+        done <<< "$legacy_containers"
+    fi
+    if [[ -n "$legacy_networks" ]]; then
+        while IFS= read -r n; do
+            [[ -n "$n" ]] && docker network rm "$n" >/dev/null 2>&1 || true
+        done <<< "$legacy_networks"
+    fi
+
+    ok "Legacy resources cleaned."
+}
+
+database_mode_from_env() {
+    local mode="${BCN_SETUP_DATABASE_MODE:-}"
+    local url="${BCN_DATABASE_URL:-}"
+    if [[ "$mode" == "managed" || "$mode" == "docker" ]]; then
+        echo "$mode"
+        return
+    fi
+
+    if [[ "$url" =~ @postgres([:/]|$) ]] \
+        || [[ "$url" =~ @localhost([:/]|$) ]] \
+        || [[ "$url" =~ @127\.0\.0\.1([:/]|$) ]]; then
+        echo "docker"
+    else
+        echo "managed"
+    fi
+}
+
+warn_managed_db_sslmode() {
+    local db_url="$1"
+    if [[ "$db_url" != *"sslmode="* ]]; then
+        warn "Managed DB URL has no sslmode parameter. Add '?sslmode=require' unless your provider says otherwise."
+    fi
+}
+
+validate_database_access() {
+    local output
+    if ! output="$(compose_run exec -T bcn sh -lc "python - <<'PY'
+import asyncio
+import os
+
+import asyncpg
+
+REQUIRED = (
+    ('news_items', 'relevance_score'),
+    ('briefings', 'id'),
+    ('generation_runs', 'id'),
+)
+
+async def main() -> int:
+    url = os.environ.get('BCN_DATABASE_URL', '')
+    if not url:
+        print('missing_env:BCN_DATABASE_URL')
+        return 2
+
+    conn = await asyncpg.connect(url)
+    try:
+        await conn.execute('SELECT 1')
+        for table, column in REQUIRED:
+            row = await conn.fetchrow(
+                'SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2',
+                table,
+                column,
+            )
+            if row is None:
+                print(f'missing_schema:{table}.{column}')
+                return 3
+    finally:
+        await conn.close()
+    return 0
+
+try:
+    raise SystemExit(asyncio.run(main()))
+except Exception as exc:
+    print(f'exception:{type(exc).__name__}:{exc}')
+    raise
+PY" 2>&1)"; then
+        err "Database connectivity/schema validation failed."
+        echo "$output"
+        return 1
+    fi
+
+    ok "Database connectivity and baseline schema checks passed."
+}
+
 # --------------------------------------------------------------------------
 # Docker volume management
 # --------------------------------------------------------------------------
 
 docker_stop() {
     info "Stopping containers..."
-    docker compose -f "$COMPOSE_FILE" down 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down 2>/dev/null || true
+    compose_run down 2>/dev/null || true
     ok "Containers stopped."
 }
 
 docker_remove_volumes() {
     info "Removing Docker volumes..."
-    docker compose -f "$COMPOSE_FILE" down -v 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down -v 2>/dev/null || true
+    compose_run down -v 2>/dev/null || true
     ok "Volumes removed. Database will be re-initialized on next start."
 }
 
 docker_remove_images() {
     info "Removing built images..."
-    docker compose -f "$COMPOSE_FILE" down --rmi local 2>/dev/null || docker-compose -f "$COMPOSE_FILE" down --rmi local 2>/dev/null || true
+    compose_run down --rmi local 2>/dev/null || true
     ok "Local images removed."
 }
 
@@ -181,10 +352,19 @@ cmd_check() {
     source "$ENV_FILE" 2>/dev/null || true
 
     local issues=0
+    local runtime_issues=0
+    local db_mode=""
 
     # Database
     if [[ -n "${BCN_DATABASE_URL:-}" ]]; then
         ok "BCN_DATABASE_URL is set"
+        db_mode="$(database_mode_from_env)"
+        ok "Database mode: $db_mode"
+        if [[ "$db_mode" == "managed" ]]; then
+            warn_managed_db_sslmode "${BCN_DATABASE_URL}"
+        elif [[ "${BCN_DATABASE_URL}" == *"@localhost:"* ]]; then
+            warn "Database URL uses localhost. In Docker mode prefer host 'postgres'."
+        fi
     else
         err "BCN_DATABASE_URL is missing"; ((issues++))
     fi
@@ -236,6 +416,18 @@ cmd_check() {
         warn "Telegram not configured (distribution disabled)"
     fi
 
+    # Discord
+    if [[ -n "${BCN_DISCORD_BOT_TOKEN:-}" ]]; then
+        ok "BCN_DISCORD_BOT_TOKEN is set"
+        if [[ -n "${BCN_DISCORD_CHANNEL_ID:-}" ]]; then
+            ok "BCN_DISCORD_CHANNEL_ID = ${BCN_DISCORD_CHANNEL_ID}"
+        else
+            warn "BCN_DISCORD_CHANNEL_ID is missing"
+        fi
+    else
+        warn "Discord not configured (distribution disabled)"
+    fi
+
     # Email
     if [[ -n "${BCN_SMTP_HOST:-}" ]]; then
         ok "Email configured: ${BCN_SMTP_HOST}:${BCN_SMTP_PORT:-587}"
@@ -260,7 +452,25 @@ cmd_check() {
 
     # Check if containers are running
     header "CONTAINER STATUS"
-    docker compose -f "$COMPOSE_FILE" ps 2>/dev/null || docker-compose -f "$COMPOSE_FILE" ps 2>/dev/null || warn "Could not check container status"
+    if command -v docker >/dev/null 2>&1; then
+        detect_compose_command
+        compose_run ps || warn "Could not check container status"
+        if compose_run ps --services --filter status=running 2>/dev/null | grep -qx "bcn"; then
+            info "Running in-container DB/schema validation..."
+            if ! validate_database_access; then
+                warn "If this is a reused or stale DB volume, run ./setup.sh --reset."
+                runtime_issues=$((runtime_issues + 1))
+            fi
+        else
+            warn "bcn container is not running; skipped runtime DB/schema validation."
+        fi
+    else
+        warn "Docker not found; skipped container status checks."
+    fi
+
+    if [[ $runtime_issues -gt 0 ]]; then
+        exit 1
+    fi
 }
 
 # --------------------------------------------------------------------------
@@ -275,16 +485,9 @@ cmd_setup() {
     check_command docker
     check_command curl
 
-    # Determine compose command
-    if docker compose version &>/dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
-    elif command -v docker-compose &>/dev/null; then
-        COMPOSE_CMD="docker-compose"
-    else
-        err "Neither 'docker compose' nor 'docker-compose' found."
-        exit 1
-    fi
+    detect_compose_command
     ok "Using: $COMPOSE_CMD"
+    cleanup_legacy_stack
 
     # If .env exists, offer to keep it
     if [[ -f "$ENV_FILE" ]]; then
@@ -301,10 +504,26 @@ cmd_setup() {
     # ------------------------------------------------------------------
 
     header "Database Configuration"
-    info "The default PostgreSQL credentials work with docker-compose out of the box."
-    prompt_value BCN_DATABASE_URL "PostgreSQL connection URL" \
-        "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
-    DB_URL="$REPLY_VALUE"
+    DB_MODE="docker"
+    DB_URL=""
+    if prompt_yes_no "Use a managed/external PostgreSQL database?" "n"; then
+        DB_MODE="managed"
+        info "Managed DB mode skips local postgres startup and connects directly."
+        info "Example: postgresql://user:password@db.example.com:5432/broken_cloud_news?sslmode=require"
+        prompt_value BCN_DATABASE_URL "Managed PostgreSQL connection URL" "" "true"
+        DB_URL="$REPLY_VALUE"
+        if [[ -z "$DB_URL" ]]; then
+            err "Managed DB mode requires BCN_DATABASE_URL."
+            exit 1
+        fi
+        warn_managed_db_sslmode "$DB_URL"
+    else
+        DB_MODE="docker"
+        info "Using docker-compose PostgreSQL service. Host must be 'postgres' for in-container app access."
+        prompt_value BCN_DATABASE_URL "PostgreSQL connection URL (docker mode)" \
+            "postgresql://broken_cloud_news_agent_db:cloud_security_agent@postgres:5432/broken_cloud_news"
+        DB_URL="$REPLY_VALUE"
+    fi
 
     header "LLM Configuration (Qwen on DGX Spark)"
     info "OpenAI-compatible API endpoint for the analysis LLM."
@@ -344,6 +563,19 @@ cmd_setup() {
         TELEGRAM_TOKEN="$REPLY_VALUE"
         prompt_value BCN_TELEGRAM_CHAT_ID "Chat ID (e.g. -1001234567890)" ""
         TELEGRAM_CHAT_ID="$REPLY_VALUE"
+    fi
+
+    # Discord
+    DISCORD_TOKEN=""
+    DISCORD_CHANNEL_ID=""
+    if prompt_yes_no "Configure Discord distribution?" "y"; then
+        info "1. Create a Discord bot and copy its token"
+        info "2. Invite bot to your server/channel with message permissions"
+        info "3. Enable developer mode and copy the target channel ID"
+        prompt_value BCN_DISCORD_BOT_TOKEN "Discord bot token" "" "true"
+        DISCORD_TOKEN="$REPLY_VALUE"
+        prompt_value BCN_DISCORD_CHANNEL_ID "Discord channel ID" ""
+        DISCORD_CHANNEL_ID="$REPLY_VALUE"
     fi
 
     # Email
@@ -389,6 +621,7 @@ cmd_setup() {
 # Generated by setup.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Database
+BCN_SETUP_DATABASE_MODE=$DB_MODE
 BCN_DATABASE_URL=$DB_URL
 
 # LLM (OpenAI-compatible API)
@@ -408,6 +641,10 @@ BCN_TWITTER_BEARER_TOKEN=$TWITTER_BEARER_TOKEN
 BCN_TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
 BCN_TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
 
+# Discord distribution
+BCN_DISCORD_BOT_TOKEN=$DISCORD_TOKEN
+BCN_DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+
 # Email distribution (SMTP)
 BCN_SMTP_HOST=$SMTP_HOST
 BCN_SMTP_PORT=$SMTP_PORT
@@ -425,7 +662,9 @@ BCN_SLACK_WEBHOOK_URL=$SLACK_WEBHOOK
 # BCN_TWITTER_INTERVAL_HOURS=6
 # BCN_ANALYST_INTERVAL_MINUTES=15
 # BCN_DISTRIBUTE_HOUR=9
+# BCN_DISTRIBUTE_HOURS=9,13,19
 # BCN_DISTRIBUTE_MINUTE=0
+# BCN_DISTRIBUTE_TIMEZONE=UTC
 ENVEOF
 
     chmod 600 "$ENV_FILE"
@@ -441,45 +680,75 @@ ENVEOF
 start_services() {
     header "Starting Docker Services"
 
+    if [[ -f "$ENV_FILE" ]]; then
+        source "$ENV_FILE" 2>/dev/null || true
+    fi
+    local db_mode
+    db_mode="$(database_mode_from_env)"
+
     if ! prompt_yes_no "Start services now?" "y"; then
-        info "Skipped. Start manually with: docker compose up -d"
+        info "Skipped. Start manually with: $(compose_hint) up -d"
         show_next_steps
         return
     fi
 
-    info "Building and starting containers..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build
+    if [[ "$db_mode" == "managed" ]]; then
+        info "Starting infra + app in managed DB mode (without local postgres dependency)..."
+        compose_run up -d --build egress_proxy dns_resolver
+        compose_run up -d --build --no-deps bcn
+    else
+        info "Building and starting containers..."
+        compose_run up -d --build
 
-    info "Waiting for PostgreSQL to be ready..."
-    local retries=30
-    while [[ $retries -gt 0 ]]; do
-        if $COMPOSE_CMD -f "$COMPOSE_FILE" exec -T postgres pg_isready -U postgres_agent_db -d broken_cloud_news >/dev/null 2>&1; then
-            ok "PostgreSQL is ready!"
+        info "Waiting for PostgreSQL to be ready..."
+        local retries=30
+        while [[ $retries -gt 0 ]]; do
+            if compose_run exec -T postgres pg_isready -U postgres_agent_db -d broken_cloud_news >/dev/null 2>&1; then
+                ok "PostgreSQL is ready!"
+                break
+            fi
+            retries=$((retries - 1))
+            sleep 2
+        done
+
+        if [[ $retries -eq 0 ]]; then
+            err "PostgreSQL did not become ready in time."
+            err "Check logs: $(compose_hint) logs postgres"
+            exit 1
+        fi
+    fi
+
+    info "Validating database connectivity and schema from the app container..."
+    local db_check_retries=12
+    while [[ $db_check_retries -gt 0 ]]; do
+        if validate_database_access >/dev/null 2>&1; then
+            ok "Database connectivity and baseline schema checks passed."
             break
         fi
-        retries=$((retries - 1))
+        db_check_retries=$((db_check_retries - 1))
         sleep 2
     done
-
-    if [[ $retries -eq 0 ]]; then
-        err "PostgreSQL did not become ready in time."
-        err "Check logs: $COMPOSE_CMD -f '$COMPOSE_FILE' logs postgres"
+    if [[ $db_check_retries -eq 0 ]]; then
+        validate_database_access
+        err "Database validation failed. For stale local DB state, run ./setup.sh --reset."
         exit 1
     fi
 
     echo ""
-    $COMPOSE_CMD -f "$COMPOSE_FILE" ps
+    compose_run ps
 
     show_next_steps
 }
 
 show_next_steps() {
+    local compose_cmd
+    compose_cmd="$(compose_hint)"
     header "Setup Complete"
     echo -e "
 ${BOLD}Quick commands:${NC}
-  ${GREEN}docker compose up -d${NC}           Start all services
-  ${GREEN}docker compose logs -f bcn${NC}     Follow application logs
-  ${GREEN}docker compose down${NC}            Stop services
+  ${GREEN}${compose_cmd} up -d${NC}           Start all services
+  ${GREEN}${compose_cmd} logs -f bcn${NC}     Follow application logs
+  ${GREEN}${compose_cmd} down${NC}            Stop services
   ${GREEN}./setup.sh --check${NC}             Validate configuration
   ${GREEN}./setup.sh --reset${NC}             Reset DB volume + re-setup
   ${GREEN}./setup.sh --nuke${NC}              Remove everything
@@ -501,6 +770,8 @@ ${BOLD}Manual pipeline (without Docker app container):${NC}
 
 main() {
     cd "$SCRIPT_DIR"
+    show_banner
+    echo ""
 
     case "${1:-}" in
         --nuke)
