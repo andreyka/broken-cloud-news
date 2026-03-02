@@ -38,16 +38,12 @@ from bcn.common.db import get_top_items_for_period
 from bcn.common.db import insert_briefing
 from bcn.common.db import insert_generation_preference_pair
 from bcn.common.llm import LLMClient
+from bcn.workflows.modes import ALL_MODES
+from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 logger = logging.getLogger(__name__)
-REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
-AD_HOC_MODE = "ad_hoc"
-REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
-_SUPPORTED_WORKFLOW_MODES = {
-    REGULAR_DAILY_BRIEFING_MODE,
-    AD_HOC_MODE,
-    REGULAR_MONTHLY_NEWSLETTER_MODE,
-}
+_SUPPORTED_WORKFLOW_MODES = frozenset(ALL_MODES)
 _CRITIC_BLOCKING_TERMS = (
     "factual overreach",
     "contradiction",

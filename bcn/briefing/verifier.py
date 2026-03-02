@@ -7,6 +7,8 @@ import re
 from typing import Any
 
 from bcn.agents.verifier.llm import VerifierLLM
+from bcn.briefing.text import canonical_url_key
+from bcn.briefing.text import extract_urls_in_order as extract_urls_in_order_from_text
 from bcn.briefing.text import normalize_url
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
@@ -135,7 +137,7 @@ class BriefingFactVerifier:
         items: list[dict[str, Any]],
     ) -> list[str]:
         selected_urls = {
-            normalize_url(str(item.get("url", "")))
+            canonical_url_key(str(item.get("url", "")))
             for item in items
             if str(item.get("url", "")).strip()
         }
@@ -152,7 +154,7 @@ class BriefingFactVerifier:
             mentions.append(ghsa)
 
         for match in _GITHUB_ADVISORY_URL_PATTERN.finditer(markdown or ""):
-            url = normalize_url(match.group(0))
+            url = canonical_url_key(match.group(0))
             ghsa = str(match.group(1) or "").upper()
             key = f"url:{url.lower()}"
             if url in selected_urls or ghsa.lower() in selected_ghsas or key in seen:
@@ -190,34 +192,15 @@ class BriefingFactVerifier:
         return dead
 
     async def _is_url_live(self, url: str) -> bool:
-        if not url.startswith(("http://", "https://")):
-            return False
-        if url in self._url_liveness_cache:
-            return self._url_liveness_cache[url]
-
-        alive_status = {200, 401, 403, 405, 429}
-        alive = False
-        try:
-            status, _ = await self.scraper.fetch_text(
-                url, method="HEAD", timeout_ms=10000
-            )
-            alive = status in alive_status
-            if not alive and status >= 500:
-                # Some sources reject HEAD; retry with GET.
-                status, _ = await self.scraper.fetch_text(
-                    url, method="GET", timeout_ms=10000
-                )
-                alive = status in alive_status
-        except Exception:
-            alive = False
-
-        self._url_liveness_cache[url] = alive
-        return alive
+        return await self.scraper.is_url_live(
+            url,
+            cache=self._url_liveness_cache,
+            timeout_ms=10000,
+        )
 
     @staticmethod
     def _extract_urls_in_order(markdown: str) -> list[str]:
-        raw = re.findall(r"https?://[^\s)\]>]+", markdown or "")
-        return list(dict.fromkeys(raw))
+        return extract_urls_in_order_from_text(markdown or "")
 
     @staticmethod
     def _top_story_is_ctf_or_event(markdown: str, items: list[dict[str, Any]]) -> bool:

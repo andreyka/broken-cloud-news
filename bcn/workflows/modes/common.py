@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Callable
 import logging
 import re
 from uuid import UUID
@@ -29,10 +31,14 @@ def extract_briefing_id(text: str) -> UUID | None:
         return None
 
 
-async def run_generation_and_distribution(mode: str) -> None:
-    """Run one writer->distributor handoff cycle for the given workflow mode."""
-    settings, sender = require_runtime()
-    writer_result = await sender(settings.writer_port, f"generate_briefing::{mode}")
+async def run_writer_distributor_handoff(
+    *,
+    mode: str,
+    run_writer: Callable[[str], Awaitable[str]],
+    run_distributor: Callable[[str], Awaitable[str]],
+) -> tuple[str, str | None]:
+    """Run writer->distributor handoff using shared skill-string logic."""
+    writer_result = await run_writer(f"generate_briefing::{mode}")
     briefing_id = extract_briefing_id(writer_result)
     if not briefing_id:
         logger.warning(
@@ -40,9 +46,19 @@ async def run_generation_and_distribution(mode: str) -> None:
             mode,
             writer_result,
         )
-        return
-    await sender(
-        settings.distributor_port,
+        return writer_result, None
+
+    distributor_result = await run_distributor(
         f"distribute_briefing::{briefing_id}::{mode}",
     )
+    return writer_result, distributor_result
 
+
+async def run_generation_and_distribution(mode: str) -> None:
+    """Run one writer->distributor handoff cycle for the given workflow mode."""
+    settings, sender = require_runtime()
+    await run_writer_distributor_handoff(
+        mode=mode,
+        run_writer=lambda skill: sender(settings.writer_port, skill),
+        run_distributor=lambda skill: sender(settings.distributor_port, skill),
+    )

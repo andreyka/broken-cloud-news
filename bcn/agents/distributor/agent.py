@@ -6,7 +6,6 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 import logging
-import re
 from uuid import UUID
 
 from a2a.server.agent_execution import AgentExecutor
@@ -31,23 +30,13 @@ from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
 from bcn.distributors.telegram import TelegramDistributor
+from bcn.workflows.modes import ALL_MODES
+from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.modes.common import extract_briefing_id
 
 logger = logging.getLogger(__name__)
-REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
-AD_HOC_MODE = "ad_hoc"
-REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
-_SUPPORTED_MODES = {
-    REGULAR_DAILY_BRIEFING_MODE,
-    AD_HOC_MODE,
-    REGULAR_MONTHLY_NEWSLETTER_MODE,
-}
-_UUID_PATTERN = re.compile(
-    r"\b[0-9a-fA-F]{8}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{12}\b"
-)
+_SUPPORTED_MODES = frozenset(ALL_MODES)
 
 SKILLS = [
     AgentSkill(
@@ -326,13 +315,7 @@ class DistributorExecutor(AgentExecutor):
     @staticmethod
     def _extract_requested_briefing_id(text: str) -> UUID | None:
         """Extract optional target briefing UUID from distributor skill text."""
-        match = _UUID_PATTERN.search(text or "")
-        if not match:
-            return None
-        try:
-            return UUID(match.group(0))
-        except ValueError:
-            return None
+        return extract_briefing_id(text)
 
     @staticmethod
     def _extract_requested_mode(text: str) -> str | None:

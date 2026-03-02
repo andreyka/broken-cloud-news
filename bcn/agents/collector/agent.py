@@ -6,7 +6,6 @@ import asyncio
 from datetime import datetime
 from datetime import timezone
 import html
-import json
 import logging
 import re
 from typing import Any
@@ -214,44 +213,6 @@ class CollectorExecutor(AgentExecutor):
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
 
-    async def _fetch_text_with_fallback(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout: int = 30,
-    ) -> str:
-        """Fetch text through Playwright to avoid bot blocks."""
-        status, text = await self.scraper.fetch_text(
-            url=url,
-            headers=headers,
-            timeout_ms=timeout * 1000,
-        )
-        if status >= 200 and status < 400 and text:
-            return text
-        raise RuntimeError(f"Failed to fetch {url} (status={status})")
-
-    async def _fetch_json_with_fallback(
-        self,
-        url: str,
-        *,
-        headers: dict[str, str] | None = None,
-        timeout: int = 20,
-    ) -> dict:
-        """Fetch JSON via HTTP with optional Playwright fallback."""
-        text = await self._fetch_text_with_fallback(
-            url=url,
-            headers=headers,
-            timeout=timeout,
-        )
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Failed to parse JSON from {url}") from exc
-        if not isinstance(payload, dict):
-            raise ValueError(f"Unexpected JSON shape from {url}")
-        return payload
-
     # ------------------------------------------------------------------
     # GHSA collection
     # ------------------------------------------------------------------
@@ -393,7 +354,7 @@ class CollectorExecutor(AgentExecutor):
         count = 0
         for feed_url in self.settings.rss_feeds:
             try:
-                feed_text = await self._fetch_text_with_fallback(feed_url)
+                feed_text = await self.scraper.fetch_text_or_raise(feed_url, timeout_ms=30000)
                 feed = feedparser.parse(feed_text)
             except Exception as exc:
                 logger.warning("Failed to fetch RSS %s: %s", feed_url, exc)
@@ -536,12 +497,12 @@ class CollectorExecutor(AgentExecutor):
             feed_url = f"https://www.reddit.com/r/{subreddit}/.rss"
             engagement_map = await self._fetch_reddit_engagement(subreddit)
             try:
-                feed_text = await self._fetch_text_with_fallback(
+                feed_text = await self.scraper.fetch_text_or_raise(
                     feed_url,
                     headers={
                         "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
                     },
-                    timeout=30,
+                    timeout_ms=30000,
                 )
                 feed = feedparser.parse(feed_text)
             except Exception as exc:
@@ -597,12 +558,12 @@ class CollectorExecutor(AgentExecutor):
         """Fetch engagement metrics for recent subreddit posts via Reddit JSON API."""
         url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
         try:
-            payload = await self._fetch_json_with_fallback(
+            payload = await self.scraper.fetch_json(
                 url,
                 headers={
                     "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
                 },
-                timeout=20,
+                timeout_ms=20000,
             )
         except Exception as exc:
             logger.warning("Failed to fetch Reddit metrics %s: %s", url, exc)

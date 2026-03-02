@@ -799,6 +799,25 @@ class TestWriterExecutor:
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/two"
 
+    def test_missing_urls_uses_canonical_url_key(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        items = [
+            {"url": "https://example.com/path?b=1", "title": "primary"},
+            {"url": "https://example.com/other", "title": "other"},
+        ]
+        markdown = (
+            "[Primary]"
+            "(https://www.example.com/path/?utm_source=digest&fbclid=abc&b=1)\n\n"
+            "Text only."
+        )
+
+        missing = executor._missing_items_for_markdown(markdown, items)
+        assert len(missing) == 1
+        assert missing[0]["url"] == "https://example.com/other"
+
     def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
         from bcn.agents.writer.agent import WriterExecutor
 
@@ -831,6 +850,48 @@ class TestWriterExecutor:
         other_penalty = executor.selector.novelty_penalty(item, recent_other_issue)
         assert overlap_penalty > 0.0
         assert overlap_penalty > other_penalty
+
+    def test_duplicate_detection_uses_canonical_url_key(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        item = {
+            "url": "https://example.com/path?b=1",
+            "title": "Cloud exploit chain",
+        }
+        others = [
+            {
+                "url": "https://www.example.com/path/?utm_source=digest&fbclid=abc&b=1",
+                "title": "Different title",
+            }
+        ]
+
+        assert executor.selector.is_duplicate_of(item, others) is True
+        assert executor.selector.novelty_penalty(item, others) >= 3.0
+
+    def test_quality_gate_uses_canonical_url_key_for_selected_urls(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        items = [{"url": "https://example.com/path?b=1", "title": "primary"}]
+        markdown = (
+            "[Primary]"
+            "(https://www.example.com/path/?utm_source=digest&fbclid=abc&b=1)\n\n"
+            "Body."
+        )
+
+        gate = executor.quality.evaluate(
+            markdown,
+            items,
+            mode="standard",
+            min_chars=0,
+            hard_max_chars=2000,
+        )
+        assert not any(
+            "Missing selected URL" in issue for issue in gate.get("hard_issues", [])
+        )
 
     def test_dedupe_markdown_links_uses_canonical_url_key(self):
         from bcn.agents.writer.agent import WriterExecutor
