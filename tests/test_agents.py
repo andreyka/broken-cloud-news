@@ -250,7 +250,7 @@ class TestCollectorExecutor:
         mock_insert.assert_called_once()
         assert (
             mock_insert.call_args.kwargs["url"]
-            == "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+            == "https://reddit.com/r/netsec/comments/abc123/test/"
         )
         raw = mock_insert.call_args.kwargs["raw_data"]
         assert raw["engagement"]["upvotes"] == 120
