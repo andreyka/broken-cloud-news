@@ -265,6 +265,75 @@ class TestCollectorExecutor:
         assert "Reference links:" in full_content
         assert "stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation" in full_content
 
+    @pytest.mark.asyncio
+    async def test_collect_reddit_keeps_permalink_for_low_signal_outbound(self):
+        import json
+
+        from bcn.agents.collector.agent import CollectorExecutor
+
+        settings = _make_settings(
+            reddit_subreddits=["netsec"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        executor = CollectorExecutor(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Cloud community roundup</title>
+            <link>https://reddit.com/r/netsec/comments/zzz999/community_thread/</link>
+            <guid>t3_zzz999</guid>
+            <pubDate>Mon, 01 Jan 2026 00:00:00 GMT</pubDate>
+            <description>Cloud chatter and weekly links</description>
+          </item>
+        </channel></rss>
+        """
+        json_body = json.dumps(
+            {
+                "data": {
+                    "children": [
+                        {
+                            "data": {
+                                "id": "zzz999",
+                                "ups": 51,
+                                "num_comments": 7,
+                                "upvote_ratio": 0.92,
+                                "url": "https://www.youtube.com/watch?v=abc123",
+                                "url_overridden_by_dest": "https://www.youtube.com/watch?v=abc123",
+                                "permalink": "/r/netsec/comments/zzz999/community_thread/",
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+
+        async def mock_fetch_text(url, **kwargs):
+            if url.endswith(".rss"):
+                return 200, rss_body
+            if "new.json" in url:
+                return 200, json_body
+            return 404, ""
+
+        executor.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
+
+        with patch(
+            "bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock
+        ) as mock_insert:
+            from uuid import uuid4
+
+            mock_insert.return_value = uuid4()
+            count = await executor._collect_reddit()
+
+        assert count == 1
+        mock_insert.assert_called_once()
+        assert (
+            mock_insert.call_args.kwargs["url"]
+            == "https://reddit.com/r/netsec/comments/zzz999/community_thread/"
+        )
+        raw = mock_insert.call_args.kwargs["raw_data"]
+        assert raw["references"] == [{"url": "https://www.youtube.com/watch?v=abc123"}]
+
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
         from bcn.agents.collector.agent import CollectorExecutor
 

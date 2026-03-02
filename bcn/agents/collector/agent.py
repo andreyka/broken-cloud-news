@@ -91,6 +91,64 @@ _SKIP_SCRAPE_DOMAINS = frozenset(
         "access.redhat.com/errata",
     }
 )
+_REDDIT_LOW_SIGNAL_DOMAINS = frozenset(
+    {
+        "youtube.com",
+        "youtu.be",
+        "instagram.com",
+        "facebook.com",
+        "tiktok.com",
+        "x.com",
+        "twitter.com",
+        "imgur.com",
+        "giphy.com",
+    }
+)
+_REDDIT_TECHNICAL_DOMAIN_HINTS = frozenset(
+    {
+        "github.com",
+        "gitlab.com",
+        "cisa.gov",
+        "nist.gov",
+        "mitre.org",
+        "aws.amazon.com",
+        "cloud.google.com",
+        "security.googleblog.com",
+        "unit42.paloaltonetworks.com",
+        "research.checkpoint.com",
+        "stepsecurity.io",
+    }
+)
+_REDDIT_TECHNICAL_HINTS = (
+    "advisory",
+    "cve",
+    "vuln",
+    "exploit",
+    "rce",
+    "xss",
+    "ssrf",
+    "auth",
+    "bypass",
+    "privilege",
+    "escape",
+    "container",
+    "kubernetes",
+    "k8s",
+    "cloud",
+    "iam",
+    "s3",
+    "supply chain",
+    "supply-chain",
+    "zero-day",
+    "zeroday",
+    "writeup",
+    "write-up",
+    "research",
+    "patch",
+    "poc",
+    "proof of concept",
+    "github actions",
+)
 
 
 class CollectorExecutor(AgentExecutor):
@@ -529,7 +587,12 @@ class CollectorExecutor(AgentExecutor):
                 post_id = self._extract_reddit_post_id(source_id, permalink)
                 engagement = engagement_map.get(post_id, {})
                 references = self._extract_reddit_reference_urls(permalink, engagement)
-                url = self._select_reddit_primary_url(permalink, references)
+                url = self._select_reddit_primary_url(
+                    permalink,
+                    references,
+                    title=title,
+                    summary=summary,
+                )
                 full_content = self._build_reddit_full_content(title, summary, references)
 
                 inserted = await insert_news_item(
@@ -677,10 +740,16 @@ class CollectorExecutor(AgentExecutor):
         return out
 
     @staticmethod
-    def _select_reddit_primary_url(permalink: str, references: list[str]) -> str:
-        """Prefer outbound technical source for Reddit link posts."""
+    def _select_reddit_primary_url(
+        permalink: str,
+        references: list[str],
+        *,
+        title: str = "",
+        summary: str = "",
+    ) -> str:
+        """Prefer outbound source only when likely technically useful."""
         for ref in references:
-            if not CollectorExecutor._is_internal_reddit_url(ref):
+            if CollectorExecutor._is_useful_reddit_reference(ref, title, summary):
                 return ref
         return (permalink or "").strip()
 
@@ -703,6 +772,43 @@ class CollectorExecutor(AgentExecutor):
             "v.redd.it",
             "redditmedia.com",
         }
+
+    @staticmethod
+    def _is_useful_reddit_reference(url: str, title: str, summary: str) -> bool:
+        """Heuristic: outbound links must look technical to replace permalink."""
+        if not url.startswith(("http://", "https://")):
+            return False
+        if CollectorExecutor._is_internal_reddit_url(url):
+            return False
+
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+
+        host = (parsed.netloc or "").lower()
+        if host.startswith("www."):
+            host = host[4:]
+        if not host:
+            return False
+        if CollectorExecutor._host_matches(host, _REDDIT_LOW_SIGNAL_DOMAINS):
+            return False
+        if CollectorExecutor._host_matches(host, _REDDIT_TECHNICAL_DOMAIN_HINTS):
+            return True
+
+        url_text = f"{host}{parsed.path} {parsed.query}".lower()
+        context_text = f"{title} {summary}".lower()
+        technical_hits = 0
+        if any(hint in url_text for hint in _REDDIT_TECHNICAL_HINTS):
+            technical_hits += 1
+        if any(hint in context_text for hint in _REDDIT_TECHNICAL_HINTS):
+            technical_hits += 1
+        return technical_hits >= 2
+
+    @staticmethod
+    def _host_matches(host: str, domains: frozenset[str]) -> bool:
+        """Return True when host equals or is subdomain of a listed domain."""
+        return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
     @staticmethod
     def _normalize_reddit_permalink(permalink: str) -> str:
