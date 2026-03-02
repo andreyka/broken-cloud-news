@@ -1635,7 +1635,7 @@ class TestDistributorExecutor:
         executor = DistributorExecutor(settings)
         channels = executor._build_channels(
             mode="regular_monthly_newsletter",
-            newsletter_recipients=["avkovaleff@gmail.com"],
+            newsletter_recipients=["subscriber@example.com"],
         )
         names = [name for name, _channel in channels]
         assert names == ["email"]
