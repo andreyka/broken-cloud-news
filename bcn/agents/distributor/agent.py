@@ -1,4 +1,4 @@
-"""Distributor agent: publishes briefings to Telegram, Email, Slack, and Discord."""
+"""Distributor agent: publishes briefings to mode-appropriate channels."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ SKILLS = [
     AgentSkill(
         id="distribute_briefing",
         name="Distribute Briefing",
-        description="Distribute the latest briefing to Telegram, Email, Slack, and Discord",
+        description="Distribute the latest briefing to Telegram/Discord or email by mode",
         tags=["distribute", "publish"],
         examples=["distribute", "distribute_briefing", "publish"],
     ),

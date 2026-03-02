@@ -1421,7 +1421,7 @@ def run() -> None:
         )
         distributor_card = build_agent_card(
             "BCN Distributor",
-            "Distributes briefings to Telegram, Email, Slack",
+            "Distributes briefings to Telegram/Discord (daily, ad-hoc) or Email (monthly)",
             f"http://localhost:{settings.distributor_port}/",
             DIST_SKILLS,
         )
