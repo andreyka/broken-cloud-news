@@ -37,6 +37,7 @@ from bcn.common.db import get_recent_published_items
 from bcn.common.db import get_top_items_for_period
 from bcn.common.db import insert_briefing
 from bcn.common.db import insert_generation_preference_pair
+from bcn.common.db import release_items_from_writing
 from bcn.common.llm import LLMClient
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -101,6 +102,7 @@ class WriterExecutor(AgentExecutor):
     ) -> None:
         """Generate a briefing from top-scored items and store it as DRAFT."""
         workflow_mode = self._resolve_workflow_mode(context.get_user_input() or "")
+        claimed_item_ids: list[UUID] = []
         stale_minutes = int(
             getattr(self.settings, "generation_run_stale_pending_minutes", 180)
         )
@@ -119,43 +121,64 @@ class WriterExecutor(AgentExecutor):
             except Exception:
                 logger.exception("Failed to auto-finalize stale PENDING generation runs")
 
-        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
-            items = await get_top_items_for_period(
-                days=max(1, int(self.settings.monthly_newsletter_lookback_days)),
-                min_score=max(1, int(self.settings.monthly_newsletter_min_score)),
-                limit=max(
-                    int(self.settings.monthly_newsletter_max_items) * 4,
-                    int(self.settings.monthly_newsletter_min_items),
-                ),
-            )
-        else:
-            items = await get_analyzed_items(
-                min_score=self.settings.relevance_threshold,
-                hours=self.settings.briefing_lookback_hours,
-            )
-
-        if not items:
+        try:
             if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
-                msg = (
-                    "Monthly newsletter skipped: no high-signal items found "
-                    f"in last {self.settings.monthly_newsletter_lookback_days} days."
+                items = await get_top_items_for_period(
+                    days=max(1, int(self.settings.monthly_newsletter_lookback_days)),
+                    min_score=max(1, int(self.settings.monthly_newsletter_min_score)),
+                    limit=max(
+                        int(self.settings.monthly_newsletter_max_items) * 4,
+                        int(self.settings.monthly_newsletter_min_items),
+                    ),
                 )
             else:
-                msg = (
-                    f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
-                    f"in the last {self.settings.briefing_lookback_hours}h. "
-                    "Skipping briefing."
+                claim_limit = max(int(self.settings.briefing_max_items) * 8, 40)
+                items = await get_analyzed_items(
+                    min_score=self.settings.relevance_threshold,
+                    hours=self.settings.briefing_lookback_hours,
+                    limit=claim_limit,
                 )
-            logger.info(msg)
-            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
-            return
+                claimed_item_ids = [
+                    item_id
+                    for item_id in (
+                        self._coerce_uuid(item.get("id"))
+                        for item in items
+                        if str(item.get("status", "")).upper() == "WRITING"
+                    )
+                    if item_id is not None
+                ]
 
-        item_dicts = [dict(i) for i in items]
-        await self._execute_core(
-            item_dicts=item_dicts,
-            event_queue=event_queue,
-            workflow_mode=workflow_mode,
-        )
+            if not items:
+                if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
+                    msg = (
+                        "Monthly newsletter skipped: no high-signal items found "
+                        f"in last {self.settings.monthly_newsletter_lookback_days} days."
+                    )
+                else:
+                    msg = (
+                        f"Quiet day — no items scored >= {self.settings.relevance_threshold} "
+                        f"in the last {self.settings.briefing_lookback_hours}h. "
+                        "Skipping briefing."
+                    )
+                logger.info(msg)
+                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                return
+
+            item_dicts = [dict(i) for i in items]
+            await self._execute_core(
+                item_dicts=item_dicts,
+                event_queue=event_queue,
+                workflow_mode=workflow_mode,
+            )
+        finally:
+            if claimed_item_ids:
+                try:
+                    await release_items_from_writing(claimed_item_ids)
+                except Exception:
+                    logger.exception(
+                        "Failed to release %d WRITING items after writer run",
+                        len(claimed_item_ids),
+                    )
 
     async def close(self) -> None:
         """Release writer resources."""
