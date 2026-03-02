@@ -20,7 +20,7 @@ load_deploy_config_from_env() {
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         case "$line" in
-            DEPLOY_HOST=*|DEPLOY_USER=*|DEPLOY_PORT=*|DEPLOY_REPO_DIR=*|DEPLOY_PASSWORD=*|ALLOW_PARTIAL_ENV=*|DEPLOY_SYNC_MODE=*|DEPLOY_BRANCH=*)
+            DEPLOY_HOST=*|DEPLOY_USER=*|DEPLOY_PORT=*|DEPLOY_REPO_DIR=*|DEPLOY_PASSWORD=*|ALLOW_PARTIAL_ENV=*|DEPLOY_SYNC_MODE=*|DEPLOY_BRANCH=*|DEPLOY_GIT_KEY_PATH=*|DEPLOY_GIT_KEY_PASSPHRASE=*)
                 key="${line%%=*}"
                 value="${line#*=}"
                 # Keep explicit process environment as highest priority.
@@ -47,6 +47,8 @@ DEPLOY_PASSWORD="${DEPLOY_PASSWORD:-}"
 ALLOW_PARTIAL_ENV="${ALLOW_PARTIAL_ENV:-0}"
 DEPLOY_SYNC_MODE="${DEPLOY_SYNC_MODE:-git}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+DEPLOY_GIT_KEY_PATH="${DEPLOY_GIT_KEY_PATH:-}"
+DEPLOY_GIT_KEY_PASSPHRASE="${DEPLOY_GIT_KEY_PASSPHRASE:-}"
 
 usage() {
     cat <<'USAGE'
@@ -61,6 +63,11 @@ Environment overrides:
   DEPLOY_PASSWORD   If unset, script prompts securely
   DEPLOY_BRANCH     Default: main
   DEPLOY_SYNC_MODE  Default: git (recommended), fallback: rsync
+  DEPLOY_GIT_KEY_PATH
+                  Default: /home/<user>/.ssh/id_ed25519
+  DEPLOY_GIT_KEY_PASSPHRASE
+                  Default: DEPLOY_PASSWORD
+                  Used to unlock remote SSH key for non-interactive git sync
   ALLOW_PARTIAL_ENV
                   Default: 0 (strict)
                   Set to 1 to bypass strict required-key validation
@@ -140,6 +147,19 @@ if [[ -z "$DEPLOY_PASSWORD" ]]; then
     echo ""
 fi
 
+if [[ -z "$DEPLOY_GIT_KEY_PATH" ]]; then
+    DEPLOY_GIT_KEY_PATH="/home/${DEPLOY_USER}/.ssh/id_ed25519"
+fi
+
+if [[ -z "$DEPLOY_GIT_KEY_PASSPHRASE" ]]; then
+    DEPLOY_GIT_KEY_PASSPHRASE="$DEPLOY_PASSWORD"
+fi
+
+DEPLOY_GIT_KEY_PASSPHRASE_B64=""
+if [[ -n "$DEPLOY_GIT_KEY_PASSPHRASE" ]]; then
+    DEPLOY_GIT_KEY_PASSPHRASE_B64="$(printf '%s' "$DEPLOY_GIT_KEY_PASSPHRASE" | base64 -w0)"
+fi
+
 export SSHPASS="$DEPLOY_PASSWORD"
 REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
 SSH_OPTS=(-p "$DEPLOY_PORT" -o StrictHostKeyChecking=no)
@@ -165,7 +185,7 @@ fi
 
 if [[ "$DEPLOY_SYNC_MODE" == "git" ]]; then
     echo "==> Syncing remote repository via git (branch: ${DEPLOY_BRANCH})"
-    sshpass -e ssh -tt "${SSH_OPTS[@]}" "$REMOTE" "
+    sshpass -e ssh "${SSH_OPTS[@]}" "$REMOTE" "
 set -euo pipefail
 cd '$DEPLOY_REPO_DIR'
 
@@ -173,6 +193,16 @@ if [ ! -d .git ]; then
   echo 'ERROR: Remote directory is not a git repository.'
   echo 'Run with --sync-mode rsync once, or clone the repository on remote first.'
   exit 6
+fi
+
+git_key_path='${DEPLOY_GIT_KEY_PATH}'
+git_key_passphrase_b64='${DEPLOY_GIT_KEY_PASSPHRASE_B64}'
+if [ -n \"\$git_key_passphrase_b64\" ] && [ -f \"\$git_key_path\" ]; then
+  eval \"\$(ssh-agent -s)\" >/dev/null
+  if ! printf '%s' \"\$git_key_passphrase_b64\" | base64 -d | ssh-add \"\$git_key_path\" >/dev/null 2>&1; then
+    echo \"ERROR: Failed to unlock SSH key at \$git_key_path for git sync\"
+    exit 7
+  fi
 fi
 
 origin_url=\$(git remote get-url origin 2>/dev/null || true)
@@ -187,6 +217,13 @@ if git show-ref --verify --quiet 'refs/heads/${DEPLOY_BRANCH}'; then
 else
   git checkout -b '${DEPLOY_BRANCH}' 'origin/${DEPLOY_BRANCH}'
 fi
+
+if ! git diff --quiet || ! git diff --cached --quiet || [ -n \"\$(git ls-files --others --exclude-standard)\" ]; then
+  STASH_NAME=\"redeploy_autostash_\$(date +%Y%m%d%H%M%S)\"
+  git stash push -u -m \"\$STASH_NAME\" >/dev/null || true
+  echo \"Stashed local changes before pull: \$STASH_NAME\"
+fi
+
 git fetch --prune origin
 git pull --ff-only origin '${DEPLOY_BRANCH}'
 echo \"Remote HEAD after git sync: \$(git rev-parse --short HEAD)\"
