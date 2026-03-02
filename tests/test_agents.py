@@ -219,6 +219,9 @@ class TestCollectorExecutor:
                                 "ups": 120,
                                 "num_comments": 42,
                                 "upvote_ratio": 0.97,
+                                "url": "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation",
+                                "url_overridden_by_dest": "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation",
+                                "permalink": "/r/netsec/comments/abc123/test/",
                             }
                         }
                     ]
@@ -245,9 +248,22 @@ class TestCollectorExecutor:
 
         assert count == 1
         mock_insert.assert_called_once()
+        assert (
+            mock_insert.call_args.kwargs["url"]
+            == "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+        )
         raw = mock_insert.call_args.kwargs["raw_data"]
         assert raw["engagement"]["upvotes"] == 120
         assert raw["engagement"]["comments"] == 42
+        assert raw["permalink"] == "https://reddit.com/r/netsec/comments/abc123/test/"
+        assert raw["references"] == [
+            {
+                "url": "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+            }
+        ]
+        full_content = mock_insert.call_args.kwargs["full_content"] or ""
+        assert "Reference links:" in full_content
+        assert "stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation" in full_content
 
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
         from bcn.agents.collector.agent import CollectorExecutor
@@ -413,6 +429,61 @@ class TestAnalystExecutor:
             await executor.execute(ctx, eq)
 
         assert any("No new items" in str(e) for e in eq.events)
+
+    @pytest.mark.asyncio
+    async def test_analyze_item_and_save_scrapes_reddit_references(self):
+        from bcn.agents.analyst.agent import AnalystExecutor
+        from bcn.common.models import AnalysisResult
+
+        settings = _make_settings()
+        executor = AnalystExecutor(settings)
+        item = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "title": "GitHub Actions exploitation rumor",
+            "full_content": "submitted by /u/test [link] [comments]",
+            "url": "https://www.reddit.com/r/kubernetes/comments/1rhv9pg/hackerbotclaw_ai_bot_exploiting_github_actions/",
+            "source_type": "reddit",
+            "source_id": "t3_1rhv9pg",
+            "raw_data": {
+                "references": [
+                    {
+                        "url": "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+                    }
+                ]
+            },
+        }
+
+        with (
+            patch.object(
+                executor.scraper,
+                "scrape",
+                new_callable=AsyncMock,
+                return_value="Deep technical breakdown from StepSecurity.",
+            ) as mock_scrape,
+            patch.object(
+                executor.analyst_llm,
+                "analyze_item",
+                new_callable=AsyncMock,
+                return_value=AnalysisResult(
+                    summary="Pipeline compromise details",
+                    relevance_score=8,
+                    tags=["github-actions"],
+                    image_prompt="cloud security concept art",
+                    canonical_url="https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation",
+                ),
+            ) as mock_analyze,
+            patch(
+                "bcn.agents.analyst.agent.update_item_analyzed", new_callable=AsyncMock
+            ) as mock_update,
+        ):
+            await executor._analyze_item_and_save(item)
+
+        mock_scrape.assert_awaited_once_with(
+            "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+        )
+        analyze_args = mock_analyze.await_args.args
+        assert "Deep technical breakdown from StepSecurity." in analyze_args[1]
+        mock_update.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_no_items_async_event_queue(self):

@@ -107,7 +107,7 @@ class AnalystExecutor(AgentExecutor):
                     content = f"[Severity: {severity}]\n{desc}\n\n{content or ''}"
             except Exception:
                 pass
-        elif item["source_type"] == "twitter":
+        elif item["source_type"] in ("twitter", "reddit"):
             try:
                 raw = (
                     json.loads(item["raw_data"])
@@ -115,14 +115,17 @@ class AnalystExecutor(AgentExecutor):
                     else item["raw_data"]
                 )
                 references = raw.get("references", [])
-                for ref in references:
+                for ref in references[:3]:
                     if isinstance(ref, dict) and ref.get("url"):
                         scraped_ref = await self.scraper.scrape(ref["url"])
                         if scraped_ref:
                             content += f"\n\n--- Scraped content from {ref['url']} ---\n{scraped_ref[:3000]}"
             except Exception as exc:
                 logger.warning(
-                    "Failed to scrape tweet references for %s: %s", item["id"], exc
+                    "Failed to scrape %s references for %s: %s",
+                    item["source_type"],
+                    item["id"],
+                    exc,
                 )
 
         if not content:

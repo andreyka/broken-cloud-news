@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 from uuid import UUID
 from uuid import uuid4
@@ -44,6 +45,71 @@ logger = logging.getLogger("bcn")
 _build_daily_digest_trigger = build_regular_briefing_trigger
 _build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
+_REDDIT_COMMENT_ID_RE = re.compile(
+    r"/comments/([a-z0-9]+)/",
+    flags=re.IGNORECASE,
+)
+
+
+def _is_internal_reddit_url(url: str) -> bool:
+    """Return whether URL points to Reddit-owned domains."""
+    try:
+        host = httpx.URL(url).host or ""
+    except Exception:
+        return False
+    host = host.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host in {
+        "reddit.com",
+        "old.reddit.com",
+        "new.reddit.com",
+        "np.reddit.com",
+        "redd.it",
+        "i.redd.it",
+        "v.redd.it",
+        "redditmedia.com",
+    }
+
+
+def _extract_reddit_post_id(source_id: str, url: str) -> str:
+    """Extract Reddit post id from source id or permalink URL."""
+    sid = (source_id or "").strip()
+    if sid.startswith("t3_"):
+        return sid[3:]
+    match = _REDDIT_COMMENT_ID_RE.search(url or "")
+    if match:
+        return match.group(1).lower()
+    return ""
+
+
+def _normalize_reddit_permalink(permalink: str) -> str:
+    """Normalize Reddit permalink into absolute URL form."""
+    text = (permalink or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    if text.startswith("/"):
+        return f"https://www.reddit.com{text}"
+    return f"https://www.reddit.com/{text}"
+
+
+def _extract_reddit_listing_post_data(payload: Any) -> dict[str, Any]:
+    """Extract post-level data from Reddit comments listing JSON."""
+    if not isinstance(payload, list) or not payload:
+        return {}
+    listing = payload[0]
+    if not isinstance(listing, dict):
+        return {}
+    children = listing.get("data", {}).get("children", [])
+    if not children:
+        return {}
+    post = children[0]
+    if not isinstance(post, dict):
+        return {}
+    data = post.get("data", {})
+    return data if isinstance(data, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -982,6 +1048,170 @@ def import_history(
             )
         finally:
             await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("backfill-reddit-links")
+@click.option(
+    "--limit",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Max Reddit rows to scan (0 = all).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Only report candidate URL rewrites; do not update DB.",
+)
+def backfill_reddit_links(limit: int, dry_run: bool) -> None:
+    """Backfill existing Reddit rows with outbound destination URLs."""
+    if limit < 0:
+        raise click.ClickException("--limit must be >= 0")
+
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.common.scraper import Scraper
+
+        await get_pool(settings)
+        pool = await get_pool()
+        scraper = Scraper(
+            content_limit=settings.scrape_content_limit,
+            min_content_length=settings.scrape_min_content_length,
+        )
+
+        scanned = 0
+        candidates = 0
+        updated = 0
+        missing_post_id = 0
+        fetch_failed = 0
+        no_outbound = 0
+        unchanged = 0
+        samples: list[str] = []
+
+        query = """
+            SELECT id, source_id, url, raw_data
+            FROM news_items
+            WHERE source_type = 'reddit'
+            ORDER BY published_at DESC
+        """
+        params: list[Any] = []
+        if limit > 0:
+            query += " LIMIT $1"
+            params.append(limit)
+
+        try:
+            rows = await pool.fetch(query, *params)
+            scanned = len(rows)
+            for row in rows:
+                current_url = str(row["url"] or "").strip()
+                if not current_url or not _is_internal_reddit_url(current_url):
+                    continue
+                candidates += 1
+
+                source_id = str(row["source_id"] or "").strip()
+                raw_data = row["raw_data"]
+                raw: dict[str, Any]
+                if isinstance(raw_data, dict):
+                    raw = raw_data
+                elif isinstance(raw_data, str):
+                    try:
+                        parsed = json.loads(raw_data)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        parsed = {}
+                    raw = parsed if isinstance(parsed, dict) else {}
+                else:
+                    raw = {}
+
+                post_id = _extract_reddit_post_id(source_id, current_url)
+                if not post_id:
+                    post_id = _extract_reddit_post_id(
+                        source_id,
+                        str(raw.get("permalink") or raw.get("link") or ""),
+                    )
+                if not post_id:
+                    missing_post_id += 1
+                    continue
+
+                comments_url = f"https://www.reddit.com/comments/{post_id}/.json"
+                try:
+                    payload_text = await scraper.fetch_text_or_raise(
+                        comments_url,
+                        headers={
+                            "User-Agent": "BrokenCloudNews/1.0 (cloud-security digest bot)"
+                        },
+                        timeout_ms=20000,
+                    )
+                    payload = json.loads(payload_text)
+                    post_data = _extract_reddit_listing_post_data(payload)
+                except Exception:
+                    fetch_failed += 1
+                    continue
+
+                outbound_url = str(
+                    post_data.get("url_overridden_by_dest") or post_data.get("url") or ""
+                ).strip()
+                if (
+                    not outbound_url.startswith(("http://", "https://"))
+                    or _is_internal_reddit_url(outbound_url)
+                ):
+                    no_outbound += 1
+                    continue
+
+                if outbound_url.rstrip("/") == current_url.rstrip("/"):
+                    unchanged += 1
+                    continue
+
+                permalink = _normalize_reddit_permalink(
+                    str(
+                        post_data.get("permalink")
+                        or raw.get("permalink")
+                        or raw.get("link")
+                        or current_url
+                    )
+                )
+                patch = {
+                    "permalink": permalink,
+                    "link": permalink,
+                    "references": [{"url": outbound_url}],
+                }
+                if not dry_run:
+                    await pool.execute(
+                        """
+                        UPDATE news_items
+                        SET url = $1,
+                            raw_data = COALESCE(raw_data, '{}'::jsonb) || $2::jsonb,
+                            updated_at = NOW()
+                        WHERE id = $3
+                        """,
+                        outbound_url,
+                        json.dumps(patch, ensure_ascii=False),
+                        row["id"],
+                    )
+                updated += 1
+                if len(samples) < 5:
+                    samples.append(f"{post_id}: {current_url} -> {outbound_url}")
+        finally:
+            try:
+                await scraper.close()
+            finally:
+                await close_pool()
+
+        click.echo(
+            "Reddit backfill complete: "
+            f"scanned={scanned}, candidates={candidates}, "
+            f"updated={updated}, missing_post_id={missing_post_id}, "
+            f"fetch_failed={fetch_failed}, no_outbound={no_outbound}, "
+            f"unchanged={unchanged}, dry_run={str(dry_run).lower()}"
+        )
+        if samples:
+            click.echo("Sample rewrites:")
+            for sample in samples:
+                click.echo(f"- {sample}")
 
     asyncio.run(_run())
 

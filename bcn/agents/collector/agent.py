@@ -491,7 +491,7 @@ class CollectorExecutor(AgentExecutor):
     # ------------------------------------------------------------------
 
     async def _collect_reddit(self) -> int:
-        """Fetch recent posts from configured subreddits via RSS."""
+        """Fetch recent posts from configured subreddits via RSS + Reddit JSON."""
         count = 0
         for subreddit in self.settings.reddit_subreddits:
             feed_url = f"https://www.reddit.com/r/{subreddit}/.rss"
@@ -515,7 +515,7 @@ class CollectorExecutor(AgentExecutor):
                     break
 
                 source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
-                url = getattr(entry, "link", "")
+                permalink = str(getattr(entry, "link", "") or "").strip()
                 title = getattr(entry, "title", "")
                 summary = self._clean_summary(getattr(entry, "summary", ""))
                 published = (
@@ -526,8 +526,11 @@ class CollectorExecutor(AgentExecutor):
                 text_for_filter = f"{title} {summary} r/{subreddit}"
                 if not self._is_cloud_security_relevant(text_for_filter):
                     continue
-                post_id = self._extract_reddit_post_id(source_id, url)
+                post_id = self._extract_reddit_post_id(source_id, permalink)
                 engagement = engagement_map.get(post_id, {})
+                references = self._extract_reddit_reference_urls(permalink, engagement)
+                url = self._select_reddit_primary_url(permalink, references)
+                full_content = self._build_reddit_full_content(title, summary, references)
 
                 inserted = await insert_news_item(
                     source_type="reddit",
@@ -539,12 +542,14 @@ class CollectorExecutor(AgentExecutor):
                         "subreddit": subreddit,
                         "feed_url": feed_url,
                         "title": title,
-                        "link": url,
+                        "link": permalink,
+                        "permalink": permalink,
                         "published": published,
                         "summary": summary,
                         "engagement": engagement,
+                        "references": [{"url": ref} for ref in references],
                     },
-                    full_content=summary or None,
+                    full_content=full_content,
                 )
                 if inserted:
                     count += 1
@@ -554,8 +559,8 @@ class CollectorExecutor(AgentExecutor):
 
     async def _fetch_reddit_engagement(
         self, subreddit: str
-    ) -> dict[str, dict[str, float]]:
-        """Fetch engagement metrics for recent subreddit posts via Reddit JSON API."""
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch engagement + outbound URL metadata via Reddit JSON API."""
         url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=100"
         try:
             payload = await self.scraper.fetch_json(
@@ -569,7 +574,7 @@ class CollectorExecutor(AgentExecutor):
             logger.warning("Failed to fetch Reddit metrics %s: %s", url, exc)
             return {}
 
-        out: dict[str, dict[str, float]] = {}
+        out: dict[str, dict[str, Any]] = {}
         children = payload.get("data", {}).get("children", [])
         for child in children:
             data = child.get("data", {})
@@ -580,6 +585,13 @@ class CollectorExecutor(AgentExecutor):
                 "upvotes": float(data.get("ups") or data.get("score") or 0),
                 "comments": float(data.get("num_comments") or 0),
                 "upvote_ratio": float(data.get("upvote_ratio") or 0),
+                "url": str(data.get("url") or "").strip(),
+                "url_overridden_by_dest": str(
+                    data.get("url_overridden_by_dest") or ""
+                ).strip(),
+                "permalink": self._normalize_reddit_permalink(
+                    str(data.get("permalink") or "").strip()
+                ),
             }
         return out
 
@@ -637,6 +649,92 @@ class CollectorExecutor(AgentExecutor):
         if host.startswith("www."):
             host = host[4:]
         return host in {"x.com", "twitter.com", "mobile.twitter.com", "t.co"}
+
+    @staticmethod
+    def _extract_reddit_reference_urls(permalink: str, metadata: dict[str, Any]) -> list[str]:
+        """Extract non-Reddit outbound URLs from Reddit post metadata."""
+        permalink_norm = (permalink or "").strip().rstrip("/")
+        candidates = [
+            metadata.get("url_overridden_by_dest", ""),
+            metadata.get("url", ""),
+        ]
+        seen: set[str] = set()
+        out: list[str] = []
+
+        for candidate in candidates:
+            url = str(candidate or "").strip()
+            if not url.startswith(("http://", "https://")):
+                continue
+            if CollectorExecutor._is_internal_reddit_url(url):
+                continue
+            if url.rstrip("/") == permalink_norm:
+                continue
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append(url)
+
+        return out
+
+    @staticmethod
+    def _select_reddit_primary_url(permalink: str, references: list[str]) -> str:
+        """Prefer outbound technical source for Reddit link posts."""
+        for ref in references:
+            if not CollectorExecutor._is_internal_reddit_url(ref):
+                return ref
+        return (permalink or "").strip()
+
+    @staticmethod
+    def _is_internal_reddit_url(url: str) -> bool:
+        """Return whether URL points to Reddit-owned domains."""
+        try:
+            host = urlparse(url).netloc.lower()
+        except Exception:
+            return False
+        if host.startswith("www."):
+            host = host[4:]
+        return host in {
+            "reddit.com",
+            "old.reddit.com",
+            "new.reddit.com",
+            "np.reddit.com",
+            "redd.it",
+            "i.redd.it",
+            "v.redd.it",
+            "redditmedia.com",
+        }
+
+    @staticmethod
+    def _normalize_reddit_permalink(permalink: str) -> str:
+        """Normalize Reddit relative permalinks to absolute URLs."""
+        text = (permalink or "").strip()
+        if not text:
+            return ""
+        if text.startswith(("http://", "https://")):
+            return text
+        if text.startswith("/"):
+            return f"https://www.reddit.com{text}"
+        return f"https://www.reddit.com/{text}"
+
+    @staticmethod
+    def _build_reddit_full_content(
+        title: str,
+        summary: str,
+        references: list[str],
+    ) -> str | None:
+        """Compose analysis-friendly Reddit content with outbound references."""
+        text = (summary or "").strip()
+        if text.lower().startswith("submitted by "):
+            text = ""
+        if not text:
+            text = (title or "").strip()
+        if not references:
+            return text or None
+
+        refs_block = "\n".join(f"- {ref}" for ref in references[:6])
+        if not text:
+            return f"Reference links:\n{refs_block}"
+        return f"{text}\n\nReference links:\n{refs_block}"
 
     @staticmethod
     def _build_tweet_full_content(tweet_text: str, references: list[str]) -> str | None:
