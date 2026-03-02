@@ -5,3 +5,6 @@ __pycache__/
 # Local secrets/config
 .env
 .env.local
+
+# Local channel history imports
+data/channel_history_*.txt

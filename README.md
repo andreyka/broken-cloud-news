@@ -128,6 +128,7 @@ bcn review --decision accept --issue-tag style            # Store human review l
 bcn review-queue --only-unreviewed                        # List briefings needing manual review
 bcn finalize-pending-runs --max-age-minutes 180           # Finalize stale trace runs stuck in PENDING
 bcn record-outcome --briefing-id <uuid> --channel telegram --views 1200 --clicks 74
+bcn import-history --file ./channel_history.txt --dry-run # Parse historical channel posts
 bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets
 bcn distribute --mode regular_daily_briefing
 bcn distribute --mode regular_monthly_newsletter --briefing-id <uuid>

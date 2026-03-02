@@ -42,6 +42,25 @@ CREATE TABLE IF NOT EXISTS briefings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS published_history_posts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    channel VARCHAR(32) NOT NULL,
+    author TEXT,
+    posted_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    content_markdown TEXT NOT NULL,
+    content_hash VARCHAR(64) NOT NULL UNIQUE,
+    urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+    item_ids UUID[] NOT NULL DEFAULT '{}'::uuid[],
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_published_history_posts_posted_at
+    ON published_history_posts (posted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_published_history_posts_channel_posted_at
+    ON published_history_posts (channel, posted_at DESC);
+
 CREATE TABLE IF NOT EXISTS newsletter_subscribers (
     id BIGSERIAL PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
