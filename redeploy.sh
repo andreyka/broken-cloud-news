@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Remote redeploy helper
-# - Syncs local repo to remote host via rsync
+# - Syncs remote repo via git by default
+# - Uses rsync only when explicitly requested
 # - Preserves remote .env
 # - Falls back to /home/<user>/.env if repo .env is missing
 # - Rebuilds/recreates docker compose services
@@ -19,7 +20,7 @@ load_deploy_config_from_env() {
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         case "$line" in
-            DEPLOY_HOST=*|DEPLOY_USER=*|DEPLOY_PORT=*|DEPLOY_REPO_DIR=*|DEPLOY_PASSWORD=*|ALLOW_PARTIAL_ENV=*)
+            DEPLOY_HOST=*|DEPLOY_USER=*|DEPLOY_PORT=*|DEPLOY_REPO_DIR=*|DEPLOY_PASSWORD=*|ALLOW_PARTIAL_ENV=*|DEPLOY_SYNC_MODE=*|DEPLOY_BRANCH=*)
                 key="${line%%=*}"
                 value="${line#*=}"
                 # Keep explicit process environment as highest priority.
@@ -44,11 +45,13 @@ DEPLOY_PORT="${DEPLOY_PORT:-22}"
 DEPLOY_REPO_DIR="${DEPLOY_REPO_DIR:-/home/${DEPLOY_USER}/broken-cloud-news}"
 DEPLOY_PASSWORD="${DEPLOY_PASSWORD:-}"
 ALLOW_PARTIAL_ENV="${ALLOW_PARTIAL_ENV:-0}"
+DEPLOY_SYNC_MODE="${DEPLOY_SYNC_MODE:-git}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 
 usage() {
     cat <<'USAGE'
 Usage:
-  ./redeploy.sh [--host <ip>] [--user <name>] [--port <n>] [--repo-dir <path>] [--allow-partial-env]
+  ./redeploy.sh [--host <ip>] [--user <name>] [--port <n>] [--repo-dir <path>] [--branch <name>] [--sync-mode <git|rsync>] [--allow-partial-env]
 
 Environment overrides:
   DEPLOY_HOST       Default: 192.168.0.37
@@ -56,12 +59,14 @@ Environment overrides:
   DEPLOY_PORT       Default: 22
   DEPLOY_REPO_DIR   Default: /home/<user>/broken-cloud-news
   DEPLOY_PASSWORD   If unset, script prompts securely
+  DEPLOY_BRANCH     Default: main
+  DEPLOY_SYNC_MODE  Default: git (recommended), fallback: rsync
   ALLOW_PARTIAL_ENV
                   Default: 0 (strict)
                   Set to 1 to bypass strict required-key validation
 
 Example:
-  DEPLOY_PASSWORD=2306 ./redeploy.sh
+  DEPLOY_PASSWORD=2306 ./redeploy.sh --sync-mode git --branch main
 USAGE
 }
 
@@ -83,6 +88,14 @@ while [[ $# -gt 0 ]]; do
             DEPLOY_REPO_DIR="$2"
             shift 2
             ;;
+        --branch)
+            DEPLOY_BRANCH="$2"
+            shift 2
+            ;;
+        --sync-mode)
+            DEPLOY_SYNC_MODE="$2"
+            shift 2
+            ;;
         --allow-partial-env)
             ALLOW_PARTIAL_ENV=1
             shift
@@ -99,6 +112,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+case "$DEPLOY_SYNC_MODE" in
+    git|rsync)
+        ;;
+    *)
+        echo "Invalid --sync-mode: $DEPLOY_SYNC_MODE (expected: git or rsync)" >&2
+        exit 1
+        ;;
+esac
+
 require_cmd() {
     local cmd="$1"
     if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -109,7 +131,9 @@ require_cmd() {
 
 require_cmd sshpass
 require_cmd ssh
-require_cmd rsync
+if [[ "$DEPLOY_SYNC_MODE" == "rsync" ]]; then
+    require_cmd rsync
+fi
 
 if [[ -z "$DEPLOY_PASSWORD" ]]; then
     read -rsp "Password for ${DEPLOY_USER}@${DEPLOY_HOST}: " DEPLOY_PASSWORD
@@ -139,19 +163,49 @@ else
 fi
 "
 
-echo "==> Syncing local repository to remote host"
-rsync -az --delete \
-    --filter='P .env' \
-    --exclude='.git' \
-    --exclude='.venv' \
-    --exclude='__pycache__' \
-    --exclude='.pytest_cache' \
-    --exclude='.ruff_cache' \
-    --exclude='.mypy_cache' \
-    --exclude='.env' \
-    -e "sshpass -e ssh -p ${DEPLOY_PORT} -o StrictHostKeyChecking=no" \
-    "$SCRIPT_DIR/" \
-    "${REMOTE}:${DEPLOY_REPO_DIR}/"
+if [[ "$DEPLOY_SYNC_MODE" == "git" ]]; then
+    echo "==> Syncing remote repository via git (branch: ${DEPLOY_BRANCH})"
+    sshpass -e ssh -tt "${SSH_OPTS[@]}" "$REMOTE" "
+set -euo pipefail
+cd '$DEPLOY_REPO_DIR'
+
+if [ ! -d .git ]; then
+  echo 'ERROR: Remote directory is not a git repository.'
+  echo 'Run with --sync-mode rsync once, or clone the repository on remote first.'
+  exit 6
+fi
+
+origin_url=\$(git remote get-url origin 2>/dev/null || true)
+if echo \"\$origin_url\" | grep -q '^https://github.com/'; then
+  ssh_origin=\"git@github.com:\${origin_url#https://github.com/}\"
+  git remote set-url origin \"\$ssh_origin\"
+  echo \"Updated origin to SSH URL: \$ssh_origin\"
+fi
+
+if git show-ref --verify --quiet 'refs/heads/${DEPLOY_BRANCH}'; then
+  git checkout '${DEPLOY_BRANCH}'
+else
+  git checkout -b '${DEPLOY_BRANCH}' 'origin/${DEPLOY_BRANCH}'
+fi
+git fetch --prune origin
+git pull --ff-only origin '${DEPLOY_BRANCH}'
+echo \"Remote HEAD after git sync: \$(git rev-parse --short HEAD)\"
+"
+else
+    echo "==> Syncing local repository to remote host via rsync (fallback mode)"
+    rsync -az --delete \
+        --filter='P .env' \
+        --exclude='.git' \
+        --exclude='.venv' \
+        --exclude='__pycache__' \
+        --exclude='.pytest_cache' \
+        --exclude='.ruff_cache' \
+        --exclude='.mypy_cache' \
+        --exclude='.env' \
+        -e "sshpass -e ssh -p ${DEPLOY_PORT} -o StrictHostKeyChecking=no" \
+        "$SCRIPT_DIR/" \
+        "${REMOTE}:${DEPLOY_REPO_DIR}/"
+fi
 
 echo "==> Rebuilding and restarting compose services on remote host"
 sshpass -e ssh "${SSH_OPTS[@]}" "$REMOTE" "
@@ -219,8 +273,8 @@ if [ \"\$missing_required\" -ne 0 ] && [ '${ALLOW_PARTIAL_ENV}' != '1' ]; then
 fi
 
 for key in BCN_GITHUB_TOKEN BCN_TWITTER_BEARER_TOKEN BCN_TELEGRAM_BOT_TOKEN BCN_TELEGRAM_CHAT_ID BCN_DISCORD_BOT_TOKEN BCN_DISCORD_CHANNEL_ID BCN_COMFYUI_URL; do
-  if ! grep -q \"^${key}=\" .env; then
-    echo \"WARN: Optional key is missing: ${key}\"
+  if ! grep -q \"^\${key}=\" .env; then
+    echo \"WARN: Optional key is missing: \${key}\"
   fi
 done
 
