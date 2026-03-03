@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS briefings (
     cover_image_prompt TEXT,
     content_markdown TEXT NOT NULL,
     content_html TEXT,
-    item_ids UUID[] NOT NULL,
+    item_ids UUID[] NOT NULL, -- DEPRECATED compatibility shadow; source of truth is briefing_items
     status VARCHAR(20) DEFAULT 'DRAFT', -- DRAFT, DISTRIBUTING, DISTRIBUTED
     distributed_at TIMESTAMP WITH TIME ZONE,
     distribution_channels JSONB,

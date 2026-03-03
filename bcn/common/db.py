@@ -58,7 +58,7 @@ async def close_pool() -> None:
 
 
 def _briefing_item_ids_sql(alias: str = "b") -> str:
-    """Return SQL expression that resolves briefing item ids from join table."""
+    """Return item-id expression using join table with temporary array fallback."""
     return f"""
         COALESCE(
             NULLIF(
@@ -517,6 +517,8 @@ async def insert_briefing(
         cover_image_url: URL of the generated cover image.
         cover_image_prompt: Prompt used to generate the cover.
         item_ids: UUIDs of items included in this briefing.
+            Stored in ``briefing_items`` as source of truth and mirrored to
+            ``briefings.item_ids`` only for temporary compatibility.
 
     Returns:
         The UUID of the created briefing.
