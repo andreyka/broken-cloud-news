@@ -14,15 +14,60 @@ from uuid import UUID
 import asyncpg
 
 from bcn.common.config import Settings
+from bcn.common.migrations import apply_migrations
+from bcn.common.migrations import get_migration_status
 
 logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
 _pool_lock: asyncio.Lock = asyncio.Lock()
-_news_items_indexes_ready: bool = False
-_news_items_indexes_lock: asyncio.Lock = asyncio.Lock()
-_briefing_items_table_ready: bool = False
-_briefing_items_table_lock: asyncio.Lock = asyncio.Lock()
+_schema_ready: bool = False
+_schema_lock: asyncio.Lock = asyncio.Lock()
+
+
+async def _get_or_create_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
+    """Return pool instance without enforcing schema migrations."""
+    global _pool
+    if _pool is not None:
+        return _pool
+    async with _pool_lock:
+        if _pool is None:
+            s = settings or Settings()
+            _pool = await asyncpg.create_pool(s.database_url, min_size=2, max_size=10)
+    return _pool
+
+
+async def ensure_schema_ready(pool: Optional[asyncpg.Pool] = None) -> None:
+    """Apply DB migrations once for this process before DB access."""
+    global _schema_ready
+    if _schema_ready:
+        return
+
+    active_pool = pool or await _get_or_create_pool()
+    async with _schema_lock:
+        if _schema_ready:
+            return
+        applied = await apply_migrations(active_pool)
+        if applied:
+            logger.info("Applied DB migrations: %s", ", ".join(applied))
+        _schema_ready = True
+
+
+async def migrate_schema(settings: Optional[Settings] = None) -> list[str]:
+    """Apply pending schema migrations and mark schema as ready."""
+    global _schema_ready
+    pool = await _get_or_create_pool(settings)
+    applied = await apply_migrations(pool)
+    _schema_ready = True
+    return applied
+
+
+async def get_schema_migration_status(
+    settings: Optional[Settings] = None,
+) -> list[dict[str, Any]]:
+    """Return applied/pending migration status rows."""
+    pool = await _get_or_create_pool(settings)
+    return await get_migration_status(pool)
 
 
 async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
@@ -34,43 +79,33 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     Returns:
         The asyncpg connection pool.
     """
-    global _pool
-    if _pool is not None:
-        return _pool
-    async with _pool_lock:
-        if _pool is None:
-            s = settings or Settings()
-            _pool = await asyncpg.create_pool(s.database_url, min_size=2, max_size=10)
-    return _pool
+    pool = await _get_or_create_pool(settings)
+    await ensure_schema_ready(pool=pool)
+    return pool
 
 
 async def close_pool() -> None:
     """Close the shared connection pool if it is open."""
     global _pool
-    global _briefing_items_table_ready
-    global _news_items_indexes_ready
+    global _schema_ready
     async with _pool_lock:
         if _pool is not None:
             await _pool.close()
             _pool = None
-    _briefing_items_table_ready = False
-    _news_items_indexes_ready = False
+    _schema_ready = False
 
 
 def _briefing_item_ids_sql(alias: str = "b") -> str:
-    """Return item-id expression using join table with temporary array fallback."""
+    """Return item-id expression derived from briefing_items join rows."""
     return f"""
         COALESCE(
-            NULLIF(
-                ARRAY(
-                    SELECT bi.news_item_id
-                    FROM briefing_items bi
-                    WHERE bi.briefing_id = {alias}.id
-                    ORDER BY bi.position ASC, bi.created_at ASC
-                ),
-                '{{}}'::uuid[]
+            ARRAY(
+                SELECT bi.news_item_id
+                FROM briefing_items bi
+                WHERE bi.briefing_id = {alias}.id
+                ORDER BY bi.position ASC, bi.created_at ASC
             ),
-            COALESCE({alias}.item_ids, '{{}}'::uuid[])
+            '{{}}'::uuid[]
         )
     """
 
@@ -88,94 +123,13 @@ def _dedupe_item_ids(item_ids: list[UUID]) -> list[UUID]:
 
 
 async def ensure_news_items_indexes() -> None:
-    """Create hot-path news_items indexes used by analyst/writer claims."""
-    global _news_items_indexes_ready
-    if _news_items_indexes_ready:
-        return
-
-    async with _news_items_indexes_lock:
-        if _news_items_indexes_ready:
-            return
-
-        pool = await get_pool()
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_news_items_status_updated_published "
-            "ON news_items (status, updated_at, published_at DESC)"
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_news_items_status_relevance_published "
-            "ON news_items (status, relevance_score DESC, published_at DESC)"
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_news_items_published_at_desc "
-            "ON news_items (published_at DESC)"
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_news_items_active_status_updated_published "
-            "ON news_items (status, updated_at, published_at DESC) "
-            "WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING')"
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_news_items_active_status_relevance_published "
-            "ON news_items (status, relevance_score DESC, published_at DESC) "
-            "WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING')"
-        )
-        _news_items_indexes_ready = True
+    """Ensure schema migrations already created news_items indexes."""
+    await ensure_schema_ready()
 
 
 async def ensure_briefing_items_table() -> None:
-    """Create briefing_items join table and backfill existing briefings."""
-    global _briefing_items_table_ready
-    if _briefing_items_table_ready:
-        return
-
-    async with _briefing_items_table_lock:
-        if _briefing_items_table_ready:
-            return
-
-        pool = await get_pool()
-        await pool.execute(
-            """
-            CREATE TABLE IF NOT EXISTS briefing_items (
-                briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
-                news_item_id UUID NOT NULL REFERENCES news_items(id) ON DELETE CASCADE,
-                position INTEGER NOT NULL,
-                role VARCHAR(32) NOT NULL DEFAULT 'selected',
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                PRIMARY KEY (briefing_id, news_item_id)
-            )
-            """
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_briefing_items_briefing_position "
-            "ON briefing_items (briefing_id, position)"
-        )
-        await pool.execute(
-            "CREATE INDEX IF NOT EXISTS idx_briefing_items_news_item "
-            "ON briefing_items (news_item_id)"
-        )
-        await pool.execute(
-            """
-            INSERT INTO briefing_items (
-                briefing_id,
-                news_item_id,
-                position,
-                role,
-                created_at
-            )
-            SELECT
-                b.id,
-                u.news_item_id,
-                (u.ordinality - 1)::int AS position,
-                'selected'::varchar(32) AS role,
-                COALESCE(b.created_at, NOW()) AS created_at
-            FROM briefings b
-            CROSS JOIN LATERAL UNNEST(COALESCE(b.item_ids, '{}'::uuid[]))
-                WITH ORDINALITY AS u(news_item_id, ordinality)
-            ON CONFLICT (briefing_id, news_item_id) DO NOTHING
-            """
-        )
-        _briefing_items_table_ready = True
+    """Ensure schema migrations already created briefing_items table."""
+    await ensure_schema_ready()
 
 
 # ---------------------------------------------------------------------------
@@ -517,8 +471,7 @@ async def insert_briefing(
         cover_image_url: URL of the generated cover image.
         cover_image_prompt: Prompt used to generate the cover.
         item_ids: UUIDs of items included in this briefing.
-            Stored in ``briefing_items`` as source of truth and mirrored to
-            ``briefings.item_ids`` only for temporary compatibility.
+            Stored in ``briefing_items`` as source of truth.
 
     Returns:
         The UUID of the created briefing.
@@ -534,17 +487,15 @@ async def insert_briefing(
                     content_markdown,
                     content_html,
                     cover_image_url,
-                    cover_image_prompt,
-                    item_ids
+                    cover_image_prompt
                 )
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES ($1, $2, $3, $4)
                 RETURNING id
                 """,
                 content_markdown,
                 content_html,
                 cover_image_url,
                 cover_image_prompt,
-                deduped_item_ids,
             )
             briefing_id = row["id"]
 
@@ -826,31 +777,8 @@ async def mark_briefing_distributed(
 
 
 async def ensure_history_tables() -> None:
-    """Create history tables used for imported previously published posts."""
-    pool = await get_pool()
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS published_history_posts (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            channel VARCHAR(32) NOT NULL,
-            author TEXT,
-            posted_at TIMESTAMP WITH TIME ZONE NOT NULL,
-            content_markdown TEXT NOT NULL,
-            content_hash VARCHAR(64) NOT NULL UNIQUE,
-            urls JSONB NOT NULL DEFAULT '[]'::jsonb,
-            item_ids UUID[] NOT NULL DEFAULT '{}'::uuid[],
-            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_published_history_posts_posted_at "
-        "ON published_history_posts (posted_at DESC)"
-    )
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_published_history_posts_channel_posted_at "
-        "ON published_history_posts (channel, posted_at DESC)"
-    )
+    """Ensure schema migrations already created history tables."""
+    await ensure_schema_ready()
 
 
 def _history_url_source_id(url: str) -> str:
@@ -1051,21 +979,8 @@ def _normalize_subscriber_email(value: str) -> str:
 
 
 async def ensure_newsletter_tables() -> None:
-    """Create newsletter subscriber tables if they do not already exist."""
-    pool = await get_pool()
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS newsletter_subscribers (
-            id BIGSERIAL PRIMARY KEY,
-            email TEXT NOT NULL UNIQUE,
-            is_active BOOLEAN NOT NULL DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_newsletter_subscribers_active_email "
-        "ON newsletter_subscribers (is_active, email)"
-    )
+    """Ensure schema migrations already created newsletter tables."""
+    await ensure_schema_ready()
 
 
 async def add_newsletter_subscriber(email: str) -> bool:
@@ -1151,45 +1066,8 @@ def _coerce_int(value: object, default: int = 0) -> int:
 
 
 async def ensure_simulation_tables() -> None:
-    """Create simulation persistence tables if they do not already exist."""
-    pool = await get_pool()
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS simulation_runs (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            generated_at TIMESTAMP WITH TIME ZONE,
-            source VARCHAR(64) NOT NULL DEFAULT 'cli',
-            report_path TEXT,
-            params JSONB NOT NULL DEFAULT '{}'::jsonb,
-            summary JSONB NOT NULL DEFAULT '{}'::jsonb,
-            count INTEGER NOT NULL DEFAULT 0,
-            notes TEXT,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_simulation_runs_created_at ON simulation_runs (created_at DESC)"
-    )
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS simulation_results (
-            id BIGSERIAL PRIMARY KEY,
-            run_id UUID NOT NULL REFERENCES simulation_runs(id) ON DELETE CASCADE,
-            briefing_id TEXT,
-            briefing_created_at TIMESTAMP WITH TIME ZONE,
-            actual_score INTEGER NOT NULL,
-            simulated_score INTEGER NOT NULL,
-            delta INTEGER NOT NULL,
-            result JSONB NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            UNIQUE (run_id, briefing_id)
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_simulation_results_run_id ON simulation_results (run_id)"
-    )
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_simulation_results_briefing_id ON simulation_results (briefing_id)"
-    )
+    """Ensure schema migrations already created simulation tables."""
+    await ensure_schema_ready()
 
 
 async def count_simulation_runs() -> int:
@@ -1420,118 +1298,8 @@ async def get_latest_simulation_report(
 
 
 async def ensure_training_tables() -> None:
-    """Create trace/review/outcome tables used for fine-tuning datasets."""
-    pool = await get_pool()
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS generation_runs (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            trigger_source VARCHAR(64) NOT NULL DEFAULT 'writer',
-            mode VARCHAR(32) NOT NULL DEFAULT 'standard',
-            decision VARCHAR(16) NOT NULL DEFAULT 'PENDING',
-            decision_reason TEXT,
-            rewrite_count INTEGER NOT NULL DEFAULT 0,
-            briefing_id UUID REFERENCES briefings(id) ON DELETE SET NULL,
-            selected_item_ids UUID[] NOT NULL DEFAULT '{}'::uuid[],
-            selected_items JSONB NOT NULL DEFAULT '[]'::jsonb,
-            llm_model TEXT,
-            llm_model_version TEXT,
-            prompts JSONB NOT NULL DEFAULT '{}'::jsonb,
-            config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
-            git_sha VARCHAR(128),
-            initial_draft TEXT,
-            final_draft TEXT,
-            final_gate JSONB NOT NULL DEFAULT '{}'::jsonb,
-            final_critique JSONB NOT NULL DEFAULT '{}'::jsonb,
-            final_verifier JSONB NOT NULL DEFAULT '{}'::jsonb
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_generation_runs_created_at ON generation_runs (created_at DESC)"
-    )
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_generation_runs_briefing_id ON generation_runs (briefing_id)"
-    )
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS generation_rounds (
-            id BIGSERIAL PRIMARY KEY,
-            run_id UUID NOT NULL REFERENCES generation_runs(id) ON DELETE CASCADE,
-            round_index INTEGER NOT NULL,
-            phase VARCHAR(32) NOT NULL DEFAULT 'initial',
-            draft_input TEXT,
-            gate_result JSONB NOT NULL DEFAULT '{}'::jsonb,
-            critique_result JSONB NOT NULL DEFAULT '{}'::jsonb,
-            verifier_result JSONB NOT NULL DEFAULT '{}'::jsonb,
-            feedback JSONB NOT NULL DEFAULT '[]'::jsonb,
-            rewrite_output TEXT,
-            passed BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            UNIQUE (run_id, round_index)
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_generation_rounds_run_id ON generation_rounds (run_id)"
-    )
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS generation_preference_pairs (
-            id BIGSERIAL PRIMARY KEY,
-            run_id UUID NOT NULL REFERENCES generation_runs(id) ON DELETE CASCADE,
-            round_index INTEGER NOT NULL DEFAULT 0,
-            source VARCHAR(64) NOT NULL DEFAULT 'auto_writer_loop',
-            chosen_text TEXT NOT NULL,
-            rejected_text TEXT NOT NULL,
-            rationale TEXT,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_generation_preference_pairs_run_id "
-        "ON generation_preference_pairs (run_id)"
-    )
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS briefing_human_reviews (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
-            run_id UUID REFERENCES generation_runs(id) ON DELETE SET NULL,
-            reviewer VARCHAR(128) NOT NULL DEFAULT 'cli',
-            decision VARCHAR(16) NOT NULL,
-            issue_tags TEXT[] NOT NULL DEFAULT '{}'::text[],
-            edited_markdown TEXT,
-            notes TEXT,
-            CHECK (decision IN ('accept', 'reject', 'edit', 'needs_work'))
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_briefing_human_reviews_briefing_id "
-        "ON briefing_human_reviews (briefing_id, created_at DESC)"
-    )
-
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS briefing_distribution_outcomes (
-            id BIGSERIAL PRIMARY KEY,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-            briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
-            channel VARCHAR(32) NOT NULL,
-            status VARCHAR(32) NOT NULL,
-            external_message_id TEXT,
-            external_post_url TEXT,
-            metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
-            metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-            UNIQUE (briefing_id, channel)
-        )
-        """)
-    await pool.execute(
-        "CREATE INDEX IF NOT EXISTS idx_distribution_outcomes_briefing_id "
-        "ON briefing_distribution_outcomes (briefing_id)"
-    )
+    """Ensure schema migrations already created training tables."""
+    await ensure_schema_ready()
 
 
 async def create_generation_run(
