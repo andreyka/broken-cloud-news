@@ -20,7 +20,15 @@ from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
-_ALIVE_STATUS_CODES = frozenset({200, 401, 403, 405, 429})
+
+def _is_live_status(status: int) -> bool:
+    """Treat any non-server-error HTTP response as reachable.
+
+    Liveness is about whether a URL endpoint exists/replies, not whether content
+    is publicly accessible. Accept 2xx/3xx/4xx and only treat 5xx/0/failures as
+    unreachable.
+    """
+    return 200 <= int(status) < 500
 
 
 class Scraper:
@@ -290,14 +298,14 @@ class Scraper:
         alive = False
         try:
             status, _ = await self.fetch_text(url, method="HEAD", timeout_ms=timeout_ms)
-            alive = status in _ALIVE_STATUS_CODES
+            alive = _is_live_status(status)
             if not alive and status >= 500:
                 status, _ = await self.fetch_text(
                     url,
                     method="GET",
                     timeout_ms=timeout_ms,
                 )
-                alive = status in _ALIVE_STATUS_CODES
+                alive = _is_live_status(status)
         except Exception:
             alive = False
 

@@ -92,6 +92,33 @@ class TestCliHelpers:
         assert result == "Done"
         mock_close_pool.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_run_agent_directly_captures_agent_text_message(self):
+        from a2a.utils import new_agent_text_message
+
+        from bcn.cli import _run_agent_directly
+
+        class _Executor:
+            def __init__(self, settings):
+                self.settings = settings
+
+            async def execute(self, context, event_queue):
+                event_queue.enqueue_event(
+                    new_agent_text_message("Briefing created: id=abc items=1")
+                )
+
+            async def close(self):
+                return None
+
+        settings = _make_settings()
+        with (
+            patch("bcn.common.db.get_pool", new_callable=AsyncMock),
+            patch("bcn.common.db.close_pool", new_callable=AsyncMock),
+        ):
+            result = await _run_agent_directly(_Executor, settings, "noop")
+
+        assert result == "Briefing created: id=abc items=1"
+
 
 # ── Collector tests ──────────────────────────────────────────────────────
 

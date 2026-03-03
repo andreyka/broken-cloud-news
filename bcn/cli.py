@@ -132,14 +132,25 @@ async def _run_agent_directly(
             self.messages: list[str] = []
             self._events: list[Any] = []
 
+        @staticmethod
+        def _extract_part_text(part: Any) -> str:
+            """Extract text from A2A part wrappers or plain text parts."""
+            text = getattr(part, "text", None)
+            if isinstance(text, str):
+                return text
+            root = getattr(part, "root", None)
+            root_text = getattr(root, "text", None) if root is not None else None
+            return root_text if isinstance(root_text, str) else ""
+
         def enqueue_event(self, event: Any) -> None:
             """Capture text parts from an agent event."""
             self._events.append(event)
             try:
                 parts = event.parts if hasattr(event, "parts") else []
                 for part in parts:
-                    if hasattr(part, "text"):
-                        self.messages.append(part.text)
+                    text = self._extract_part_text(part).strip()
+                    if text:
+                        self.messages.append(text)
             except Exception:
                 pass
 

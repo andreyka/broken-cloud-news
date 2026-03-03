@@ -180,6 +180,15 @@ class TestScraper:
         assert scraper.fetch_text.await_args_list[1].kwargs["method"] == "GET"
 
     @pytest.mark.asyncio
+    async def test_is_url_live_accepts_2xx_3xx_4xx(self, scraper):
+        for status in (202, 302, 404, 429):
+            scraper.fetch_text = AsyncMock(return_value=(status, ""))
+            alive = await scraper.is_url_live("https://example.com/article")
+            assert alive is True
+            assert scraper.fetch_text.await_count == 1
+            assert scraper.fetch_text.await_args_list[0].kwargs["method"] == "HEAD"
+
+    @pytest.mark.asyncio
     async def test_is_url_live_uses_cache(self, scraper):
         scraper.fetch_text = AsyncMock(return_value=(200, "ok"))
         cache: dict[str, bool] = {}
