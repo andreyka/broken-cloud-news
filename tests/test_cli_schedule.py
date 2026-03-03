@@ -18,6 +18,8 @@ from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.modes.common import parse_writer_handoff_payload
+from bcn.workflows.modes.common import render_writer_handoff_payload
 from bcn.workflows.modes.common import run_writer_distributor_handoff
 
 
@@ -52,10 +54,33 @@ def test_extract_briefing_id_from_writer_message():
     assert result == briefing_id
 
 
+def test_parse_writer_handoff_payload_publish():
+    briefing_id = uuid4()
+    message = render_writer_handoff_payload(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        decision="publish",
+        briefing_id=briefing_id,
+        item_count=3,
+    )
+    payload = parse_writer_handoff_payload(message)
+    assert payload is not None
+    assert payload.briefing_id == briefing_id
+    assert payload.decision == "publish"
+    assert payload.mode == REGULAR_DAILY_BRIEFING_MODE
+    assert payload.item_count == 3
+
+
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_uses_shared_skill_format():
     briefing_id = uuid4()
-    run_writer = AsyncMock(return_value=f"Briefing created: id={briefing_id} items=3")
+    run_writer = AsyncMock(
+        return_value=render_writer_handoff_payload(
+            mode=REGULAR_DAILY_BRIEFING_MODE,
+            decision="publish",
+            briefing_id=briefing_id,
+            item_count=3,
+        )
+    )
     run_distributor = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
 
     writer_result, distributor_result = await run_writer_distributor_handoff(
@@ -64,7 +89,7 @@ async def test_run_writer_distributor_handoff_uses_shared_skill_format():
         run_distributor=run_distributor,
     )
 
-    assert "Briefing created" in writer_result
+    assert "writer_handoff::" in writer_result
     assert "Distributed to:" in str(distributor_result)
     run_writer.assert_awaited_once_with(
         f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
@@ -75,8 +100,58 @@ async def test_run_writer_distributor_handoff_uses_shared_skill_format():
 
 
 @pytest.mark.asyncio
-async def test_run_writer_distributor_handoff_skips_distribution_without_briefing_id():
-    run_writer = AsyncMock(return_value="No publishable draft")
+async def test_run_writer_distributor_handoff_enforces_requested_mode():
+    briefing_id = uuid4()
+    run_writer = AsyncMock(
+        return_value=render_writer_handoff_payload(
+            mode=REGULAR_MONTHLY_NEWSLETTER_MODE,
+            decision="publish",
+            briefing_id=briefing_id,
+            item_count=3,
+        )
+    )
+    run_distributor = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
+
+    _writer_result, distributor_result = await run_writer_distributor_handoff(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        run_writer=run_writer,
+        run_distributor=run_distributor,
+    )
+
+    assert "Distributed to:" in str(distributor_result)
+    run_distributor.assert_awaited_once_with(
+        f"distribute_briefing::{briefing_id}::{REGULAR_DAILY_BRIEFING_MODE}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_writer_distributor_handoff_skips_distribution_on_skip_decision():
+    run_writer = AsyncMock(
+        return_value=render_writer_handoff_payload(
+            mode=REGULAR_DAILY_BRIEFING_MODE,
+            decision="skip",
+            item_count=0,
+        )
+    )
+    run_distributor = AsyncMock(return_value="unused")
+
+    _writer_result, distributor_result = await run_writer_distributor_handoff(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        run_writer=run_writer,
+        run_distributor=run_distributor,
+    )
+
+    assert distributor_result is None
+    run_writer.assert_awaited_once_with(
+        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
+    )
+    run_distributor.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_writer_distributor_handoff_skips_unstructured_writer_output():
+    briefing_id = uuid4()
+    run_writer = AsyncMock(return_value=f"Briefing created: id={briefing_id} items=3")
     run_distributor = AsyncMock(return_value="unused")
 
     _writer_result, distributor_result = await run_writer_distributor_handoff(
@@ -112,7 +187,12 @@ async def test_job_publish_regular_briefing_distributes_target_briefing():
     briefing_id = uuid4()
     send_mock = AsyncMock(
         side_effect=[
-            f"Briefing created: id={briefing_id} items=3",
+            render_writer_handoff_payload(
+                mode=REGULAR_DAILY_BRIEFING_MODE,
+                decision="publish",
+                briefing_id=briefing_id,
+                item_count=3,
+            ),
             "Distributed to: {'telegram': 'ok'}",
         ]
     )
@@ -135,9 +215,15 @@ async def test_job_publish_regular_briefing_distributes_target_briefing():
 
 
 @pytest.mark.asyncio
-async def test_job_publish_regular_briefing_skips_distribution_when_writer_returns_no_id():
+async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips():
     settings = Settings(writer_port=9003, distributor_port=9004)
-    send_mock = AsyncMock(return_value="Quiet day — no items scored >= 7")
+    send_mock = AsyncMock(
+        return_value=render_writer_handoff_payload(
+            mode=REGULAR_DAILY_BRIEFING_MODE,
+            decision="skip",
+            item_count=0,
+        )
+    )
     configure_scheduler_runtime(settings, send_mock)
 
     await job_publish_regular_briefing()
@@ -155,7 +241,12 @@ async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode():
     briefing_id = uuid4()
     send_mock = AsyncMock(
         side_effect=[
-            f"Briefing created: id={briefing_id} items=11",
+            render_writer_handoff_payload(
+                mode=REGULAR_MONTHLY_NEWSLETTER_MODE,
+                decision="publish",
+                briefing_id=briefing_id,
+                item_count=11,
+            ),
             "Distributed to: {'email': 'ok'}",
         ]
     )

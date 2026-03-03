@@ -1495,7 +1495,9 @@ def workflow_run(mode: str) -> None:
         )
         click.echo(writer_result)
         if not distribute_result:
-            click.echo("Writer did not return a briefing id; skipping distribution.")
+            click.echo(
+                "Writer did not return a publish handoff; skipping distribution."
+            )
             return
 
         click.echo(distribute_result)
