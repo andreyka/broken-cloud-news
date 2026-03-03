@@ -1885,9 +1885,20 @@ class TestDistributorExecutor:
             ctx = _fake_context(f"distribute_briefing::{briefing_id}")
             await executor.execute(ctx, eq)
 
-        mock_claim_by_id.assert_called_once_with(briefing_id)
+        mock_claim_by_id.assert_called_once()
+        claim_args, claim_kwargs = mock_claim_by_id.await_args
+        assert claim_args == (briefing_id,)
+        assert claim_kwargs["max_distribution_retries"] == (
+            settings.distribution_retry_max_attempts
+        )
+        assert claim_kwargs["stale_distributing_minutes"] == (
+            settings.distribution_retry_stale_distributing_minutes
+        )
         mock_claim_latest.assert_not_called()
-        mock_release.assert_called_once_with(briefing_id)
+        mock_release.assert_called_once()
+        release_args, release_kwargs = mock_release.await_args
+        assert release_args == (briefing_id,)
+        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
         assert any("No distribution channels configured" in str(e) for e in eq.events)
 
     @pytest.mark.asyncio
@@ -1936,7 +1947,10 @@ class TestDistributorExecutor:
         assert any("Latest draft is stale" in str(e) for e in eq.events)
         mock_mark.assert_not_called()
         mock_publish.assert_not_called()
-        mock_release.assert_called_once_with(stale_briefing["id"])
+        mock_release.assert_called_once()
+        release_args, release_kwargs = mock_release.await_args
+        assert release_args == (stale_briefing["id"],)
+        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
 
     @pytest.mark.asyncio
     async def test_partial_channel_failure_keeps_briefing_draft(self):
@@ -2013,7 +2027,10 @@ class TestDistributorExecutor:
         assert fail_channel.closed == 1
         mock_mark.assert_not_called()
         mock_publish.assert_not_called()
-        mock_release.assert_called_once_with(briefing["id"])
+        mock_release.assert_called_once()
+        release_args, release_kwargs = mock_release.await_args
+        assert release_args == (briefing["id"],)
+        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
 
     @pytest.mark.asyncio
     async def test_skips_previously_successful_channels_and_finishes_distribution(self):

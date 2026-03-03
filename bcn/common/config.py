@@ -365,6 +365,10 @@ class Settings(BaseSettings):
     monthly_newsletter_timezone: str = "UTC"
     a2a_request_timeout_seconds: int = 180
     generation_run_stale_pending_minutes: int = 180
+    analysis_retry_max_attempts: int = 5
+    analysis_retry_base_delay_seconds: int = 300
+    analysis_retry_max_delay_seconds: int = 7200
+    analysis_retry_stale_analyzing_minutes: int = 120
 
     # Scraping
     scrape_content_limit: int = 10000
@@ -436,3 +440,7 @@ class Settings(BaseSettings):
     # Telegram output
     telegram_overflow_mode: str = "smart"  # smart, always, never
     briefing_distribution_max_draft_age_minutes: int = 180
+    distribution_retry_max_attempts: int = 6
+    distribution_retry_base_delay_seconds: int = 600
+    distribution_retry_max_delay_seconds: int = 21600
+    distribution_retry_stale_distributing_minutes: int = 30

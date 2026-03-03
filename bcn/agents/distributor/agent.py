@@ -137,9 +137,16 @@ class DistributorExecutor(AgentExecutor):
         requested_briefing_id = self._extract_requested_briefing_id(user_input)
         requested_mode = self._extract_requested_mode(user_input)
         if requested_briefing_id:
-            briefing = await claim_draft_briefing_by_id(requested_briefing_id)
+            briefing = await claim_draft_briefing_by_id(
+                requested_briefing_id,
+                stale_distributing_minutes=self.settings.distribution_retry_stale_distributing_minutes,
+                max_distribution_retries=self.settings.distribution_retry_max_attempts,
+            )
         else:
-            briefing = await claim_latest_draft_briefing()
+            briefing = await claim_latest_draft_briefing(
+                stale_distributing_minutes=self.settings.distribution_retry_stale_distributing_minutes,
+                max_distribution_retries=self.settings.distribution_retry_max_attempts,
+            )
         if not briefing:
             if requested_briefing_id:
                 await enqueue_event_safe(
@@ -157,6 +164,7 @@ class DistributorExecutor(AgentExecutor):
         channels: list[tuple[str, Distributor]] = []
         results: dict[str, str] = {}
         msg: str | None = None
+        retry_error: str | None = None
         mode = self._normalize_mode(requested_mode)
         newsletter_recipients: list[str] | None = None
 
@@ -289,6 +297,14 @@ class DistributorExecutor(AgentExecutor):
                 should_release_for_retry = False
                 msg = f"Distributed to: {results} (mode={mode})"
             else:
+                failed_channels = sorted(
+                    channel for channel, status in results.items() if status != "ok"
+                )
+                retry_error = (
+                    f"distribution_incomplete:{','.join(failed_channels)}"
+                    if failed_channels
+                    else "distribution_incomplete"
+                )
                 msg = (
                     "Distribution incomplete; kept briefing as DRAFT for retry. "
                     f"mode={mode} results={results}"
@@ -301,7 +317,13 @@ class DistributorExecutor(AgentExecutor):
                     logger.warning("Failed to close %s channel", _name)
             if should_release_for_retry:
                 try:
-                    await release_briefing_for_retry(briefing["id"])
+                    await release_briefing_for_retry(
+                        briefing["id"],
+                        error=retry_error,
+                        max_retries=self.settings.distribution_retry_max_attempts,
+                        base_delay_seconds=self.settings.distribution_retry_base_delay_seconds,
+                        max_delay_seconds=self.settings.distribution_retry_max_delay_seconds,
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to release briefing %s back to DRAFT",

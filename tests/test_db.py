@@ -159,3 +159,128 @@ async def test_get_distribution_outcomes_reads_latest_view():
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
     assert "FROM distribution_outcomes_latest" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_new_items_applies_retry_guards():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.get_new_items(
+                limit=10,
+                stale_analyzing_minutes=15,
+                max_analysis_retries=4,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "next_retry_at IS NULL OR next_retry_at <= NOW()" in sql
+    assert "terminal_status IS NULL" in sql
+    assert "status = 'DISCARDED'" in sql
+    assert "COALESCE(retry_count, 0) >= $3" in sql
+
+
+@pytest.mark.asyncio
+async def test_release_items_from_analyzing_records_retry_metadata():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            item_id = uuid4()
+            await db.release_items_from_analyzing(
+                [item_id],
+                error="analysis timeout",
+                max_retries=3,
+                base_delay_seconds=30,
+                max_delay_seconds=300,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "retry_count = COALESCE(retry_count, 0) + 1" in sql
+    assert "next_retry_at = CASE" in sql
+    assert "terminal_status = CASE" in sql
+    assert "status = CASE" in sql
+    assert args[2] == "analysis timeout"
+    assert args[3] == 3
+    assert args[4] == 30
+    assert args[5] == 300
+
+
+@pytest.mark.asyncio
+async def test_claim_latest_draft_briefing_applies_retry_guards():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetchrow = AsyncMock(return_value=None)
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.claim_latest_draft_briefing(
+                stale_distributing_minutes=20,
+                max_distribution_retries=5,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetchrow.await_args
+    sql = args[0]
+    assert "status = 'FAILED'" in sql
+    assert "next_retry_at IS NULL OR next_retry_at <= NOW()" in sql
+    assert "terminal_status IS NULL" in sql
+    assert "COALESCE(retry_count, 0) >= $2" in sql
+
+
+@pytest.mark.asyncio
+async def test_release_briefing_for_retry_records_retry_metadata():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            briefing_id = uuid4()
+            await db.release_briefing_for_retry(
+                briefing_id,
+                error="telegram failed",
+                max_retries=4,
+                base_delay_seconds=45,
+                max_delay_seconds=900,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "retry_count = COALESCE(retry_count, 0) + 1" in sql
+    assert "status = CASE" in sql
+    assert "THEN 'FAILED'" in sql
+    assert "next_retry_at = CASE" in sql
+    assert args[2] == "telegram failed"
+    assert args[3] == 4
+    assert args[4] == 45
+    assert args[5] == 900
