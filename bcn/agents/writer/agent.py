@@ -42,6 +42,7 @@ from bcn.common.llm import LLMClient
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.modes.common import render_writer_handoff_payload
 
 logger = logging.getLogger(__name__)
 _SUPPORTED_WORKFLOW_MODES = frozenset(ALL_MODES)
@@ -161,7 +162,17 @@ class WriterExecutor(AgentExecutor):
                         "Skipping briefing."
                     )
                 logger.info(msg)
-                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                await enqueue_event_safe(
+                    event_queue,
+                    new_agent_text_message(
+                        self._compose_handoff_message(
+                            workflow_mode=workflow_mode,
+                            decision="skip",
+                            item_count=0,
+                            human_message=msg,
+                        )
+                    ),
+                )
                 return
 
             item_dicts = [dict(i) for i in items]
@@ -187,6 +198,25 @@ class WriterExecutor(AgentExecutor):
         await self.comfyui.close()
         await self.llm_client.close()
 
+    @staticmethod
+    def _compose_handoff_message(
+        *,
+        workflow_mode: str,
+        decision: str,
+        briefing_id: UUID | None = None,
+        item_count: int | None = None,
+        human_message: str = "",
+    ) -> str:
+        """Compose one payload containing contract JSON and human-readable text."""
+        payload = render_writer_handoff_payload(
+            mode=workflow_mode,
+            decision=decision,
+            briefing_id=briefing_id,
+            item_count=item_count,
+        )
+        text = str(human_message or "").strip()
+        return payload if not text else f"{payload}\n{text}"
+
     async def _execute_core(
         self,
         item_dicts: list[dict],
@@ -209,7 +239,17 @@ class WriterExecutor(AgentExecutor):
                         f"({high_signal} < {min_high_signal}). Skipping briefing."
                     )
                     logger.info(msg)
-                    await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                    await enqueue_event_safe(
+                        event_queue,
+                        new_agent_text_message(
+                            self._compose_handoff_message(
+                                workflow_mode=workflow_mode,
+                                decision="skip",
+                                item_count=0,
+                                human_message=msg,
+                            )
+                        ),
+                    )
                     return
 
             recent_published = await get_recent_published_items(
@@ -235,7 +275,17 @@ class WriterExecutor(AgentExecutor):
                     "Skipping briefing."
                 )
             logger.info(msg)
-            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+            await enqueue_event_safe(
+                event_queue,
+                new_agent_text_message(
+                    self._compose_handoff_message(
+                        workflow_mode=workflow_mode,
+                        decision="skip",
+                        item_count=0,
+                        human_message=msg,
+                    )
+                ),
+            )
             return
         min_chars, target_chars, hard_max_chars = self._char_limits(
             mode,
@@ -492,7 +542,17 @@ class WriterExecutor(AgentExecutor):
                     briefing_id=None,
                 )
                 trace_finalized = True
-                await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+                await enqueue_event_safe(
+                    event_queue,
+                    new_agent_text_message(
+                        self._compose_handoff_message(
+                            workflow_mode=workflow_mode,
+                            decision="blocked",
+                            item_count=len(selected_items),
+                            human_message=msg,
+                        )
+                    ),
+                )
                 return
 
             briefing_body = self._normalize_section_headings(briefing_body)
@@ -552,7 +612,18 @@ class WriterExecutor(AgentExecutor):
 
             msg = f"Briefing created: id={briefing_id} items={len(selected_items)}"
             logger.info(msg)
-            await enqueue_event_safe(event_queue, new_agent_text_message(msg))
+            await enqueue_event_safe(
+                event_queue,
+                new_agent_text_message(
+                    self._compose_handoff_message(
+                        workflow_mode=workflow_mode,
+                        decision="publish",
+                        briefing_id=briefing_id,
+                        item_count=len(selected_items),
+                        human_message=msg,
+                    )
+                ),
+            )
         except Exception as exc:
             logger.exception("Writer execution failed")
             if not trace_finalized:
@@ -570,7 +641,14 @@ class WriterExecutor(AgentExecutor):
             await enqueue_event_safe(
                 event_queue,
                 new_agent_text_message(
-                    "Blocking publish: internal writer error during generation."
+                    self._compose_handoff_message(
+                        workflow_mode=workflow_mode,
+                        decision="blocked",
+                        item_count=len(selected_items),
+                        human_message=(
+                            "Blocking publish: internal writer error during generation."
+                        ),
+                    )
                 ),
             )
             return
