@@ -246,7 +246,10 @@ async def get_analyzed_items(
               AND relevance_score >= $1
               AND published_at > NOW() - make_interval(hours => $2)
               AND NOT EXISTS (
-                  SELECT 1 FROM briefings WHERE news_items.id = ANY(briefings.item_ids)
+                  SELECT 1
+                  FROM briefings
+                  WHERE news_items.id = ANY(briefings.item_ids)
+                    AND briefings.status = 'DISTRIBUTED'
               )
             ORDER BY relevance_score DESC, published_at DESC
             FOR UPDATE SKIP LOCKED
