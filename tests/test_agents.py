@@ -646,6 +646,50 @@ class TestAnalystExecutor:
         assert any("Analyzed 1/2 items (1 failed)" in str(e) for e in eq.events)
 
     @pytest.mark.asyncio
+    async def test_execute_releases_analyzing_item_with_original_error(self):
+        from bcn.agents.analyst.agent import AnalystExecutor
+
+        settings = _make_settings()
+        executor = AnalystExecutor(settings)
+        item = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "title": "one",
+            "full_content": "x",
+            "url": "https://example.com/1",
+            "source_type": "rss",
+            "source_id": "1",
+            "raw_data": {},
+            "status": "ANALYZING",
+        }
+
+        with (
+            patch(
+                "bcn.agents.analyst.agent.get_new_items",
+                new_callable=AsyncMock,
+                return_value=[item],
+            ),
+            patch.object(
+                executor,
+                "_analyze_item_and_save",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("llm down"),
+            ),
+            patch(
+                "bcn.agents.analyst.agent.release_items_from_analyzing",
+                new_callable=AsyncMock,
+            ) as mock_release,
+        ):
+            eq = FakeEventQueue()
+            ctx = _fake_context("analyze_new_items")
+            await executor.execute(ctx, eq)
+
+        mock_release.assert_awaited_once()
+        release_args = mock_release.await_args
+        assert str(release_args.args[0][0]) == item["id"]
+        assert release_args.kwargs["error"] == "RuntimeError: llm down"
+        assert any("Analyzed 0/1 items (1 failed)" in str(e) for e in eq.events)
+
+    @pytest.mark.asyncio
     async def test_analyze_item_and_save_raises_on_llm_failure(self):
         from bcn.agents.analyst.agent import AnalystExecutor
 

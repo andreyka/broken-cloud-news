@@ -70,7 +70,7 @@ class AnalystExecutor(AgentExecutor):
             try:
                 await self._analyze_item_and_save(item)
                 analyzed += 1
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed to analyze item %s", item.get("id"))
                 if str(item.get("status", "")).upper() == "ANALYZING":
                     item_id = self._coerce_uuid(item.get("id"))
