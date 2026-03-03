@@ -23,6 +23,10 @@ _pool: Optional[asyncpg.Pool] = None
 _pool_lock: asyncio.Lock = asyncio.Lock()
 _schema_ready: bool = False
 _schema_lock: asyncio.Lock = asyncio.Lock()
+_RETRY_ERROR_MAX_LEN = 512
+_ANALYSIS_TERMINAL_STATUS = "ANALYSIS_FAILED"
+_WRITING_TERMINAL_STATUS = "WRITING_FAILED"
+_DISTRIBUTION_TERMINAL_STATUS = "DISTRIBUTION_FAILED"
 
 
 async def _get_or_create_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
@@ -122,6 +126,27 @@ def _dedupe_item_ids(item_ids: list[UUID]) -> list[UUID]:
     return deduped
 
 
+def _normalize_retry_policy(
+    *,
+    max_retries: int,
+    base_delay_seconds: int,
+    max_delay_seconds: int,
+) -> tuple[int, int, int]:
+    """Return safe retry policy values used in SQL backoff calculations."""
+    retries = max(1, int(max_retries))
+    base_delay = max(1, int(base_delay_seconds))
+    max_delay = max(base_delay, int(max_delay_seconds))
+    return retries, base_delay, max_delay
+
+
+def _normalize_retry_error(error: str | None, *, fallback: str) -> str:
+    """Normalize and truncate retry error text for stable DB storage."""
+    value = str(error or "").strip()
+    if not value:
+        value = fallback
+    return value[:_RETRY_ERROR_MAX_LEN]
+
+
 async def ensure_news_items_indexes() -> None:
     """Ensure schema migrations already created news_items indexes."""
     await ensure_schema_ready()
@@ -191,31 +216,61 @@ async def get_new_items(
     *,
     limit: int = 250,
     stale_analyzing_minutes: int = 120,
+    max_analysis_retries: int = 5,
 ) -> list[asyncpg.Record]:
     """Atomically claim ``NEW`` items for analysis.
 
     Uses ``FOR UPDATE SKIP LOCKED`` so concurrent analyst workers do not process
     the same items. Stale ``ANALYZING`` rows are automatically reclaimed.
     """
+    retry_limit = max(1, int(max_analysis_retries))
     await ensure_news_items_indexes()
     pool = await get_pool()
     return await pool.fetch(
         """
-        WITH candidate AS (
+        WITH terminalized AS (
+            UPDATE news_items
+            SET status = 'DISCARDED',
+                terminal_status = $4,
+                last_error = COALESCE(last_error, 'analysis_retry_exhausted_stale_claim'),
+                next_retry_at = NULL,
+                updated_at = NOW()
+            WHERE status = 'ANALYZING'
+              AND updated_at < NOW() - make_interval(mins => $2)
+              AND COALESCE(retry_count, 0) >= $3
+              AND terminal_status IS NULL
+            RETURNING id
+        ),
+        candidate AS (
             SELECT id
             FROM news_items
-            WHERE status = 'NEW'
-               OR (
+            WHERE (
+                    status = 'NEW'
+                    OR (
                     status = 'ANALYZING'
                     AND updated_at < NOW() - make_interval(mins => $2)
-               )
+                    AND COALESCE(retry_count, 0) < $3
+                    )
+                  )
+              AND terminal_status IS NULL
+              AND (next_retry_at IS NULL OR next_retry_at <= NOW())
             ORDER BY published_at DESC
             FOR UPDATE SKIP LOCKED
             LIMIT $1
         ),
         claimed AS (
             UPDATE news_items AS n
-            SET status = 'ANALYZING', updated_at = NOW()
+            SET status = 'ANALYZING',
+                retry_count = CASE
+                    WHEN n.status = 'ANALYZING' THEN COALESCE(n.retry_count, 0) + 1
+                    ELSE COALESCE(n.retry_count, 0)
+                END,
+                last_error = CASE
+                    WHEN n.status = 'ANALYZING' THEN COALESCE(n.last_error, 'analysis_claim_timeout_reclaimed')
+                    ELSE n.last_error
+                END,
+                next_retry_at = NULL,
+                updated_at = NOW()
             FROM candidate
             WHERE n.id = candidate.id
             RETURNING n.*
@@ -226,6 +281,8 @@ async def get_new_items(
         """,
         max(1, int(limit)),
         max(1, int(stale_analyzing_minutes)),
+        retry_limit,
+        _ANALYSIS_TERMINAL_STATUS,
     )
 
 
@@ -248,18 +305,61 @@ async def update_item_scraped(item_id: UUID, full_content: str) -> None:
     )
 
 
-async def release_items_from_analyzing(ids: list[UUID]) -> None:
-    """Release claimed ``ANALYZING`` items back to ``NEW`` for retry."""
+async def release_items_from_analyzing(
+    ids: list[UUID],
+    *,
+    error: str | None = None,
+    max_retries: int = 5,
+    base_delay_seconds: int = 300,
+    max_delay_seconds: int = 7200,
+) -> None:
+    """Release claimed ``ANALYZING`` items using bounded retry metadata."""
     if not ids:
         return
+    retry_limit, base_delay, max_delay = _normalize_retry_policy(
+        max_retries=max_retries,
+        base_delay_seconds=base_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+    )
+    error_text = _normalize_retry_error(error, fallback="analysis_failed")
     pool = await get_pool()
     await pool.execute(
         """
         UPDATE news_items
-        SET status = 'NEW', updated_at = NOW()
-        WHERE id = ANY($1::uuid[]) AND status = 'ANALYZING'
+        SET retry_count = COALESCE(retry_count, 0) + 1,
+            last_error = $2,
+            next_retry_at = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN NULL
+                ELSE NOW()
+                    + make_interval(
+                        secs => LEAST(
+                            $5,
+                            GREATEST(
+                                1,
+                                $4 * CAST(POWER(2::numeric, GREATEST(COALESCE(retry_count, 0), 0)) AS integer)
+                            )
+                        )
+                    )
+            END,
+            terminal_status = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN $6
+                ELSE NULL
+            END,
+            status = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN 'DISCARDED'
+                ELSE 'NEW'
+            END,
+            updated_at = NOW()
+        WHERE id = ANY($1::uuid[])
+          AND status = 'ANALYZING'
+          AND terminal_status IS NULL
         """,
         ids,
+        error_text,
+        retry_limit,
+        base_delay,
+        max_delay,
+        _ANALYSIS_TERMINAL_STATUS,
     )
 
 
@@ -289,7 +389,9 @@ async def update_item_analyzed(
         UPDATE news_items
         SET summary = $1, relevance_score = $2, ai_tags = $3::jsonb,
             full_content = COALESCE($4, full_content),
-            image_prompt = $5, url = COALESCE($6, url), status = 'ANALYZED', updated_at = NOW()
+            image_prompt = $5, url = COALESCE($6, url), status = 'ANALYZED',
+            retry_count = 0, last_error = NULL, next_retry_at = NULL, terminal_status = NULL,
+            updated_at = NOW()
         WHERE id = $7
         """,
         summary,
@@ -308,18 +410,33 @@ async def get_analyzed_items(
     *,
     limit: int = 250,
     stale_writing_minutes: int = 180,
+    max_writing_retries: int = 4,
 ) -> list[asyncpg.Record]:
     """Atomically claim analyzed items for writer selection.
 
     Uses ``FOR UPDATE SKIP LOCKED`` so concurrent writer workers do not process
     the same candidate set. Stale ``WRITING`` rows are automatically reclaimed.
     """
+    retry_limit = max(1, int(max_writing_retries))
     await ensure_news_items_indexes()
     await ensure_briefing_items_table()
     pool = await get_pool()
     return await pool.fetch(
         """
-        WITH candidate AS (
+        WITH terminalized AS (
+            UPDATE news_items
+            SET status = 'DISCARDED',
+                terminal_status = $5,
+                last_error = COALESCE(last_error, 'writing_retry_exhausted_stale_claim'),
+                next_retry_at = NULL,
+                updated_at = NOW()
+            WHERE status = 'WRITING'
+              AND updated_at < NOW() - make_interval(mins => $3)
+              AND COALESCE(retry_count, 0) >= $4
+              AND terminal_status IS NULL
+            RETURNING id
+        ),
+        candidate AS (
             SELECT id
             FROM news_items
             WHERE (
@@ -327,8 +444,11 @@ async def get_analyzed_items(
                     OR (
                         status = 'WRITING'
                         AND updated_at < NOW() - make_interval(mins => $3)
+                        AND COALESCE(retry_count, 0) < $4
                     )
                   )
+              AND terminal_status IS NULL
+              AND (next_retry_at IS NULL OR next_retry_at <= NOW())
               AND relevance_score >= $1
               AND published_at > NOW() - make_interval(hours => $2)
               AND NOT EXISTS (
@@ -340,11 +460,21 @@ async def get_analyzed_items(
               )
             ORDER BY relevance_score DESC, published_at DESC
             FOR UPDATE SKIP LOCKED
-            LIMIT $4
+            LIMIT $6
         ),
         claimed AS (
             UPDATE news_items AS n
-            SET status = 'WRITING', updated_at = NOW()
+            SET status = 'WRITING',
+                retry_count = CASE
+                    WHEN n.status = 'WRITING' THEN COALESCE(n.retry_count, 0) + 1
+                    ELSE COALESCE(n.retry_count, 0)
+                END,
+                last_error = CASE
+                    WHEN n.status = 'WRITING' THEN COALESCE(n.last_error, 'writing_claim_timeout_reclaimed')
+                    ELSE n.last_error
+                END,
+                next_retry_at = NULL,
+                updated_at = NOW()
             FROM candidate
             WHERE n.id = candidate.id
             RETURNING n.*
@@ -356,6 +486,8 @@ async def get_analyzed_items(
         min_score,
         hours,
         max(1, int(stale_writing_minutes)),
+        retry_limit,
+        _WRITING_TERMINAL_STATUS,
         max(1, int(limit)),
     )
 
@@ -368,7 +500,12 @@ async def release_items_from_writing(ids: list[UUID]) -> None:
     await pool.execute(
         """
         UPDATE news_items
-        SET status = 'ANALYZED', updated_at = NOW()
+        SET status = 'ANALYZED',
+            retry_count = 0,
+            last_error = NULL,
+            next_retry_at = NULL,
+            terminal_status = NULL,
+            updated_at = NOW()
         WHERE id = ANY($1::uuid[]) AND status = 'WRITING'
         """,
         ids,
@@ -635,33 +772,69 @@ async def get_latest_briefing() -> Optional[asyncpg.Record]:
     )
 
 
-async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
+async def claim_latest_draft_briefing(
+    *,
+    stale_distributing_minutes: int = 30,
+    max_distribution_retries: int = 6,
+) -> Optional[asyncpg.Record]:
     """Atomically claim the latest draft for distribution.
 
     Transitions one ``DRAFT`` row to ``DISTRIBUTING`` using ``SKIP LOCKED`` so
     concurrent distributor runs cannot claim the same briefing. Also reclaims
     stale ``DISTRIBUTING`` rows older than 30 minutes (e.g., crashed workers).
     """
+    stale_minutes = max(1, int(stale_distributing_minutes))
+    retry_limit = max(1, int(max_distribution_retries))
     await ensure_briefing_items_table()
     item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
         f"""
-        WITH candidate AS (
+        WITH terminalized AS (
+            UPDATE briefings
+            SET status = 'FAILED',
+                terminal_status = $3,
+                last_error = COALESCE(last_error, 'distribution_retry_exhausted_stale_claim'),
+                next_retry_at = NULL,
+                updated_at = NOW()
+            WHERE status = 'DISTRIBUTING'
+              AND updated_at < NOW() - make_interval(mins => $1)
+              AND COALESCE(retry_count, 0) >= $2
+              AND terminal_status IS NULL
+            RETURNING id
+        ),
+        candidate AS (
             SELECT id
             FROM briefings
-            WHERE status = 'DRAFT'
-               OR (
-                    status = 'DISTRIBUTING'
-                    AND updated_at < NOW() - INTERVAL '30 minutes'
-               )
+            WHERE (
+                    (
+                        status = 'DRAFT'
+                        AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                    )
+                    OR (
+                        status = 'DISTRIBUTING'
+                        AND updated_at < NOW() - make_interval(mins => $1)
+                        AND COALESCE(retry_count, 0) < $2
+                    )
+                  )
+              AND terminal_status IS NULL
             ORDER BY created_at DESC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
         ),
         claimed AS (
             UPDATE briefings AS b
-            SET status = 'DISTRIBUTING', updated_at = NOW()
+            SET status = 'DISTRIBUTING',
+                retry_count = CASE
+                    WHEN b.status = 'DISTRIBUTING' THEN COALESCE(b.retry_count, 0) + 1
+                    ELSE COALESCE(b.retry_count, 0)
+                END,
+                last_error = CASE
+                    WHEN b.status = 'DISTRIBUTING' THEN COALESCE(b.last_error, 'distribution_claim_timeout_reclaimed')
+                    ELSE b.last_error
+                END,
+                next_retry_at = NULL,
+                updated_at = NOW()
             FROM candidate
             WHERE b.id = candidate.id
             RETURNING b.id
@@ -681,28 +854,67 @@ async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
         FROM briefings b
         JOIN claimed c ON c.id = b.id
         LIMIT 1
-        """
+        """,
+        stale_minutes,
+        retry_limit,
+        _DISTRIBUTION_TERMINAL_STATUS,
     )
 
 
-async def claim_draft_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
+async def claim_draft_briefing_by_id(
+    briefing_id: UUID,
+    *,
+    stale_distributing_minutes: int = 30,
+    max_distribution_retries: int = 6,
+) -> Optional[asyncpg.Record]:
     """Atomically claim a specific draft briefing for distribution."""
+    stale_minutes = max(1, int(stale_distributing_minutes))
+    retry_limit = max(1, int(max_distribution_retries))
     await ensure_briefing_items_table()
     item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
         f"""
-        WITH claimed AS (
+        WITH terminalized AS (
+            UPDATE briefings
+            SET status = 'FAILED',
+                terminal_status = $4,
+                last_error = COALESCE(last_error, 'distribution_retry_exhausted_stale_claim'),
+                next_retry_at = NULL,
+                updated_at = NOW()
+            WHERE id = $1
+              AND status = 'DISTRIBUTING'
+              AND updated_at < NOW() - make_interval(mins => $2)
+              AND COALESCE(retry_count, 0) >= $3
+              AND terminal_status IS NULL
+            RETURNING id
+        ),
+        claimed AS (
             UPDATE briefings AS b
-            SET status = 'DISTRIBUTING', updated_at = NOW()
+            SET status = 'DISTRIBUTING',
+                retry_count = CASE
+                    WHEN b.status = 'DISTRIBUTING' THEN COALESCE(b.retry_count, 0) + 1
+                    ELSE COALESCE(b.retry_count, 0)
+                END,
+                last_error = CASE
+                    WHEN b.status = 'DISTRIBUTING' THEN COALESCE(b.last_error, 'distribution_claim_timeout_reclaimed')
+                    ELSE b.last_error
+                END,
+                next_retry_at = NULL,
+                updated_at = NOW()
             WHERE b.id = $1
               AND (
-                b.status = 'DRAFT'
+                (
+                    b.status = 'DRAFT'
+                    AND (b.next_retry_at IS NULL OR b.next_retry_at <= NOW())
+                )
                 OR (
                     b.status = 'DISTRIBUTING'
-                    AND b.updated_at < NOW() - INTERVAL '30 minutes'
+                    AND b.updated_at < NOW() - make_interval(mins => $2)
+                    AND COALESCE(b.retry_count, 0) < $3
                 )
               )
+              AND b.terminal_status IS NULL
             RETURNING b.id
         )
         SELECT
@@ -722,19 +934,63 @@ async def claim_draft_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Reco
         LIMIT 1
         """,
         briefing_id,
+        stale_minutes,
+        retry_limit,
+        _DISTRIBUTION_TERMINAL_STATUS,
     )
 
 
-async def release_briefing_for_retry(briefing_id: UUID) -> None:
-    """Return a claimed briefing back to ``DRAFT`` for retry."""
+async def release_briefing_for_retry(
+    briefing_id: UUID,
+    *,
+    error: str | None = None,
+    max_retries: int = 6,
+    base_delay_seconds: int = 600,
+    max_delay_seconds: int = 21600,
+) -> None:
+    """Release a ``DISTRIBUTING`` briefing using bounded retry metadata."""
+    retry_limit, base_delay, max_delay = _normalize_retry_policy(
+        max_retries=max_retries,
+        base_delay_seconds=base_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+    )
+    error_text = _normalize_retry_error(error, fallback="distribution_failed")
     pool = await get_pool()
     await pool.execute(
         """
         UPDATE briefings
-        SET status = 'DRAFT', updated_at = NOW()
+        SET retry_count = COALESCE(retry_count, 0) + 1,
+            last_error = $2,
+            next_retry_at = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN NULL
+                ELSE NOW()
+                    + make_interval(
+                        secs => LEAST(
+                            $5,
+                            GREATEST(
+                                1,
+                                $4 * CAST(POWER(2::numeric, GREATEST(COALESCE(retry_count, 0), 0)) AS integer)
+                            )
+                        )
+                    )
+            END,
+            terminal_status = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN $6
+                ELSE NULL
+            END,
+            status = CASE
+                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN 'FAILED'
+                ELSE 'DRAFT'
+            END,
+            updated_at = NOW()
         WHERE id = $1 AND status = 'DISTRIBUTING'
         """,
         briefing_id,
+        error_text,
+        retry_limit,
+        base_delay,
+        max_delay,
+        _DISTRIBUTION_TERMINAL_STATUS,
     )
 
 
@@ -763,7 +1019,14 @@ async def mark_briefing_distributed(
     await pool.execute(
         """
         UPDATE briefings
-        SET status = 'DISTRIBUTED', distributed_at = NOW(), distribution_channels = $1::jsonb, updated_at = NOW()
+        SET status = 'DISTRIBUTED',
+            distributed_at = NOW(),
+            distribution_channels = $1::jsonb,
+            retry_count = 0,
+            last_error = NULL,
+            next_retry_at = NULL,
+            terminal_status = NULL,
+            updated_at = NOW()
         WHERE id = $2
         """,
         json.dumps(channels),

@@ -39,6 +39,7 @@ class AnalystExecutor(AgentExecutor):
     """A2A agent that scores and summarizes news items via the LLM."""
 
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.llm_client = LLMClient.from_settings(settings)
         self.analyst_llm = AnalystLLM(self.llm_client)
         self.scraper = Scraper(
@@ -53,7 +54,10 @@ class AnalystExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Analyze all ``NEW`` items: scrape if needed, then score via LLM."""
-        items = await get_new_items()
+        items = await get_new_items(
+            stale_analyzing_minutes=self.settings.analysis_retry_stale_analyzing_minutes,
+            max_analysis_retries=self.settings.analysis_retry_max_attempts,
+        )
         if not items:
             await enqueue_event_safe(
                 event_queue, new_agent_text_message("No new items to analyze")
@@ -72,7 +76,13 @@ class AnalystExecutor(AgentExecutor):
                     item_id = self._coerce_uuid(item.get("id"))
                     if item_id:
                         try:
-                            await release_items_from_analyzing([item_id])
+                            await release_items_from_analyzing(
+                                [item_id],
+                                error=f"{type(exc).__name__}: {exc}",
+                                max_retries=self.settings.analysis_retry_max_attempts,
+                                base_delay_seconds=self.settings.analysis_retry_base_delay_seconds,
+                                max_delay_seconds=self.settings.analysis_retry_max_delay_seconds,
+                            )
                         except Exception:
                             logger.exception(
                                 "Failed to release ANALYZING item %s after analysis error",
