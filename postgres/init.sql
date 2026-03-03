@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS news_items (
     UNIQUE(source_type, source_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_news_items_status_updated_published
+    ON news_items (status, updated_at, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_items_status_relevance_published
+    ON news_items (status, relevance_score DESC, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_items_published_at_desc
+    ON news_items (published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_items_active_status_updated_published
+    ON news_items (status, updated_at, published_at DESC)
+    WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING');
+CREATE INDEX IF NOT EXISTS idx_news_items_active_status_relevance_published
+    ON news_items (status, relevance_score DESC, published_at DESC)
+    WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING');
+
 CREATE TABLE IF NOT EXISTS briefings (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -41,6 +54,32 @@ CREATE TABLE IF NOT EXISTS briefings (
     distribution_channels JSONB,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS briefing_items (
+    briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+    news_item_id UUID NOT NULL REFERENCES news_items(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    role VARCHAR(32) NOT NULL DEFAULT 'selected',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    PRIMARY KEY (briefing_id, news_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_briefing_items_briefing_position
+    ON briefing_items (briefing_id, position);
+CREATE INDEX IF NOT EXISTS idx_briefing_items_news_item
+    ON briefing_items (news_item_id);
+
+INSERT INTO briefing_items (briefing_id, news_item_id, position, role, created_at)
+SELECT
+    b.id,
+    u.news_item_id,
+    (u.ordinality - 1)::int AS position,
+    'selected',
+    COALESCE(b.created_at, NOW())
+FROM briefings b
+CROSS JOIN LATERAL UNNEST(COALESCE(b.item_ids, '{}'::uuid[]))
+    WITH ORDINALITY AS u(news_item_id, ordinality)
+ON CONFLICT (briefing_id, news_item_id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS published_history_posts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

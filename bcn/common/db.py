@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
 _pool_lock: asyncio.Lock = asyncio.Lock()
+_news_items_indexes_ready: bool = False
+_news_items_indexes_lock: asyncio.Lock = asyncio.Lock()
+_briefing_items_table_ready: bool = False
+_briefing_items_table_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
@@ -43,10 +47,135 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
 async def close_pool() -> None:
     """Close the shared connection pool if it is open."""
     global _pool
+    global _briefing_items_table_ready
+    global _news_items_indexes_ready
     async with _pool_lock:
         if _pool is not None:
             await _pool.close()
             _pool = None
+    _briefing_items_table_ready = False
+    _news_items_indexes_ready = False
+
+
+def _briefing_item_ids_sql(alias: str = "b") -> str:
+    """Return SQL expression that resolves briefing item ids from join table."""
+    return f"""
+        COALESCE(
+            NULLIF(
+                ARRAY(
+                    SELECT bi.news_item_id
+                    FROM briefing_items bi
+                    WHERE bi.briefing_id = {alias}.id
+                    ORDER BY bi.position ASC, bi.created_at ASC
+                ),
+                '{{}}'::uuid[]
+            ),
+            COALESCE({alias}.item_ids, '{{}}'::uuid[])
+        )
+    """
+
+
+def _dedupe_item_ids(item_ids: list[UUID]) -> list[UUID]:
+    """De-duplicate item ids while preserving order."""
+    deduped: list[UUID] = []
+    seen: set[UUID] = set()
+    for item_id in item_ids:
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        deduped.append(item_id)
+    return deduped
+
+
+async def ensure_news_items_indexes() -> None:
+    """Create hot-path news_items indexes used by analyst/writer claims."""
+    global _news_items_indexes_ready
+    if _news_items_indexes_ready:
+        return
+
+    async with _news_items_indexes_lock:
+        if _news_items_indexes_ready:
+            return
+
+        pool = await get_pool()
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_items_status_updated_published "
+            "ON news_items (status, updated_at, published_at DESC)"
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_items_status_relevance_published "
+            "ON news_items (status, relevance_score DESC, published_at DESC)"
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_items_published_at_desc "
+            "ON news_items (published_at DESC)"
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_items_active_status_updated_published "
+            "ON news_items (status, updated_at, published_at DESC) "
+            "WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING')"
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_news_items_active_status_relevance_published "
+            "ON news_items (status, relevance_score DESC, published_at DESC) "
+            "WHERE status IN ('NEW','ANALYZING','ANALYZED','WRITING')"
+        )
+        _news_items_indexes_ready = True
+
+
+async def ensure_briefing_items_table() -> None:
+    """Create briefing_items join table and backfill existing briefings."""
+    global _briefing_items_table_ready
+    if _briefing_items_table_ready:
+        return
+
+    async with _briefing_items_table_lock:
+        if _briefing_items_table_ready:
+            return
+
+        pool = await get_pool()
+        await pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS briefing_items (
+                briefing_id UUID NOT NULL REFERENCES briefings(id) ON DELETE CASCADE,
+                news_item_id UUID NOT NULL REFERENCES news_items(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                role VARCHAR(32) NOT NULL DEFAULT 'selected',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                PRIMARY KEY (briefing_id, news_item_id)
+            )
+            """
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_briefing_items_briefing_position "
+            "ON briefing_items (briefing_id, position)"
+        )
+        await pool.execute(
+            "CREATE INDEX IF NOT EXISTS idx_briefing_items_news_item "
+            "ON briefing_items (news_item_id)"
+        )
+        await pool.execute(
+            """
+            INSERT INTO briefing_items (
+                briefing_id,
+                news_item_id,
+                position,
+                role,
+                created_at
+            )
+            SELECT
+                b.id,
+                u.news_item_id,
+                (u.ordinality - 1)::int AS position,
+                'selected'::varchar(32) AS role,
+                COALESCE(b.created_at, NOW()) AS created_at
+            FROM briefings b
+            CROSS JOIN LATERAL UNNEST(COALESCE(b.item_ids, '{}'::uuid[]))
+                WITH ORDINALITY AS u(news_item_id, ordinality)
+            ON CONFLICT (briefing_id, news_item_id) DO NOTHING
+            """
+        )
+        _briefing_items_table_ready = True
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +243,7 @@ async def get_new_items(
     Uses ``FOR UPDATE SKIP LOCKED`` so concurrent analyst workers do not process
     the same items. Stale ``ANALYZING`` rows are automatically reclaimed.
     """
+    await ensure_news_items_indexes()
     pool = await get_pool()
     return await pool.fetch(
         """
@@ -230,6 +360,8 @@ async def get_analyzed_items(
     Uses ``FOR UPDATE SKIP LOCKED`` so concurrent writer workers do not process
     the same candidate set. Stale ``WRITING`` rows are automatically reclaimed.
     """
+    await ensure_news_items_indexes()
+    await ensure_briefing_items_table()
     pool = await get_pool()
     return await pool.fetch(
         """
@@ -247,9 +379,10 @@ async def get_analyzed_items(
               AND published_at > NOW() - make_interval(hours => $2)
               AND NOT EXISTS (
                   SELECT 1
-                  FROM briefings
-                  WHERE news_items.id = ANY(briefings.item_ids)
-                    AND briefings.status = 'DISTRIBUTED'
+                  FROM briefing_items bi
+                  JOIN briefings b ON b.id = bi.briefing_id
+                  WHERE bi.news_item_id = news_items.id
+                    AND b.status = 'DISTRIBUTED'
               )
             ORDER BY relevance_score DESC, published_at DESC
             FOR UPDATE SKIP LOCKED
@@ -300,6 +433,7 @@ async def get_top_items_for_period(
     ``PUBLISHED`` rows so monthly newsletters can summarize the most relevant
     items of the full period.
     """
+    await ensure_news_items_indexes()
     pool = await get_pool()
     return await pool.fetch(
         """
@@ -347,6 +481,7 @@ async def get_recent_published_items(
     Returns:
         Published item records ordered by ``published_at`` descending.
     """
+    await ensure_news_items_indexes()
     pool = await get_pool()
     return await pool.fetch(
         """
@@ -386,20 +521,53 @@ async def insert_briefing(
     Returns:
         The UUID of the created briefing.
     """
+    await ensure_briefing_items_table()
+    deduped_item_ids = _dedupe_item_ids(item_ids)
     pool = await get_pool()
-    row = await pool.fetchrow(
-        """
-        INSERT INTO briefings (content_markdown, content_html, cover_image_url, cover_image_prompt, item_ids)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id
-        """,
-        content_markdown,
-        content_html,
-        cover_image_url,
-        cover_image_prompt,
-        item_ids,
-    )
-    return row["id"]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                INSERT INTO briefings (
+                    content_markdown,
+                    content_html,
+                    cover_image_url,
+                    cover_image_prompt,
+                    item_ids
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id
+                """,
+                content_markdown,
+                content_html,
+                cover_image_url,
+                cover_image_prompt,
+                deduped_item_ids,
+            )
+            briefing_id = row["id"]
+
+            if deduped_item_ids:
+                await conn.executemany(
+                    """
+                    INSERT INTO briefing_items (
+                        briefing_id,
+                        news_item_id,
+                        position,
+                        role
+                    )
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (briefing_id, news_item_id) DO UPDATE
+                    SET
+                        position = EXCLUDED.position,
+                        role = EXCLUDED.role
+                    """,
+                    [
+                        (briefing_id, item_id, pos, "selected")
+                        for pos, item_id in enumerate(deduped_item_ids)
+                    ],
+                )
+
+    return briefing_id
 
 
 async def get_recent_briefings(limit: int = 5) -> list[asyncpg.Record]:
@@ -435,20 +603,24 @@ async def get_distributed_briefings(
         limit: Maximum rows to return. Use ``0`` for no explicit limit.
         since_days: Optional lookback window in days. Use ``0`` for all time.
     """
+    await ensure_briefing_items_table()
     pool = await get_pool()
 
-    where = ["status = 'DISTRIBUTED'"]
+    item_ids_sql = _briefing_item_ids_sql("b")
+    where = ["b.status = 'DISTRIBUTED'"]
     params: list[object] = []
 
     if since_days > 0:
         params.append(int(since_days))
-        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
+        where.append(f"b.created_at > NOW() - make_interval(days => ${len(params)})")
 
     sql = (
-        "SELECT id, created_at, distributed_at, content_markdown, item_ids "
-        "FROM briefings "
+        "SELECT "
+        "b.id, b.created_at, b.distributed_at, b.content_markdown, "
+        f"{item_ids_sql} AS item_ids "
+        "FROM briefings b "
         f"WHERE {' AND '.join(where)} "
-        "ORDER BY created_at DESC"
+        "ORDER BY b.created_at DESC"
     )
     if limit > 0:
         params.append(int(limit))
@@ -459,17 +631,54 @@ async def get_distributed_briefings(
 
 async def get_latest_any_briefing() -> Optional[asyncpg.Record]:
     """Return the latest briefing regardless of status."""
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
-        "SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1"
+        f"""
+        SELECT
+            b.id,
+            b.created_at,
+            b.cover_image_url,
+            b.cover_image_prompt,
+            b.content_markdown,
+            b.content_html,
+            {item_ids_sql} AS item_ids,
+            b.status,
+            b.distributed_at,
+            b.distribution_channels,
+            b.updated_at
+        FROM briefings b
+        ORDER BY b.created_at DESC
+        LIMIT 1
+        """
     )
 
 
 async def get_latest_briefing() -> Optional[asyncpg.Record]:
     """Return the most recent ``DRAFT`` briefing, or ``None``."""
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
-        "SELECT * FROM briefings WHERE status = 'DRAFT' ORDER BY created_at DESC LIMIT 1"
+        f"""
+        SELECT
+            b.id,
+            b.created_at,
+            b.cover_image_url,
+            b.cover_image_prompt,
+            b.content_markdown,
+            b.content_html,
+            {item_ids_sql} AS item_ids,
+            b.status,
+            b.distributed_at,
+            b.distribution_channels,
+            b.updated_at
+        FROM briefings b
+        WHERE b.status = 'DRAFT'
+        ORDER BY b.created_at DESC
+        LIMIT 1
+        """
     )
 
 
@@ -480,9 +689,11 @@ async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
     concurrent distributor runs cannot claim the same briefing. Also reclaims
     stale ``DISTRIBUTING`` rows older than 30 minutes (e.g., crashed workers).
     """
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
-        """
+        f"""
         WITH candidate AS (
             SELECT id
             FROM briefings
@@ -494,32 +705,68 @@ async def claim_latest_draft_briefing() -> Optional[asyncpg.Record]:
             ORDER BY created_at DESC
             FOR UPDATE SKIP LOCKED
             LIMIT 1
+        ),
+        claimed AS (
+            UPDATE briefings AS b
+            SET status = 'DISTRIBUTING', updated_at = NOW()
+            FROM candidate
+            WHERE b.id = candidate.id
+            RETURNING b.id
         )
-        UPDATE briefings AS b
-        SET status = 'DISTRIBUTING', updated_at = NOW()
-        FROM candidate
-        WHERE b.id = candidate.id
-        RETURNING b.*
+        SELECT
+            b.id,
+            b.created_at,
+            b.cover_image_url,
+            b.cover_image_prompt,
+            b.content_markdown,
+            b.content_html,
+            {item_ids_sql} AS item_ids,
+            b.status,
+            b.distributed_at,
+            b.distribution_channels,
+            b.updated_at
+        FROM briefings b
+        JOIN claimed c ON c.id = b.id
+        LIMIT 1
         """
     )
 
 
 async def claim_draft_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
     """Atomically claim a specific draft briefing for distribution."""
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
-        """
-        UPDATE briefings
-        SET status = 'DISTRIBUTING', updated_at = NOW()
-        WHERE id = $1
-          AND (
-            status = 'DRAFT'
-            OR (
-                status = 'DISTRIBUTING'
-                AND updated_at < NOW() - INTERVAL '30 minutes'
-            )
-          )
-        RETURNING *
+        f"""
+        WITH claimed AS (
+            UPDATE briefings AS b
+            SET status = 'DISTRIBUTING', updated_at = NOW()
+            WHERE b.id = $1
+              AND (
+                b.status = 'DRAFT'
+                OR (
+                    b.status = 'DISTRIBUTING'
+                    AND b.updated_at < NOW() - INTERVAL '30 minutes'
+                )
+              )
+            RETURNING b.id
+        )
+        SELECT
+            b.id,
+            b.created_at,
+            b.cover_image_url,
+            b.cover_image_prompt,
+            b.content_markdown,
+            b.content_html,
+            {item_ids_sql} AS item_ids,
+            b.status,
+            b.distributed_at,
+            b.distribution_channels,
+            b.updated_at
+        FROM briefings b
+        JOIN claimed c ON c.id = b.id
+        LIMIT 1
         """,
         briefing_id,
     )
@@ -1528,9 +1775,27 @@ async def get_latest_generation_run_for_briefing(
 
 async def get_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
     """Fetch one briefing by UUID."""
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     return await pool.fetchrow(
-        "SELECT * FROM briefings WHERE id = $1 LIMIT 1",
+        f"""
+        SELECT
+            b.id,
+            b.created_at,
+            b.cover_image_url,
+            b.cover_image_prompt,
+            b.content_markdown,
+            b.content_html,
+            {item_ids_sql} AS item_ids,
+            b.status,
+            b.distributed_at,
+            b.distribution_channels,
+            b.updated_at
+        FROM briefings b
+        WHERE b.id = $1
+        LIMIT 1
+        """,
         briefing_id,
     )
 
@@ -1581,6 +1846,8 @@ async def get_review_queue(
 ) -> list[asyncpg.Record]:
     """List recent briefings with review summary information."""
     await ensure_training_tables()
+    await ensure_briefing_items_table()
+    item_ids_sql = _briefing_item_ids_sql("b")
     pool = await get_pool()
     where = ["TRUE"]
     if only_unreviewed:
@@ -1591,7 +1858,7 @@ async def get_review_queue(
             b.id,
             b.created_at,
             b.status,
-            b.item_ids,
+            {item_ids_sql} AS item_ids,
             LEFT(b.content_markdown, 220) AS preview,
             COALESCE(rv.review_count, 0)::int AS review_count,
             rv.last_decision,
