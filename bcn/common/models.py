@@ -53,7 +53,7 @@ class Briefing(BaseModel):
     cover_image_prompt: Optional[str] = None
     item_ids: list[UUID] = Field(
         default_factory=list,
-        description="Compatibility mirror of briefing_items (deprecated).",
+        description="Ordered list of associated news item ids.",
     )
     status: str = "DRAFT"
     distributed_at: Optional[datetime] = None

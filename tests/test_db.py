@@ -14,17 +14,19 @@ async def test_get_analyzed_items_excludes_only_distributed_briefings():
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
-    db._briefing_items_table_ready = False
-    db._news_items_indexes_ready = False
-
-    with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-        mock_get_pool.return_value = fake_pool
-        await db.get_analyzed_items(
-            min_score=8,
-            hours=12,
-            limit=99,
-            stale_writing_minutes=30,
-        )
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.get_analyzed_items(
+                min_score=8,
+                hours=12,
+                limit=99,
+                stale_writing_minutes=30,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -83,17 +85,20 @@ async def test_insert_briefing_writes_join_table_positions():
     conn = _FakeConn(briefing_id)
     fake_pool = _FakePool(conn)
 
-    db._briefing_items_table_ready = False
-
-    with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-        mock_get_pool.return_value = fake_pool
-        created = await db.insert_briefing(
-            content_markdown="hello",
-            content_html=None,
-            cover_image_url=None,
-            cover_image_prompt=None,
-            item_ids=[first_item, second_item, first_item],
-        )
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            created = await db.insert_briefing(
+                content_markdown="hello",
+                content_html=None,
+                cover_image_url=None,
+                cover_image_prompt=None,
+                item_ids=[first_item, second_item, first_item],
+            )
+    finally:
+        db._schema_ready = original_schema_ready
 
     assert created == briefing_id
     conn.fetchrow.assert_awaited_once()

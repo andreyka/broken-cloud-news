@@ -193,6 +193,53 @@ def cli(verbose: bool) -> None:
         logging.getLogger().setLevel(logging.DEBUG)
 
 
+@cli.command("db-migrate")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show pending migrations without applying them.",
+)
+def db_migrate(dry_run: bool) -> None:
+    """Apply versioned SQL migrations for BCN database schema."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_schema_migration_status
+        from bcn.common.db import migrate_schema
+
+        try:
+            if dry_run:
+                rows = await get_schema_migration_status(settings)
+                pending = [row for row in rows if not bool(row.get("applied"))]
+                if not rows:
+                    click.echo("No migration files discovered.")
+                    return
+                if not pending:
+                    click.echo("No pending migrations.")
+                    return
+                click.echo(f"Pending migrations: {len(pending)}")
+                for row in pending:
+                    click.echo(f"  {row['version']} {row['name']}")
+                return
+
+            applied = await migrate_schema(settings)
+            if not applied:
+                click.echo("No pending migrations.")
+            else:
+                click.echo(f"Applied migrations: {len(applied)}")
+                for name in applied:
+                    click.echo(f"  {name}")
+
+            rows = await get_schema_migration_status(settings)
+            applied_count = len([row for row in rows if bool(row.get("applied"))])
+            click.echo(f"Schema migration state: {applied_count}/{len(rows)} applied.")
+        finally:
+            await close_pool()
+
+    asyncio.run(_run())
+
+
 @cli.command()
 @click.option(
     "--source",
