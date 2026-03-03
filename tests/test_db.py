@@ -109,3 +109,53 @@ async def test_insert_briefing_writes_join_table_positions():
         (briefing_id, first_item, 0, "selected"),
         (briefing_id, second_item, 1, "selected"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_upsert_distribution_outcome_appends_attempt_row():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.upsert_distribution_outcome(
+                briefing_id=uuid4(),
+                channel="telegram",
+                status="ok",
+                metadata={"attempt": 1},
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "INSERT INTO distribution_attempts" in sql
+    assert "ON CONFLICT" not in sql
+
+
+@pytest.mark.asyncio
+async def test_get_distribution_outcomes_reads_latest_view():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.get_distribution_outcomes(briefing_ids=[uuid4()], limit=25)
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "FROM distribution_outcomes_latest" in sql

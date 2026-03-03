@@ -1690,12 +1690,12 @@ async def upsert_distribution_outcome(
     metrics: dict[str, Any] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Upsert per-channel distribution outcome and engagement metrics."""
+    """Record one distribution attempt (append-only)."""
     await ensure_training_tables()
     pool = await get_pool()
     await pool.execute(
         """
-        INSERT INTO briefing_distribution_outcomes (
+        INSERT INTO distribution_attempts (
             briefing_id,
             channel,
             status,
@@ -1706,15 +1706,6 @@ async def upsert_distribution_outcome(
             metadata
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
-        ON CONFLICT (briefing_id, channel) DO UPDATE
-        SET
-            status = EXCLUDED.status,
-            external_message_id = COALESCE(EXCLUDED.external_message_id, briefing_distribution_outcomes.external_message_id),
-            external_post_url = COALESCE(EXCLUDED.external_post_url, briefing_distribution_outcomes.external_post_url),
-            sent_at = EXCLUDED.sent_at,
-            metrics = COALESCE(NULLIF(EXCLUDED.metrics, '{}'::jsonb), briefing_distribution_outcomes.metrics),
-            metadata = briefing_distribution_outcomes.metadata || EXCLUDED.metadata,
-            updated_at = NOW()
         """,
         briefing_id,
         (channel or "").strip().lower(),
@@ -1732,7 +1723,7 @@ async def get_distribution_outcomes(
     briefing_ids: list[UUID] | None = None,
     limit: int = 0,
 ) -> list[asyncpg.Record]:
-    """Fetch stored distribution outcome rows."""
+    """Fetch latest per-channel distribution outcomes."""
     await ensure_training_tables()
     pool = await get_pool()
     where = ["TRUE"]
@@ -1742,9 +1733,34 @@ async def get_distribution_outcomes(
         where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
 
     sql = (
-        "SELECT * FROM briefing_distribution_outcomes "
+        "SELECT * FROM distribution_outcomes_latest "
         f"WHERE {' AND '.join(where)} "
         "ORDER BY sent_at DESC, created_at DESC"
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def get_distribution_attempts(
+    *,
+    briefing_ids: list[UUID] | None = None,
+    limit: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch append-only distribution attempt history rows."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    params: list[object] = []
+    if briefing_ids:
+        params.append(briefing_ids)
+        where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
+
+    sql = (
+        "SELECT * FROM distribution_attempts "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY sent_at DESC, id DESC"
     )
     if limit > 0:
         params.append(max(1, int(limit)))
