@@ -192,7 +192,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://host.docker.internal:8000/v1"
     llm_model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
     llm_api_key: str = ""
-    llm_timeout: int = 120
+    llm_timeout: int = 180
+    llm_chat_retries: int = 16
+    llm_retry_max_wait_seconds: int = 600
+    llm_retry_jitter_min_seconds: float = 0.5
+    llm_retry_jitter_max_seconds: float = 5.0
 
     # LLM role overrides (optional; empty string => fall back to shared setting)
     llm_provider_analyst: str = ""

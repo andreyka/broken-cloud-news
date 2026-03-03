@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 import json
 import logging
 import random
@@ -43,12 +46,22 @@ class LLMClient:
         provider: str = "openai_compat",
         api_key: str = "",
         role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
+        chat_retries: int = 12,
+        retry_max_wait_seconds: float = 300.0,
+        retry_jitter_min_seconds: float = 0.1,
+        retry_jitter_max_seconds: float = 2.5,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.model = model or ""
         self.provider = self._normalize_provider(provider)
         self.api_key = api_key or ""
         self.timeout = timeout
+        self.chat_retries = max(1, int(chat_retries))
+        self.retry_max_wait_seconds = max(1.0, float(retry_max_wait_seconds))
+        self.retry_jitter_min_seconds = max(0.0, float(retry_jitter_min_seconds))
+        self.retry_jitter_max_seconds = max(
+            self.retry_jitter_min_seconds, float(retry_jitter_max_seconds)
+        )
         self._default_endpoint = _EndpointConfig(
             base_url=self.base_url,
             model=self.model,
@@ -94,6 +107,10 @@ class LLMClient:
             provider=str(settings.llm_provider or "openai_compat"),
             api_key=str(settings.llm_api_key or ""),
             role_overrides=role_overrides,
+            chat_retries=int(settings.llm_chat_retries),
+            retry_max_wait_seconds=float(settings.llm_retry_max_wait_seconds),
+            retry_jitter_min_seconds=float(settings.llm_retry_jitter_min_seconds),
+            retry_jitter_max_seconds=float(settings.llm_retry_jitter_max_seconds),
         )
 
     @staticmethod
@@ -166,7 +183,7 @@ class LLMClient:
         self,
         system_prompt: str,
         user_content: str,
-        retries: int = 3,
+        retries: int | None = None,
     ) -> str:
         """Send a chat request using the default endpoint."""
         return await self.chat_for_role(
@@ -182,14 +199,15 @@ class LLMClient:
         role: str | None,
         system_prompt: str,
         user_content: str,
-        retries: int = 8,
+        retries: int | None = None,
         json_response: bool = False,
         tools: list[Any] | None = None,
     ) -> str:
         """Send a role-specific chat request with automatic retries."""
         endpoint = self._endpoint(role)
+        max_retries = max(1, int(self.chat_retries if retries is None else retries))
         last_exc: Exception | None = None
-        for attempt in range(1, retries + 1):
+        for attempt in range(1, max_retries + 1):
             try:
                 if endpoint.provider in {"gemini", "vertexai"}:
                     return await self._chat_gemini(
@@ -211,24 +229,24 @@ class LLMClient:
                 if not retryable:
                     raise
                 last_exc = exc
-                if attempt < retries:
-                    wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
+                if attempt < max_retries:
+                    wait = self._retry_wait_seconds(attempt, exc.response)
                     logger.warning(
                         "LLM request failed (attempt %d/%d, status=%d), retrying in %.2fs",
                         attempt,
-                        retries,
+                        max_retries,
                         status,
                         wait,
                     )
                     await asyncio.sleep(wait)
             except (httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
-                if attempt < retries:
-                    wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
+                if attempt < max_retries:
+                    wait = self._retry_wait_seconds(attempt)
                     logger.warning(
                         "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
                         attempt,
-                        retries,
+                        max_retries,
                         type(exc).__name__,
                         wait,
                     )
@@ -244,12 +262,12 @@ class LLMClient:
                     or getattr(exc, "code", 0) in {429, 500, 502, 503, 504}
                 ):
                     last_exc = exc
-                    if attempt < retries:
-                        wait = min(60.0, (2**attempt)) + random.uniform(0.1, 1.5)
+                    if attempt < max_retries:
+                        wait = self._retry_wait_seconds(attempt)
                         logger.warning(
                             "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
                             attempt,
-                            retries,
+                            max_retries,
                             type(exc).__name__,
                             wait,
                         )
@@ -410,3 +428,34 @@ class LLMClient:
         if endpoint.api_key:
             return {"Authorization": f"Bearer {endpoint.api_key}"}
         return {}
+
+    def _retry_wait_seconds(
+        self,
+        attempt: int,
+        response: httpx.Response | None = None,
+    ) -> float:
+        wait = min(self.retry_max_wait_seconds, float(2**attempt))
+        wait += random.uniform(self.retry_jitter_min_seconds, self.retry_jitter_max_seconds)
+        retry_after = self._parse_retry_after_seconds(response)
+        if retry_after is not None:
+            wait = max(wait, min(self.retry_max_wait_seconds, retry_after))
+        return wait
+
+    @staticmethod
+    def _parse_retry_after_seconds(response: httpx.Response | None) -> float | None:
+        if response is None:
+            return None
+        raw = response.headers.get("Retry-After", "").strip()
+        if not raw:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
