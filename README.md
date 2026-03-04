@@ -163,7 +163,7 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 |----------|---------|-------------|
 | `BCN_SETUP_DATABASE_MODE` | `docker` | Setup hint for `setup.sh` (`docker` or `managed`) |
 | `BCN_DATABASE_URL` | `postgresql://...` | PostgreSQL connection string |
-| `BCN_LLM_PROVIDER` | `openai_compat` | LLM provider (`openai_compat`, `gemini`, or `vertexai`) |
+| `BCN_LLM_PROVIDER` | `openai_compat` | LLM provider (`openai_compat`, `gemini`, `vertexai`, or `anthropic`) |
 | `BCN_LLM_BASE_URL` | `http://192.168.0.9:8000/v1` | Qwen API endpoint |
 | `BCN_LLM_MODEL` | `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8` | Default model used by all LLM roles |
 | `BCN_LLM_API_KEY` | - | Optional API key (used for hosted providers) |
@@ -245,7 +245,7 @@ Monthly newsletter subscribers are managed via CLI:
 
 ## AI Infrastructure & Serving API
 
-You can deploy the AI backend entirely in the cloud using Google's Gemini API, or run the models on-premise (e.g., NVIDIA DGX Spark).
+You can deploy the AI backend entirely in the cloud using Google's Gemini API, Anthropic's Claude API, or run the models on-premise (e.g., NVIDIA DGX Spark).
 
 ### Option 1: Gemini API (Cloud)
 
@@ -265,7 +265,32 @@ The simplest deployment uses Google's Vertex AI / Gemini API for both text and i
    ```
 *(Note: Using an image-capable cover model such as `nanobanana-pro2` enables native image generation without needing ComfyUI in the success path).*
 
-### Option 2: DGX Spark (On-Premise)
+### Option 2: Anthropic Claude API (Cloud)
+
+Use Claude models for text analysis and generation roles.
+
+1. Get an Anthropic API key from [console.anthropic.com](https://console.anthropic.com).
+2. Update your `.env` file:
+   ```bash
+   BCN_LLM_PROVIDER=anthropic
+   BCN_LLM_BASE_URL=https://api.anthropic.com
+   BCN_LLM_API_KEY=sk-ant-...
+   BCN_LLM_MODEL=claude-sonnet-4-20250514
+   ```
+   Or use per-role overrides to mix providers (e.g., Claude for writer/critic, Gemini for cover):
+   ```bash
+   BCN_LLM_PROVIDER_WRITER=anthropic
+   BCN_LLM_MODEL_WRITER=claude-sonnet-4-20250514
+   BCN_LLM_API_KEY_WRITER=sk-ant-...
+   BCN_LLM_PROVIDER_CRITIC=anthropic
+   BCN_LLM_MODEL_CRITIC=claude-sonnet-4-20250514
+   BCN_LLM_API_KEY_CRITIC=sk-ant-...
+   BCN_LLM_PROVIDER_COVER=vertexai
+   BCN_LLM_MODEL_COVER=nanobanana-pro2
+   ```
+*(Note: Claude does not support image generation, so cover image roles should use Gemini/Vertex or ComfyUI.)*
+
+### Option 3: DGX Spark (On-Premise)
 
 For fully local, high-performance execution, deploy Qwen3-VL and Flux.1-schnell.
 

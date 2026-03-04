@@ -126,6 +126,8 @@ class LLMClient:
             return "gemini"
         if provider in {"vertexai", "vertex_ai", "vertex", "google_vertex"}:
             return "vertexai"
+        if provider in {"anthropic", "claude"}:
+            return "anthropic"
         return "openai_compat"
 
     def _resolve_endpoint_override(
@@ -217,6 +219,12 @@ class LLMClient:
                         json_response=json_response,
                         tools=tools,
                     )
+                if endpoint.provider == "anthropic":
+                    return await self._chat_anthropic(
+                        endpoint,
+                        system_prompt,
+                        user_content,
+                    )
                 return await self._chat_openai_compat(
                     endpoint,
                     system_prompt,
@@ -302,6 +310,38 @@ class LLMClient:
         )
         response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
+
+    async def _chat_anthropic(
+        self,
+        endpoint: _EndpointConfig,
+        system_prompt: str,
+        user_content: str,
+    ) -> str:
+        base = endpoint.base_url or "https://api.anthropic.com"
+        request: dict[str, Any] = {
+            "model": endpoint.model,
+            "max_tokens": 4096,
+            "system": system_prompt,
+            "messages": [
+                {"role": "user", "content": user_content},
+            ],
+        }
+        headers = {
+            "x-api-key": endpoint.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        response = await self._client.post(
+            f"{base.rstrip('/')}/v1/messages",
+            headers=headers,
+            json=request,
+        )
+        response.raise_for_status()
+        data = response.json()
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                return str(block["text"])
+        raise RuntimeError("Anthropic response did not include a text block")
 
     def _get_genai_client(self, endpoint: _EndpointConfig) -> Any:
         from google import genai

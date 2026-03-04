@@ -153,6 +153,8 @@ class Settings(BaseSettings):
             "vertex_ai": "vertexai",
             "vertex": "vertexai",
             "google_vertex": "vertexai",
+            "anthropic": "anthropic",
+            "claude": "anthropic",
         }
         if not value:
             return "openai_compat"
@@ -179,6 +181,8 @@ class Settings(BaseSettings):
             "vertex_ai": "vertexai",
             "vertex": "vertexai",
             "google_vertex": "vertexai",
+            "anthropic": "anthropic",
+            "claude": "anthropic",
         }
         if not value:
             return ""

@@ -347,3 +347,160 @@ class TestProviderRouting:
         result = await AnalystLLM(llm).analyze_item("Title", "Body", "url")
         assert result.relevance_score == 8
         assert route.called
+
+
+def _anthropic_response(text: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "id": "msg_test",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "model": "claude-sonnet-4-20250514",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        },
+    )
+
+
+class TestAnthropicProvider:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_basic_anthropic_chat(self):
+        llm = LLMClient(
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            timeout=5,
+            provider="anthropic",
+            api_key="sk-ant-test",
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_anthropic_response("hello from claude")
+        )
+        result = await llm.chat("system", "user")
+        assert result == "hello from claude"
+        assert route.called
+        req = json.loads(route.calls[0].request.content)
+        assert req["model"] == "claude-sonnet-4-20250514"
+        assert req["system"] == "system"
+        assert req["messages"] == [{"role": "user", "content": "user"}]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_headers(self):
+        llm = LLMClient(
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            timeout=5,
+            provider="anthropic",
+            api_key="sk-ant-test-key",
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_anthropic_response("ok")
+        )
+        await llm.chat("sys", "usr")
+        headers = route.calls[0].request.headers
+        assert headers["x-api-key"] == "sk-ant-test-key"
+        assert headers["anthropic-version"] == "2023-06-01"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_role_override(self):
+        llm = LLMClient(
+            base_url="http://default:8000/v1",
+            model="default-model",
+            timeout=5,
+            provider="openai_compat",
+            role_overrides={
+                "writer": {
+                    "provider": "anthropic",
+                    "base_url": "https://api.anthropic.com",
+                    "model": "claude-sonnet-4-20250514",
+                    "api_key": "sk-ant-role",
+                }
+            },
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_anthropic_response("from claude writer")
+        )
+        result = await llm.chat_for_role(
+            role="writer", system_prompt="sys", user_content="usr"
+        )
+        assert result == "from claude writer"
+        assert route.called
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_retry_on_429(self):
+        llm = LLMClient(
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            timeout=5,
+            provider="anthropic",
+            api_key="sk-ant-test",
+        )
+        route = respx.post("https://api.anthropic.com/v1/messages")
+        route.side_effect = [
+            httpx.Response(429, json={"error": {"message": "rate limited"}}),
+            _anthropic_response("recovered"),
+        ]
+        result = await llm.chat("sys", "usr", retries=2)
+        assert result == "recovered"
+        assert route.call_count == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_anthropic_no_text_block_raises(self):
+        llm = LLMClient(
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            timeout=5,
+            provider="anthropic",
+            api_key="sk-ant-test",
+        )
+        respx.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-sonnet-4-20250514",
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            )
+        )
+        with pytest.raises(RuntimeError, match="text block"):
+            await llm.chat("sys", "usr")
+
+    def test_normalize_provider_anthropic(self):
+        assert LLMClient._normalize_provider("anthropic") == "anthropic"
+        assert LLMClient._normalize_provider("claude") == "anthropic"
+        assert LLMClient._normalize_provider("ANTHROPIC") == "anthropic"
+        assert LLMClient._normalize_provider("Claude") == "anthropic"
+
+    def test_from_settings_anthropic(self):
+        settings = Settings(
+            llm_base_url="https://api.anthropic.com",
+            llm_model="claude-sonnet-4-20250514",
+            llm_provider="anthropic",
+            llm_api_key="sk-ant-test",
+        )
+        llm = LLMClient.from_settings(settings)
+        endpoint = llm.endpoint_map()["default"]
+        assert endpoint["provider"] == "anthropic"
+        assert endpoint["model"] == "claude-sonnet-4-20250514"
+
+    def test_endpoint_map_masks_anthropic_key(self):
+        llm = LLMClient(
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-20250514",
+            timeout=5,
+            provider="anthropic",
+            api_key="sk-ant-secret",
+        )
+        emap = llm.endpoint_map()
+        assert emap["default"]["api_key"] == "***"
