@@ -70,6 +70,39 @@ def test_parse_writer_handoff_payload_publish():
     assert payload.item_count == 3
 
 
+def test_extract_text_from_rpc_result_supports_message_parts():
+    handoff = (
+        'writer_handoff::{"briefing_id":"123e4567-e89b-12d3-a456-426614174000",'
+        '"decision":"publish","item_count":5,"mode":"regular_daily_briefing"}'
+    )
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "abc",
+        "result": {
+            "kind": "message",
+            "messageId": "msg-1",
+            "parts": [{"kind": "text", "text": f"{handoff}\nBriefing created"}],
+            "role": "agent",
+        },
+    }
+
+    assert cli_module._extract_text_from_rpc_result(payload) == (
+        f"{handoff}\nBriefing created"
+    )
+
+
+def test_extract_text_from_rpc_result_keeps_artifact_compatibility():
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "abc",
+        "result": {
+            "artifacts": [{"parts": [{"kind": "text", "text": "artifact-text"}]}],
+        },
+    }
+
+    assert cli_module._extract_text_from_rpc_result(payload) == "artifact-text"
+
+
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_uses_shared_skill_format():
     briefing_id = uuid4()

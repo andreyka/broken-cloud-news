@@ -49,6 +49,65 @@ _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
 # ---------------------------------------------------------------------------
 # A2A client helpers
 # ---------------------------------------------------------------------------
+def _extract_text_parts(parts: Any) -> str | None:
+    """Extract non-empty text fragments from A2A `parts` payloads."""
+    if not isinstance(parts, list):
+        return None
+    texts: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+            continue
+        root = part.get("root")
+        if not isinstance(root, dict):
+            continue
+        root_text = root.get("text")
+        if isinstance(root_text, str) and root_text.strip():
+            texts.append(root_text)
+    if not texts:
+        return None
+    return "\n".join(texts)
+
+
+def _extract_text_from_rpc_result(result: dict[str, Any]) -> str | None:
+    """Return agent text from known JSON-RPC response shapes."""
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return None
+
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            text = _extract_text_parts(artifact.get("parts"))
+            if text:
+                return text
+
+    text = _extract_text_parts(payload.get("parts"))
+    if text:
+        return text
+
+    message = payload.get("message")
+    if isinstance(message, dict):
+        text = _extract_text_parts(message.get("parts"))
+        if text:
+            return text
+
+    status = payload.get("status")
+    if isinstance(status, dict):
+        text = _extract_text_parts(status.get("parts"))
+        if text:
+            return text
+        msg = status.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg
+    return None
+
+
 async def _send_to_agent(
     port: int, skill: str, *, timeout_seconds: int = 180
 ) -> str:
@@ -83,17 +142,8 @@ async def _send_to_agent(
 
         # Extract text from response
         result = response.model_dump(mode="json", exclude_none=True)
-        try:
-            artifacts = result.get("result", {}).get("artifacts", [])
-            if artifacts:
-                parts = artifacts[0].get("parts", [])
-                if parts:
-                    return parts[0].get("text", str(result))
-            # Try message path
-            msg = result.get("result", {}).get("status", {})
-            return str(msg) if msg else str(result)
-        except (KeyError, IndexError):
-            return str(result)
+        text = _extract_text_from_rpc_result(result)
+        return text if text else str(result)
 
 
 async def _run_agent_directly(

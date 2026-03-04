@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -61,6 +63,30 @@ class TestChat:
         )
         with pytest.raises(httpx.ConnectError):
             await llm.chat("system", "user", retries=1)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_retry_after_header_is_honored(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions")
+        route.side_effect = [
+            httpx.Response(
+                429,
+                json={"error": "quota"},
+                headers={"Retry-After": "5"},
+            ),
+            _chat_response("recovered"),
+        ]
+        with (
+            patch("bcn.common.llm.random.uniform", return_value=0.0),
+            patch("bcn.common.llm.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await llm.chat("system", "user", retries=2)
+
+        assert result == "recovered"
+        assert route.call_count == 2
+        mock_sleep.assert_awaited_once()
+        wait_seconds = float(mock_sleep.await_args.args[0])
+        assert wait_seconds >= 5.0
 
 
 class TestAnalyzeItem:
@@ -316,6 +342,22 @@ def test_from_settings_role_overrides():
     assert llm.model_for_role("analyst") == "default-model"
     assert llm.model_for_role("writer") == "writer-model"
     assert llm.endpoint_map()["writer"]["provider"] == "vertexai"
+
+
+def test_from_settings_retry_tuning():
+    settings = Settings(
+        llm_base_url="http://default-llm:8000/v1",
+        llm_model="default-model",
+        llm_chat_retries=20,
+        llm_retry_max_wait_seconds=420,
+        llm_retry_jitter_min_seconds=0.2,
+        llm_retry_jitter_max_seconds=3.0,
+    )
+    llm = LLMClient.from_settings(settings)
+    assert llm.chat_retries == 20
+    assert llm.retry_max_wait_seconds == 420
+    assert llm.retry_jitter_min_seconds == 0.2
+    assert llm.retry_jitter_max_seconds == 3.0
 
 
 class TestProviderRouting:

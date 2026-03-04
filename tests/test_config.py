@@ -9,7 +9,9 @@ from bcn.common.config import Settings
 class TestSettings:
     def test_defaults(self):
         s = Settings()
-        assert s.llm_timeout == 120
+        assert s.llm_timeout == 180
+        assert s.llm_chat_retries == 16
+        assert s.llm_retry_max_wait_seconds == 600
         assert s.llm_provider == "openai_compat"
         assert s.llm_model_writer == ""
         assert s.ghsa_severities == ["CRITICAL", "HIGH"]
