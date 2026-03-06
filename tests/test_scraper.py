@@ -180,6 +180,17 @@ class TestScraper:
         assert scraper.fetch_text.await_args_list[1].kwargs["method"] == "GET"
 
     @pytest.mark.asyncio
+    async def test_is_url_live_retries_get_on_head_timeout_status(self, scraper):
+        scraper.fetch_text = AsyncMock(side_effect=[(0, ""), (200, "ok")])
+
+        alive = await scraper.is_url_live("https://example.com/article")
+
+        assert alive is True
+        assert scraper.fetch_text.await_count == 2
+        assert scraper.fetch_text.await_args_list[0].kwargs["method"] == "HEAD"
+        assert scraper.fetch_text.await_args_list[1].kwargs["method"] == "GET"
+
+    @pytest.mark.asyncio
     async def test_is_url_live_accepts_2xx_3xx_4xx(self, scraper):
         for status in (202, 302, 404, 429):
             scraper.fetch_text = AsyncMock(return_value=(status, ""))
@@ -199,3 +210,16 @@ class TestScraper:
         assert first is True
         assert second is True
         assert scraper.fetch_text.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_is_url_live_does_not_cache_negative_results(self, scraper):
+        scraper.fetch_text = AsyncMock(side_effect=[(0, ""), (0, ""), (200, "ok")])
+        cache: dict[str, bool] = {}
+
+        first = await scraper.is_url_live("https://example.com/item", cache=cache)
+        second = await scraper.is_url_live("https://example.com/item", cache=cache)
+
+        assert first is False
+        assert second is True
+        assert scraper.fetch_text.await_count == 3
+        assert cache["https://example.com/item"] is True

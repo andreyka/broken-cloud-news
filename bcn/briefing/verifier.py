@@ -195,7 +195,10 @@ class BriefingFactVerifier:
         return await self.scraper.is_url_live(
             url,
             cache=self._url_liveness_cache,
-            timeout_ms=10000,
+            timeout_ms=max(
+                1000,
+                int(self.settings.briefing_verifier_url_liveness_timeout_ms),
+            ),
         )
 
     @staticmethod

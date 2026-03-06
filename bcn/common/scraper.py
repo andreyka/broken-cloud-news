@@ -289,17 +289,21 @@ class Scraper:
         cache: dict[str, bool] | None = None,
         timeout_ms: int = 10000,
     ) -> bool:
-        """Check URL liveness with shared HEAD->GET fallback semantics."""
+        """Check URL liveness with shared HEAD->GET fallback semantics.
+
+        Only successful checks are cached. Failed checks are intentionally not
+        cached to avoid long-lived false negatives from transient network timeouts.
+        """
         if not url.startswith(("http://", "https://")):
             return False
-        if cache is not None and url in cache:
-            return cache[url]
+        if cache is not None and cache.get(url) is True:
+            return True
 
         alive = False
         try:
             status, _ = await self.fetch_text(url, method="HEAD", timeout_ms=timeout_ms)
             alive = _is_live_status(status)
-            if not alive and status >= 500:
+            if not alive and (status == 0 or status >= 500):
                 status, _ = await self.fetch_text(
                     url,
                     method="GET",
@@ -310,5 +314,8 @@ class Scraper:
             alive = False
 
         if cache is not None:
-            cache[url] = alive
+            if alive:
+                cache[url] = True
+            else:
+                cache.pop(url, None)
         return alive
