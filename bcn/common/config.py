@@ -430,6 +430,7 @@ class Settings(BaseSettings):
     briefing_missing_coverage_max_drops: int = 2
     briefing_verifier_enabled: bool = True
     briefing_verifier_max_links: int = 12
+    briefing_verifier_url_liveness_timeout_ms: int = 20000
     briefing_verifier_block_on_llm_hard: bool = True
     briefing_critic_min_score: int = 80
     briefing_critic_min_actionability: int = 70
