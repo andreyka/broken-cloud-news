@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 import httpx
 
+from bcn.common.secrets import redact_error_text
 from bcn.common.url_policy import assert_public_http_url
 from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
@@ -29,6 +30,7 @@ class DiscordDistributor:
         self.channel_id = str(channel_id).strip()
         self.api = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
         self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
+        self._redaction_secrets: tuple[str, ...] = (self.bot_token,)
         self._client = httpx.AsyncClient(
             headers={"Authorization": f"Bot {self.bot_token}"},
             timeout=30,
@@ -77,8 +79,11 @@ class DiscordDistributor:
                     filename = f"cover.{ext}"
                     files = {"files[0]": (filename, img_bytes, mime_type)}
                     attachments = [{"id": 0, "filename": filename}]
-                except Exception as e:
-                    logger.warning("Error parsing data uri: %s", e)
+                except Exception as exc:
+                    logger.warning(
+                        "Error parsing data uri: %s",
+                        redact_error_text(exc, secrets=self._redaction_secrets),
+                    )
             else:
                 try:
                     assert_public_http_url(
@@ -91,9 +96,15 @@ class DiscordDistributor:
                     files = {"files[0]": (filename, resp.content, "image/png")}
                     attachments = [{"id": 0, "filename": filename}]
                 except URLValidationError as exc:
-                    logger.warning("Blocked cover image URL: %s", exc)
-                except Exception as e:
-                    logger.warning("Error fetching image: %s", e)
+                    logger.warning(
+                        "Blocked cover image URL: %s",
+                        redact_error_text(exc, secrets=self._redaction_secrets),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Error fetching image: %s",
+                        redact_error_text(exc, secrets=self._redaction_secrets),
+                    )
 
         success = True
         first_message_id = None
@@ -124,8 +135,16 @@ class DiscordDistributor:
                     first_message_id = data.get("id")
 
             self.last_result = {"primary_message_id": first_message_id}
-        except Exception as e:
-            logger.error("Failed to send Discord message: %s", e)
+        except Exception as exc:
+            safe_error = redact_error_text(
+                exc,
+                secrets=self._redaction_secrets,
+            )
+            logger.error("Failed to send Discord message: %s", safe_error)
+            self.last_result = {
+                "primary_message_id": first_message_id,
+                "error": safe_error,
+            }
             success = False
 
         return success

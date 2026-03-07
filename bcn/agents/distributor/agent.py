@@ -25,6 +25,7 @@ from bcn.common.db import mark_briefing_distributed
 from bcn.common.db import mark_items_published
 from bcn.common.db import release_briefing_for_retry
 from bcn.common.db import upsert_distribution_outcome
+from bcn.common.secrets import redact_sensitive_value
 from bcn.common.url_policy import trusted_hosts_from_urls
 from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
@@ -49,11 +50,26 @@ SKILLS = [
 ]
 
 
+def _distribution_redaction_secrets(settings: Settings) -> tuple[str, ...]:
+    """Return configured secrets that must never reach logs or DB metadata."""
+    return tuple(
+        value.strip()
+        for value in (
+            settings.telegram_bot_token,
+            settings.discord_bot_token,
+            settings.slack_webhook_url,
+            settings.smtp_password,
+        )
+        if str(value or "").strip()
+    )
+
+
 class DistributorExecutor(AgentExecutor):
     """A2A agent that sends briefings to configured distribution channels."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self._redaction_secrets = _distribution_redaction_secrets(settings)
 
     def _build_channels(
         self,
@@ -260,7 +276,10 @@ class DistributorExecutor(AgentExecutor):
                     ok = await channel.send(channel_briefing)
 
                     if isinstance(channel.last_result, dict):
-                        metadata = dict(channel.last_result)
+                        metadata = redact_sensitive_value(
+                            dict(channel.last_result),
+                            secrets=self._redaction_secrets,
+                        )
                         msg_id = metadata.get("primary_message_id")
                         if msg_id is not None:
                             external_message_id = str(msg_id)

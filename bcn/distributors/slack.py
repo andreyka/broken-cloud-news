@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from bcn.common.secrets import redact_error_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +24,7 @@ class SlackDistributor:
 
     def __init__(self, webhook_url: str) -> None:
         self.webhook_url: str = webhook_url
+        self._redaction_secrets: tuple[str, ...] = (self.webhook_url,)
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
         self.last_result: dict[str, Any] = {}
 
@@ -51,8 +54,13 @@ class SlackDistributor:
             )
             resp.raise_for_status()
             return True
-        except Exception:
-            logger.exception("Slack send failed")
+        except Exception as exc:
+            safe_error = redact_error_text(
+                exc,
+                secrets=self._redaction_secrets,
+            )
+            logger.error("Slack send failed: %s", safe_error)
+            self.last_result = {"error": safe_error}
             return False
 
     @staticmethod
