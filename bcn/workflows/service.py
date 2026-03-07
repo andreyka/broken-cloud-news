@@ -8,6 +8,9 @@ from collections.abc import Awaitable
 from collections.abc import Callable
 from typing import Any
 
+from bcn.common.agent_client import AgentClient
+from bcn.common.agent_client import build_direct_agent_client
+from bcn.common.agent_client import build_port_sender_agent_client
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
@@ -40,29 +43,31 @@ async def execute_workflow_mode(
     settings: Settings,
     *,
     mode: str,
-    run_agent_directly: AgentRunner,
+    agent_client: AgentClient | None = None,
+    run_agent_directly: AgentRunner | None = None,
 ) -> tuple[str, str | None]:
     """Run one workflow mode cycle without the daemon scheduler."""
-    from bcn.agents.distributor.agent import DistributorExecutor
-    from bcn.agents.writer.agent import WriterExecutor
-
-    async def _run_writer(skill: str) -> str:
-        return await run_agent_directly(WriterExecutor, settings, skill)
-
-    async def _run_distributor(skill: str) -> str:
-        return await run_agent_directly(DistributorExecutor, settings, skill)
+    if agent_client is None:
+        if run_agent_directly is not None:
+            agent_client = build_direct_agent_client(
+                settings,
+                runner=run_agent_directly,
+            )
+        else:
+            agent_client = build_direct_agent_client(settings)
 
     return await run_writer_distributor_handoff(
         mode=mode,
-        run_writer=_run_writer,
-        run_distributor=_run_distributor,
+        run_writer=agent_client.call_writer,
+        run_distributor=agent_client.call_distributor,
     )
 
 
 async def run_daemon(
     settings: Settings,
     *,
-    sender: AgentSender,
+    agent_client: AgentClient | None = None,
+    sender: AgentSender | None = None,
     emit: OutputWriter | None = None,
 ) -> None:
     """Start all A2A agents and the APScheduler runtime."""
@@ -91,7 +96,29 @@ async def run_daemon(
         if emit is not None:
             emit(message)
 
-    configure_scheduler_runtime(settings, sender)
+    runtime_agent_client = agent_client
+    if runtime_agent_client is None:
+        if sender is not None:
+            runtime_agent_client = build_port_sender_agent_client(
+                settings,
+                sender=sender,
+            )
+        else:
+            from bcn.common.agent_runtime import send_to_agent
+
+            async def _local_sender(port: int, skill: str) -> str:
+                return await send_to_agent(
+                    port,
+                    skill,
+                    timeout_seconds=settings.a2a_request_timeout_seconds,
+                )
+
+            runtime_agent_client = build_port_sender_agent_client(
+                settings,
+                sender=_local_sender,
+            )
+
+    configure_scheduler_runtime(settings, agent_client=runtime_agent_client)
 
     await get_pool(settings)
     try:

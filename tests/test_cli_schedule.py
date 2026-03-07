@@ -467,7 +467,7 @@ def test_workflow_run_command_delegates_to_workflow_service(monkeypatch):
     assert "Distributed to:" in result.output
     assert execute_mock.await_count == 1
     assert execute_mock.await_args.kwargs["mode"] == REGULAR_DAILY_BRIEFING_MODE
-    assert execute_mock.await_args.kwargs["run_agent_directly"] is cli_module._run_agent_directly
+    assert execute_mock.await_args.kwargs["agent_client"] is not None
 
 
 def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):
@@ -482,4 +482,4 @@ def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):
     settings_arg = daemon_mock.await_args.args[0]
     assert isinstance(settings_arg, Settings)
     assert daemon_mock.await_args.kwargs["emit"] is click.echo
-    assert callable(daemon_mock.await_args.kwargs["sender"])
+    assert daemon_mock.await_args.kwargs["agent_client"] is not None
