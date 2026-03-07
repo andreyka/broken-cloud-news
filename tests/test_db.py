@@ -98,6 +98,94 @@ async def test_insert_evaluation_report_stores_lane_and_report():
 
 
 @pytest.mark.asyncio
+async def test_create_evaluation_run_starts_in_running_state():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    run_id = uuid4()
+    fake_pool.fetchrow = AsyncMock(return_value={"id": run_id})
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            created = await db.create_evaluation_run(
+                lane="shadow",
+                source="scheduler",
+                workflow_mode="regular_daily_briefing",
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    assert created == run_id
+    args, _kwargs = fake_pool.fetchrow.await_args
+    sql = args[0]
+    assert "INSERT INTO evaluation_runs" in sql
+    assert "'running'" in sql
+    assert args[1] == "shadow"
+    assert args[2] == "scheduler"
+
+
+@pytest.mark.asyncio
+async def test_complete_evaluation_run_updates_status_and_report():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.complete_evaluation_run(
+                uuid4(),
+                {
+                    "generated_at": "2026-03-06T12:00:00+00:00",
+                    "lane": "shadow",
+                    "workflow_mode": "regular_daily_briefing",
+                    "item_pool_count": 9,
+                    "summary": {"recommendation": "hold"},
+                    "candidate_overrides": {"llm_model_writer": "candidate"},
+                    "champion": {},
+                    "candidate": {},
+                },
+                report_path="/tmp/shadow_report.json",
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "UPDATE evaluation_runs" in sql
+    assert "status = 'completed'" in sql
+    assert args[3] == "/tmp/shadow_report.json"
+
+
+@pytest.mark.asyncio
+async def test_fail_evaluation_run_marks_row_failed():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.fail_evaluation_run(uuid4(), error_message="boom")
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "status = 'failed'" in sql
+    assert args[5] == "boom"
+
+
+@pytest.mark.asyncio
 async def test_list_recent_evaluation_runs_applies_lane_filter():
     import bcn.common.db as db
 
@@ -146,6 +234,7 @@ async def test_get_evaluation_runs_for_export_reads_full_shadow_reports():
     assert "summary" in sql
     assert "report" in sql
     assert "lane = $1" in sql
+    assert "status = 'completed'" in sql
 
 
 class _FakeTx:

@@ -769,50 +769,67 @@ def benchmark(
 
     async def _run() -> None:
         from bcn.common.db import close_pool
+        from bcn.common.db import complete_evaluation_run
+        from bcn.common.db import create_evaluation_run
         from bcn.common.db import ensure_evaluation_tables
+        from bcn.common.db import fail_evaluation_run
         from bcn.common.db import get_pool
-        from bcn.common.db import insert_evaluation_report
         from bcn.evaluation import run_benchmark_pack
 
         await get_pool(settings)
-        report = await run_benchmark_pack(
-            settings,
-            cases_path=cases_path,
-            candidate_overrides_path=candidate_overrides,
-            include_text=include_text,
-        )
-        Path(output_path).write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        if store_db:
-            await ensure_evaluation_tables()
-            run_id = await insert_evaluation_report(
-                report,
-                report_path=str(Path(output_path)),
-                source="cli",
+        run_id = None
+        try:
+            if store_db:
+                await ensure_evaluation_tables()
+                run_id = await create_evaluation_run(
+                    lane="benchmark",
+                    source="cli",
+                    report_path=str(Path(output_path)),
+                    pack_path=cases_path,
+                )
+
+            report = await run_benchmark_pack(
+                settings,
+                cases_path=cases_path,
+                candidate_overrides_path=candidate_overrides,
+                include_text=include_text,
             )
-            report["db_run_id"] = str(run_id)
             Path(output_path).write_text(
                 json.dumps(report, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        summary = report.get("summary", {}) if isinstance(report, dict) else {}
-        click.echo(
-            "Benchmark complete: "
-            f"count={report.get('count', 0)} "
-            f"champion_pass={summary.get('champion_case_pass_rate', 0)} "
-            f"candidate_pass={summary.get('candidate_case_pass_rate', 0)}"
-        )
-        click.echo(
-            "Recommendation: "
-            f"{summary.get('recommendation', 'hold')} "
-            f"(confidence={summary.get('confidence', 'low')})"
-        )
-        if store_db:
-            click.echo(f"DB run id: {report.get('db_run_id')}")
-        click.echo(f"Report written to {output_path}")
-        await close_pool()
+            if store_db and run_id is not None:
+                await complete_evaluation_run(
+                    run_id,
+                    report,
+                    report_path=str(Path(output_path)),
+                )
+                report["db_run_id"] = str(run_id)
+                Path(output_path).write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            summary = report.get("summary", {}) if isinstance(report, dict) else {}
+            click.echo(
+                "Benchmark complete: "
+                f"count={report.get('count', 0)} "
+                f"champion_pass={summary.get('champion_case_pass_rate', 0)} "
+                f"candidate_pass={summary.get('candidate_case_pass_rate', 0)}"
+            )
+            click.echo(
+                "Recommendation: "
+                f"{summary.get('recommendation', 'hold')} "
+                f"(confidence={summary.get('confidence', 'low')})"
+            )
+            if store_db:
+                click.echo(f"DB run id: {report.get('db_run_id')}")
+            click.echo(f"Report written to {output_path}")
+        except Exception as exc:
+            if store_db and run_id is not None:
+                await fail_evaluation_run(run_id, error_message=str(exc))
+            raise
+        finally:
+            await close_pool()
 
     asyncio.run(_run())
 
@@ -861,50 +878,67 @@ def shadow(
 
     async def _run() -> None:
         from bcn.common.db import close_pool
+        from bcn.common.db import complete_evaluation_run
+        from bcn.common.db import create_evaluation_run
         from bcn.common.db import ensure_evaluation_tables
+        from bcn.common.db import fail_evaluation_run
         from bcn.common.db import get_pool
-        from bcn.common.db import insert_evaluation_report
         from bcn.evaluation import run_shadow_lane
 
         await get_pool(settings)
-        report = await run_shadow_lane(
-            settings,
-            workflow_mode=mode,
-            candidate_overrides_path=candidate_overrides,
-            include_text=include_text,
-        )
-        Path(output_path).write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        if store_db:
-            await ensure_evaluation_tables()
-            run_id = await insert_evaluation_report(
-                report,
-                report_path=str(Path(output_path)),
-                source="cli",
+        run_id = None
+        try:
+            if store_db:
+                await ensure_evaluation_tables()
+                run_id = await create_evaluation_run(
+                    lane="shadow",
+                    source="cli",
+                    report_path=str(Path(output_path)),
+                    workflow_mode=mode,
+                )
+
+            report = await run_shadow_lane(
+                settings,
+                workflow_mode=mode,
+                candidate_overrides_path=candidate_overrides,
+                include_text=include_text,
             )
-            report["db_run_id"] = str(run_id)
             Path(output_path).write_text(
                 json.dumps(report, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-        summary = report.get("summary", {}) if isinstance(report, dict) else {}
-        click.echo(
-            "Shadow evaluation complete: "
-            f"mode={mode} "
-            f"item_pool={report.get('item_pool_count', 0)} "
-            f"selection_overlap={summary.get('selection_overlap_ratio', 0)}"
-        )
-        click.echo(
-            "Recommendation: "
-            f"{summary.get('recommendation', 'hold')} "
-            f"(confidence={summary.get('confidence', 'low')})"
-        )
-        if store_db:
-            click.echo(f"DB run id: {report.get('db_run_id')}")
-        click.echo(f"Report written to {output_path}")
-        await close_pool()
+            if store_db and run_id is not None:
+                await complete_evaluation_run(
+                    run_id,
+                    report,
+                    report_path=str(Path(output_path)),
+                )
+                report["db_run_id"] = str(run_id)
+                Path(output_path).write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            summary = report.get("summary", {}) if isinstance(report, dict) else {}
+            click.echo(
+                "Shadow evaluation complete: "
+                f"mode={mode} "
+                f"item_pool={report.get('item_pool_count', 0)} "
+                f"selection_overlap={summary.get('selection_overlap_ratio', 0)}"
+            )
+            click.echo(
+                "Recommendation: "
+                f"{summary.get('recommendation', 'hold')} "
+                f"(confidence={summary.get('confidence', 'low')})"
+            )
+            if store_db:
+                click.echo(f"DB run id: {report.get('db_run_id')}")
+            click.echo(f"Report written to {output_path}")
+        except Exception as exc:
+            if store_db and run_id is not None:
+                await fail_evaluation_run(run_id, error_message=str(exc))
+            raise
+        finally:
+            await close_pool()
 
     asyncio.run(_run())
 
@@ -945,6 +979,7 @@ def evaluation_runs(lane: str | None, limit: int) -> None:
                 f"{payload.get('created_at').isoformat()} | "
                 f"lane={payload.get('lane')} | "
                 f"id={payload.get('id')} | "
+                f"status={payload.get('status', 'completed')} | "
                 f"recommendation={summary.get('recommendation', 'hold')} | "
                 f"confidence={summary.get('confidence', 'low')} | "
                 f"count={payload.get('count', 0)}"

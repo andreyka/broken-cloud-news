@@ -31,6 +31,16 @@ function metric(summary: Record<string, unknown>, key: string): string {
   return "n/a";
 }
 
+function statusLabel(status: string): string {
+  if (status === "running") {
+    return "Running";
+  }
+  if (status === "failed") {
+    return "Failed";
+  }
+  return "Completed";
+}
+
 function rubricScore(payload: Record<string, unknown>): string {
   const rubric =
     payload.rubric && typeof payload.rubric === "object"
@@ -84,9 +94,10 @@ export default async function RunPage({ params }: RunPageProps) {
             <p className="eyebrow">{run.lane} lane</p>
             <h1>Evaluation run {run.id.slice(0, 8)}</h1>
             <p className="lede">
-              Created {formatDate(run.createdAt)} UTC · recommendation{" "}
-              {metric(summary, "recommendation")} · confidence{" "}
-              {metric(summary, "confidence")}
+              Created {formatDate(run.createdAt)} UTC · status {statusLabel(run.status)}
+              {run.status === "completed"
+                ? ` · recommendation ${metric(summary, "recommendation")} · confidence ${metric(summary, "confidence")}`
+                : ""}
             </p>
           </div>
         </div>
@@ -100,8 +111,18 @@ export default async function RunPage({ params }: RunPageProps) {
           <p className="eyebrow">Run metadata</p>
           <div className="detail-grid">
             <div>
+              <span className="stat-label">Status</span>
+              <strong className={`run-state run-state-${run.status}`}>
+                {statusLabel(run.status)}
+              </strong>
+            </div>
+            <div>
               <span className="stat-label">Generated</span>
               <strong>{formatDate(run.generatedAt)}</strong>
+            </div>
+            <div>
+              <span className="stat-label">Finished</span>
+              <strong>{formatDate(run.finishedAt)}</strong>
             </div>
             <div>
               <span className="stat-label">Source</span>
@@ -130,6 +151,16 @@ export default async function RunPage({ params }: RunPageProps) {
           </div>
         </section>
       </section>
+
+      {run.status === "failed" ? (
+        <section className="panel panel-amber">
+          <p className="eyebrow">Failure</p>
+          <h2>Evaluation did not complete</h2>
+          <p className="lane-copy">
+            {run.errorMessage || "No error message was persisted for this run."}
+          </p>
+        </section>
+      ) : null}
 
       {run.lane === "benchmark" ? (
         <section className="panel">

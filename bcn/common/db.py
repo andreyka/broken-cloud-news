@@ -1614,6 +1614,179 @@ async def count_evaluation_runs(*, lane: str | None = None) -> int:
     return int(row["count"]) if row else 0
 
 
+async def create_evaluation_run(
+    *,
+    lane: str,
+    source: str = "cli",
+    report_path: str | None = None,
+    pack_path: str | None = None,
+    workflow_mode: str | None = None,
+    params: dict[str, Any] | None = None,
+    candidate_overrides: dict[str, Any] | None = None,
+    notes: str | None = None,
+) -> UUID:
+    """Create a placeholder evaluation run row before work starts."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+
+    normalized_lane = str(lane or "").strip().lower()
+    if normalized_lane not in {"benchmark", "shadow"}:
+        raise ValueError("Evaluation run lane must be 'benchmark' or 'shadow'.")
+
+    run = await pool.fetchrow(
+        """
+        INSERT INTO evaluation_runs (
+            lane,
+            source,
+            report_path,
+            pack_path,
+            workflow_mode,
+            params,
+            candidate_overrides,
+            summary,
+            report,
+            count,
+            notes,
+            status
+        )
+        VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6::jsonb,
+            $7::jsonb,
+            '{}'::jsonb,
+            '{}'::jsonb,
+            0,
+            $8,
+            'running'
+        )
+        RETURNING id
+        """,
+        normalized_lane,
+        source,
+        report_path,
+        pack_path,
+        workflow_mode,
+        json.dumps(params or {}, ensure_ascii=False, default=str),
+        json.dumps(candidate_overrides or {}, ensure_ascii=False, default=str),
+        notes,
+    )
+    return run["id"]
+
+
+async def complete_evaluation_run(
+    run_id: UUID,
+    report: dict[str, Any],
+    *,
+    report_path: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """Finalize a previously created evaluation run row."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+
+    lane = str(report.get("lane") or "").strip().lower()
+    if lane not in {"benchmark", "shadow"}:
+        raise ValueError("Evaluation report lane must be 'benchmark' or 'shadow'.")
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    params: dict[str, Any] = {}
+    pack_path = None
+    workflow_mode = None
+    run_count = _coerce_int(report.get("count"), 0)
+    if lane == "benchmark":
+        pack_path = str(report.get("pack_path") or "").strip() or None
+        params["case_count"] = run_count
+    else:
+        workflow_mode = str(report.get("workflow_mode") or "").strip() or None
+        params["item_pool_count"] = _coerce_int(report.get("item_pool_count"), 0)
+        run_count = 1
+
+    candidate_overrides = report.get("candidate_overrides")
+    if not isinstance(candidate_overrides, dict):
+        candidate_overrides = {}
+
+    await pool.execute(
+        """
+        UPDATE evaluation_runs
+        SET
+            generated_at = $2,
+            report_path = COALESCE($3, report_path),
+            pack_path = COALESCE($4, pack_path),
+            workflow_mode = COALESCE($5, workflow_mode),
+            params = $6::jsonb,
+            candidate_overrides = $7::jsonb,
+            summary = $8::jsonb,
+            report = $9::jsonb,
+            count = $10,
+            notes = COALESCE($11, notes),
+            status = 'completed',
+            error_message = NULL,
+            finished_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        run_id,
+        _coerce_iso_datetime(report.get("generated_at")),
+        report_path,
+        pack_path,
+        workflow_mode,
+        json.dumps(params, ensure_ascii=False, default=str),
+        json.dumps(candidate_overrides, ensure_ascii=False, default=str),
+        json.dumps(summary, ensure_ascii=False, default=str),
+        json.dumps(report, ensure_ascii=False, default=str),
+        run_count,
+        notes,
+    )
+
+
+async def fail_evaluation_run(
+    run_id: UUID,
+    *,
+    error_message: str,
+    notes: str | None = None,
+) -> None:
+    """Mark an evaluation run as failed."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    message = (error_message or "").strip()[:4000] or "evaluation_failed"
+    summary = {
+        "recommendation": "failed",
+        "confidence": "low",
+    }
+    report = {
+        "error": message,
+    }
+    await pool.execute(
+        """
+        UPDATE evaluation_runs
+        SET
+            summary = $2::jsonb,
+            report = CASE
+                WHEN report = '{}'::jsonb THEN $3::jsonb
+                ELSE report
+            END,
+            notes = COALESCE($4, notes),
+            status = 'failed',
+            error_message = $5,
+            finished_at = NOW(),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        run_id,
+        json.dumps(summary, ensure_ascii=False, default=str),
+        json.dumps(report, ensure_ascii=False, default=str),
+        notes,
+        message,
+    )
+
+
 async def insert_evaluation_report(
     report: dict[str, Any],
     *,
@@ -1663,9 +1836,26 @@ async def insert_evaluation_report(
             summary,
             report,
             count,
-            notes
+            notes,
+            status,
+            finished_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11, $12)
+        VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7::jsonb,
+            $8::jsonb,
+            $9::jsonb,
+            $10::jsonb,
+            $11,
+            $12,
+            'completed',
+            NOW()
+        )
         RETURNING id
         """,
         _coerce_iso_datetime(report.get("generated_at")),
@@ -1730,6 +1920,9 @@ async def get_evaluation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
             workflow_mode,
             params,
             candidate_overrides,
+            status,
+            finished_at,
+            error_message,
             summary,
             report,
             count,
@@ -1757,6 +1950,11 @@ async def get_evaluation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
     report["db_run_id"] = str(run["id"])
     report["db_created_at"] = run["created_at"].isoformat()
     report["db_source"] = str(run["source"])
+    report["db_status"] = str(run["status"] or "completed")
+    if run["finished_at"]:
+        report["db_finished_at"] = run["finished_at"].isoformat()
+    if run["error_message"]:
+        report["db_error_message"] = str(run["error_message"])
     if run["report_path"]:
         report["report_path"] = str(run["report_path"])
     if run["pack_path"]:
@@ -1802,6 +2000,9 @@ async def list_recent_evaluation_runs(
                 pack_path,
                 workflow_mode,
                 candidate_overrides,
+                status,
+                finished_at,
+                error_message,
                 summary,
                 count
             FROM evaluation_runs
@@ -1824,6 +2025,9 @@ async def list_recent_evaluation_runs(
             pack_path,
             workflow_mode,
             candidate_overrides,
+            status,
+            finished_at,
+            error_message,
             summary,
             count
         FROM evaluation_runs
@@ -1845,6 +2049,7 @@ async def get_evaluation_runs_for_export(
     pool = await get_pool()
     params: list[Any] = [str(lane)]
     where = [f"lane = ${len(params)}"]
+    where.append("status = 'completed'")
     if since_days > 0:
         params.append(int(since_days))
         where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")

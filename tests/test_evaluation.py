@@ -175,8 +175,12 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
     monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
     monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
     monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", AsyncMock())
-    insert_mock = AsyncMock(return_value="benchmark-run-id")
-    monkeypatch.setattr("bcn.common.db.insert_evaluation_report", insert_mock)
+    create_mock = AsyncMock(return_value="benchmark-run-id")
+    complete_mock = AsyncMock()
+    fail_mock = AsyncMock()
+    monkeypatch.setattr("bcn.common.db.create_evaluation_run", create_mock)
+    monkeypatch.setattr("bcn.common.db.complete_evaluation_run", complete_mock)
+    monkeypatch.setattr("bcn.common.db.fail_evaluation_run", fail_mock)
     run_mock = AsyncMock(
         return_value={
             "count": 4,
@@ -203,7 +207,9 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
     assert "DB run id: benchmark-run-id" in result.output
     assert output_path.exists()
     assert run_mock.await_count == 1
-    assert insert_mock.await_count == 1
+    assert create_mock.await_count == 1
+    assert complete_mock.await_count == 1
+    assert fail_mock.await_count == 0
 
 
 def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
@@ -212,8 +218,12 @@ def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
     monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
     monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", AsyncMock())
-    insert_mock = AsyncMock(return_value="shadow-run-id")
-    monkeypatch.setattr("bcn.common.db.insert_evaluation_report", insert_mock)
+    create_mock = AsyncMock(return_value="shadow-run-id")
+    complete_mock = AsyncMock()
+    fail_mock = AsyncMock()
+    monkeypatch.setattr("bcn.common.db.create_evaluation_run", create_mock)
+    monkeypatch.setattr("bcn.common.db.complete_evaluation_run", complete_mock)
+    monkeypatch.setattr("bcn.common.db.fail_evaluation_run", fail_mock)
     run_mock = AsyncMock(
         return_value={
             "item_pool_count": 12,
@@ -239,7 +249,9 @@ def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     assert "DB run id: shadow-run-id" in result.output
     assert output_path.exists()
     assert run_mock.await_count == 1
-    assert insert_mock.await_count == 1
+    assert create_mock.await_count == 1
+    assert complete_mock.await_count == 1
+    assert fail_mock.await_count == 0
 
 
 def test_evaluation_runs_command_lists_recent_rows(monkeypatch):
@@ -264,5 +276,6 @@ def test_evaluation_runs_command_lists_recent_rows(monkeypatch):
 
     assert result.exit_code == 0
     assert "lane=shadow" in result.output
+    assert "status=completed" in result.output
     assert "run-1" in result.output
     assert list_mock.await_count == 1

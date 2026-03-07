@@ -342,7 +342,9 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
     configure_scheduler_runtime(settings, AsyncMock())
 
     ensure_mock = AsyncMock()
-    insert_mock = AsyncMock(return_value="shadow-run-id")
+    create_mock = AsyncMock(return_value="shadow-run-id")
+    complete_mock = AsyncMock()
+    fail_mock = AsyncMock()
     run_mock = AsyncMock(
         return_value={
             "lane": "shadow",
@@ -351,7 +353,9 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
         }
     )
     monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", ensure_mock)
-    monkeypatch.setattr("bcn.common.db.insert_evaluation_report", insert_mock)
+    monkeypatch.setattr("bcn.common.db.create_evaluation_run", create_mock)
+    monkeypatch.setattr("bcn.common.db.complete_evaluation_run", complete_mock)
+    monkeypatch.setattr("bcn.common.db.fail_evaluation_run", fail_mock)
     monkeypatch.setattr("bcn.evaluation.run_shadow_lane", run_mock)
 
     await job_shadow_regular_briefing()
@@ -363,11 +367,18 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
         include_text=True,
     )
     ensure_mock.assert_awaited_once()
-    insert_mock.assert_awaited_once_with(
-        run_mock.return_value,
+    create_mock.assert_awaited_once_with(
+        lane="shadow",
         source="scheduler",
+        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
         notes="Scheduled pre-publish shadow evaluation.",
     )
+    complete_mock.assert_awaited_once_with(
+        "shadow-run-id",
+        run_mock.return_value,
+        notes="Scheduled pre-publish shadow evaluation.",
+    )
+    assert fail_mock.await_count == 0
 
 
 def test_distribute_command_delegates_to_distributor_executor(monkeypatch):
