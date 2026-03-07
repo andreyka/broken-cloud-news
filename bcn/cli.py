@@ -110,6 +110,14 @@ def _extract_text_from_rpc_result(result: dict[str, Any]) -> str | None:
     return None
 
 
+def _write_json_report(path: Path, payload: object) -> None:
+    """Write report JSON with support for UUID/datetime-like objects."""
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
 async def _send_to_agent(
     port: int, skill: str, *, timeout_seconds: int = 180
 ) -> str:
@@ -565,10 +573,7 @@ def simulate(
                 comparison["baseline_db_run_id"] = baseline_report.get("db_run_id")
                 report["comparison_to_previous_run"] = comparison
 
-        out_file.write_text(
-            json.dumps(report, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        _write_json_report(out_file, report)
 
         summary = report.get("summary", {}) if isinstance(report, dict) else {}
         click.echo(
@@ -794,10 +799,7 @@ def benchmark(
                 candidate_overrides_path=candidate_overrides,
                 include_text=include_text,
             )
-            Path(output_path).write_text(
-                json.dumps(report, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_json_report(Path(output_path), report)
             if store_db and run_id is not None:
                 await complete_evaluation_run(
                     run_id,
@@ -805,10 +807,7 @@ def benchmark(
                     report_path=str(Path(output_path)),
                 )
                 report["db_run_id"] = str(run_id)
-                Path(output_path).write_text(
-                    json.dumps(report, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                _write_json_report(Path(output_path), report)
             summary = report.get("summary", {}) if isinstance(report, dict) else {}
             click.echo(
                 "Benchmark complete: "
@@ -903,10 +902,7 @@ def shadow(
                 candidate_overrides_path=candidate_overrides,
                 include_text=include_text,
             )
-            Path(output_path).write_text(
-                json.dumps(report, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_json_report(Path(output_path), report)
             if store_db and run_id is not None:
                 await complete_evaluation_run(
                     run_id,
@@ -914,10 +910,7 @@ def shadow(
                     report_path=str(Path(output_path)),
                 )
                 report["db_run_id"] = str(run_id)
-                Path(output_path).write_text(
-                    json.dumps(report, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+                _write_json_report(Path(output_path), report)
             summary = report.get("summary", {}) if isinstance(report, dict) else {}
             click.echo(
                 "Shadow evaluation complete: "
