@@ -830,6 +830,121 @@ class TestWriterExecutor:
         assert any(i["source_type"] == "reddit" for i in selected)
         assert any(i["source_type"] == "ghsa" for i in selected)
 
+    def test_min_selected_fallback_preserves_recent_url_dedup(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=3,
+            briefing_min_selected_items=1,
+            briefing_max_rss_items=3,
+            briefing_max_ai_items=3,
+            briefing_max_twitter_items=3,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": "A Race Within A Race: Exploiting CVE-2025-38617 in Linux Packet Sockets https://t.co/abc",
+                "summary": "Fresh tweet linking the same Linux packet sockets exploit write-up.",
+                "relevance_score": 10,
+                "source_type": "twitter",
+                "url": "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        recent = [
+            {
+                "title": "A Race Within A Race: Exploiting CVE-2025-38617 in Linux Packet Sockets",
+                "summary": "Previously covered exploit write-up.",
+                "url": "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve",
+            }
+        ]
+
+        selected = executor._select_items_for_briefing(
+            items,
+            recent_published=recent,
+        )
+
+        assert selected == []
+
+    def test_min_selected_fallback_preserves_recent_topic_dedup(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=3,
+            briefing_min_selected_items=1,
+            briefing_max_rss_items=3,
+            briefing_max_ai_items=3,
+            briefing_max_twitter_items=3,
+            briefing_novelty_title_similarity_threshold=0.99,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": "Kernel exploit chain for CVE-2025-38617 in packet sockets",
+                "summary": "New source but same Linux container escape issue.",
+                "relevance_score": 10,
+                "source_type": "rss",
+                "url": "https://different.example.com/linux-packet-sockets-cve-2025-38617",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ]
+        recent = [
+            {
+                "title": "A Race Within A Race: Exploiting CVE-2025-38617 in Linux Packet Sockets",
+                "summary": "Previously covered exploit write-up.",
+                "url": "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve",
+            }
+        ]
+
+        selected = executor._select_items_for_briefing(
+            items,
+            recent_published=recent,
+        )
+
+        assert selected == []
+
+    def test_min_selected_fallback_can_still_fill_with_unique_items(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=2,
+            briefing_min_selected_items=2,
+            briefing_max_rss_items=1,
+            briefing_max_ai_items=2,
+            briefing_max_twitter_items=2,
+            briefing_max_source_share=1.0,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": "Kubernetes bootstrap token leak on worker join path",
+                "summary": "Distinct issue one with node enrollment exposure.",
+                "relevance_score": 10,
+                "source_type": "rss",
+                "url": "https://first.example.com/issue-one",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Cloudflare tunnel bug exposes internal DNS responses",
+                "summary": "Distinct issue two with resolver leakage.",
+                "relevance_score": 9,
+                "source_type": "rss",
+                "url": "https://second.example.com/issue-two",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+
+        selected = executor._select_items_for_briefing(items, recent_published=[])
+
+        assert len(selected) == 2
+
     def test_detects_missing_urls_in_generated_markdown(self):
         from bcn.agents.writer.agent import WriterExecutor
 
