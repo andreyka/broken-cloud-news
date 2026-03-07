@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from bcn.agents.writer.service import WriterService
 from bcn.common.config import Settings
 from bcn.workflows.generation import execute_generation
 from bcn.workflows.modes.common import parse_writer_handoff_payload
@@ -48,6 +49,21 @@ def _make_writer_service(
     service.writer_llm = SimpleNamespace(prompt_versions=lambda: {"writer": "v1"})
     service.close = AsyncMock()
     return service
+
+
+def test_build_preference_rationale_summarizes_feedback():
+    rationale = WriterService.build_preference_rationale(
+        [
+            "Fix links.",
+            "Tighten sourcing",
+            "Clarify operator action",
+            "Remove repetition",
+        ]
+    )
+
+    assert rationale == (
+        "Fix links; Tighten sourcing; Clarify operator action; additional release feedback"
+    )
 
 
 @pytest.mark.asyncio
