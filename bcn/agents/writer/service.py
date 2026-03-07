@@ -1169,6 +1169,22 @@ class WriterService:
         }
 
     @staticmethod
+    def build_preference_rationale(feedback: list[str] | None) -> str:
+        """Summarize rewrite feedback for preference-pair training rows."""
+        normalized = [
+            str(item).strip().rstrip(".")
+            for item in (feedback or [])
+            if str(item).strip()
+        ]
+        if not normalized:
+            return "Rewrite preferred based on aggregate release feedback"
+
+        summary = "; ".join(normalized[:3])
+        if len(normalized) > 3:
+            summary += "; additional release feedback"
+        return summary[:400]
+
+    @staticmethod
     def string_list(value: object, *, limit: int = 16) -> list[str]:
         """Normalize arbitrary payload values into a short string list."""
         if isinstance(value, list):
