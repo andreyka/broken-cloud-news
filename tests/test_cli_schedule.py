@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 from unittest.mock import AsyncMock
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -136,7 +137,7 @@ def test_extract_text_from_rpc_result_keeps_artifact_compatibility():
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_uses_shared_skill_format():
     briefing_id = uuid4()
-    run_writer = AsyncMock(
+    run_generation = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_DAILY_BRIEFING_MODE,
             decision="publish",
@@ -148,15 +149,13 @@ async def test_run_writer_distributor_handoff_uses_shared_skill_format():
 
     writer_result, distributor_result = await run_writer_distributor_handoff(
         mode=REGULAR_DAILY_BRIEFING_MODE,
-        run_writer=run_writer,
+        run_generation=run_generation,
         run_distribution=run_distribution,
     )
 
     assert "writer_handoff::" in writer_result
     assert "Distributed to:" in str(distributor_result)
-    run_writer.assert_awaited_once_with(
-        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
-    )
+    run_generation.assert_awaited_once_with(REGULAR_DAILY_BRIEFING_MODE)
     run_distribution.assert_awaited_once_with(
         REGULAR_DAILY_BRIEFING_MODE,
         briefing_id,
@@ -166,7 +165,7 @@ async def test_run_writer_distributor_handoff_uses_shared_skill_format():
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_enforces_requested_mode():
     briefing_id = uuid4()
-    run_writer = AsyncMock(
+    run_generation = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_MONTHLY_NEWSLETTER_MODE,
             decision="publish",
@@ -178,7 +177,7 @@ async def test_run_writer_distributor_handoff_enforces_requested_mode():
 
     _writer_result, distributor_result = await run_writer_distributor_handoff(
         mode=REGULAR_DAILY_BRIEFING_MODE,
-        run_writer=run_writer,
+        run_generation=run_generation,
         run_distribution=run_distribution,
     )
 
@@ -191,7 +190,7 @@ async def test_run_writer_distributor_handoff_enforces_requested_mode():
 
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_skips_distribution_on_skip_decision():
-    run_writer = AsyncMock(
+    run_generation = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_DAILY_BRIEFING_MODE,
             decision="skip",
@@ -202,33 +201,31 @@ async def test_run_writer_distributor_handoff_skips_distribution_on_skip_decisio
 
     _writer_result, distributor_result = await run_writer_distributor_handoff(
         mode=REGULAR_DAILY_BRIEFING_MODE,
-        run_writer=run_writer,
+        run_generation=run_generation,
         run_distribution=run_distribution,
     )
 
     assert distributor_result is None
-    run_writer.assert_awaited_once_with(
-        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
-    )
+    run_generation.assert_awaited_once_with(REGULAR_DAILY_BRIEFING_MODE)
     run_distribution.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_skips_unstructured_writer_output():
     briefing_id = uuid4()
-    run_writer = AsyncMock(return_value=f"Briefing created: id={briefing_id} items=3")
+    run_generation = AsyncMock(
+        return_value=f"Briefing created: id={briefing_id} items=3"
+    )
     run_distribution = AsyncMock(return_value="unused")
 
     _writer_result, distributor_result = await run_writer_distributor_handoff(
         mode=REGULAR_DAILY_BRIEFING_MODE,
-        run_writer=run_writer,
+        run_generation=run_generation,
         run_distribution=run_distribution,
     )
 
     assert distributor_result is None
-    run_writer.assert_awaited_once_with(
-        f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}"
-    )
+    run_generation.assert_awaited_once_with(REGULAR_DAILY_BRIEFING_MODE)
     run_distribution.assert_not_awaited()
 
 
@@ -250,7 +247,7 @@ def test_build_regular_monthly_newsletter_trigger():
 async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypatch):
     settings = Settings(writer_port=9003, distributor_port=9004)
     briefing_id = uuid4()
-    send_mock = AsyncMock(
+    generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_DAILY_BRIEFING_MODE,
             decision="publish",
@@ -259,15 +256,17 @@ async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypa
         )
     )
     distribute_mock = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
+    monkeypatch.setattr("bcn.workflows.generation.execute_generation", generation_mock)
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    configure_scheduler_runtime(settings, send_mock)
+    configure_scheduler_runtime(settings, AsyncMock())
 
     await job_publish_regular_briefing()
 
-    assert send_mock.await_count == 1
-    assert (
-        send_mock.await_args_list[0].args
-        == (9003, f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}")
+    generation_mock.assert_awaited_once_with(
+        settings,
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        source="scheduler",
+        manage_pool=False,
     )
     distribute_mock.assert_awaited_once_with(
         settings,
@@ -280,21 +279,23 @@ async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypa
 @pytest.mark.asyncio
 async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips():
     settings = Settings(writer_port=9003, distributor_port=9004)
-    send_mock = AsyncMock(
+    generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_DAILY_BRIEFING_MODE,
             decision="skip",
             item_count=0,
         )
     )
-    configure_scheduler_runtime(settings, send_mock)
+    with patch("bcn.workflows.generation.execute_generation", generation_mock):
+        configure_scheduler_runtime(settings, AsyncMock())
 
-    await job_publish_regular_briefing()
+        await job_publish_regular_briefing()
 
-    assert send_mock.await_count == 1
-    assert (
-        send_mock.await_args_list[0].args
-        == (9003, f"generate_briefing::{REGULAR_DAILY_BRIEFING_MODE}")
+    generation_mock.assert_awaited_once_with(
+        settings,
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        source="scheduler",
+        manage_pool=False,
     )
 
 
@@ -302,7 +303,7 @@ async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips
 async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode(monkeypatch):
     settings = Settings(writer_port=9003, distributor_port=9004)
     briefing_id = uuid4()
-    send_mock = AsyncMock(
+    generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_MONTHLY_NEWSLETTER_MODE,
             decision="publish",
@@ -311,15 +312,17 @@ async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode(monkeypa
         )
     )
     distribute_mock = AsyncMock(return_value="Distributed to: {'email': 'ok'}")
+    monkeypatch.setattr("bcn.workflows.generation.execute_generation", generation_mock)
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    configure_scheduler_runtime(settings, send_mock)
+    configure_scheduler_runtime(settings, AsyncMock())
 
     await job_publish_regular_monthly_newsletter()
 
-    assert send_mock.await_count == 1
-    assert (
-        send_mock.await_args_list[0].args
-        == (9003, f"generate_briefing::{REGULAR_MONTHLY_NEWSLETTER_MODE}")
+    generation_mock.assert_awaited_once_with(
+        settings,
+        mode=REGULAR_MONTHLY_NEWSLETTER_MODE,
+        source="scheduler",
+        manage_pool=False,
     )
     distribute_mock.assert_awaited_once_with(
         settings,

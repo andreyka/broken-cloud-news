@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+import time
 from typing import Any
 from typing import Protocol
 from urllib.parse import urlparse
@@ -15,6 +16,7 @@ from bcn.briefing import BriefingFactVerifier
 from bcn.briefing import BriefingQualityGate
 from bcn.briefing import BriefingSelector
 from bcn.briefing import text as briefing_text
+from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.db import get_recent_published_items
 from bcn.common.llm import LLMClient
@@ -160,11 +162,17 @@ class WriterService:
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
         self.verifier = BriefingFactVerifier(settings, llm_client=self.llm_client)
+        self.comfyui = ComfyUIClient(
+            base_url=settings.comfyui_url,
+            timeout=settings.comfyui_timeout,
+            poll_interval=settings.comfyui_poll_interval,
+        )
 
     async def close(self) -> None:
         """Release resources owned by this writer service."""
         await self.writer_llm.close()
         await self.verifier.close()
+        await self.comfyui.close()
         if self._owns_llm_client:
             await self.llm_client.close()
 
@@ -353,6 +361,8 @@ class WriterService:
 
         rewrites = 0
         max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
+        trace_rounds: list[dict[str, Any]] = []
+        preference_pairs: list[dict[str, Any]] = []
         while True:
             evaluation = await self.evaluate_existing_markdown(
                 markdown=draft,
@@ -360,10 +370,41 @@ class WriterService:
                 history=history,
                 mode=mode,
             )
+            round_input = str(evaluation["markdown"] or "")
             evaluation["rewrites"] = rewrites
             if bool(evaluation["release_passed"]):
+                trace_rounds.append(
+                    {
+                        "round_index": len(trace_rounds),
+                        "phase": "initial" if not trace_rounds else "rewrite",
+                        "draft_input": round_input,
+                        "gate_result": dict(evaluation["gate"]),
+                        "critique_result": dict(evaluation["critique"]),
+                        "verifier_result": dict(evaluation["verifier"]),
+                        "feedback": [],
+                        "rewrite_output": None,
+                        "passed": True,
+                    }
+                )
+                evaluation["rounds"] = trace_rounds
+                evaluation["preference_pairs"] = preference_pairs
                 return evaluation
             if rewrites >= max_rewrites:
+                trace_rounds.append(
+                    {
+                        "round_index": len(trace_rounds),
+                        "phase": "initial" if not trace_rounds else "rewrite",
+                        "draft_input": round_input,
+                        "gate_result": dict(evaluation["gate"]),
+                        "critique_result": dict(evaluation["critique"]),
+                        "verifier_result": dict(evaluation["verifier"]),
+                        "feedback": [],
+                        "rewrite_output": None,
+                        "passed": False,
+                    }
+                )
+                evaluation["rounds"] = trace_rounds
+                evaluation["preference_pairs"] = preference_pairs
                 return evaluation
 
             gate = evaluation["gate"]
@@ -403,7 +444,7 @@ class WriterService:
             )
 
             rewrites += 1
-            draft = await self.writer_llm.revise_briefing(
+            rewritten_output = await self.writer_llm.revise_briefing(
                 draft_markdown=draft,
                 items=selected_items,
                 feedback=feedback,
@@ -413,14 +454,81 @@ class WriterService:
                 target_chars=int(evaluation["target_chars"]),
                 hard_max_chars=int(evaluation["hard_max_chars"]),
             )
-            draft = await self.postprocess_briefing(
-                briefing_body=draft,
+            rewritten_output = await self.postprocess_briefing(
+                briefing_body=rewritten_output,
                 selected_items=selected_items,
                 mode=mode,
                 min_chars=int(evaluation["min_chars"]),
                 target_chars=int(evaluation["target_chars"]),
                 hard_max_chars=int(evaluation["hard_max_chars"]),
             )
+            trace_rounds.append(
+                {
+                    "round_index": len(trace_rounds),
+                    "phase": "initial" if not trace_rounds else "rewrite",
+                    "draft_input": round_input,
+                    "gate_result": dict(gate),
+                    "critique_result": dict(critique),
+                    "verifier_result": dict(verifier),
+                    "feedback": [str(item) for item in feedback],
+                    "rewrite_output": rewritten_output,
+                    "passed": False,
+                }
+            )
+            preference_pairs.append(
+                {
+                    "round_index": len(trace_rounds),
+                    "chosen_text": rewritten_output,
+                    "rejected_text": round_input,
+                    "rationale": self.build_preference_rationale(feedback),
+                    "source": "auto_writer_loop",
+                }
+            )
+            draft = rewritten_output
+
+    async def build_release_artifact(
+        self,
+        *,
+        briefing_body: str,
+        selected_items: list[dict[str, Any]],
+        mode: str,
+    ) -> dict[str, str]:
+        """Build final markdown/html assets and cover metadata."""
+        topics = "\n".join(
+            f"- {item['title']}: {item['summary']}" for item in selected_items
+        )
+        cover_prompt = await self.writer_llm.generate_cover_prompt(topics)
+        logger.info("Cover prompt: %s", cover_prompt[:100])
+
+        cover_url = ""
+        if self.writer_llm.supports_cover_image_generation():
+            try:
+                cover_url = (
+                    await self.writer_llm.generate_cover_image_data_url(cover_prompt)
+                    or ""
+                )
+                if cover_url:
+                    logger.info("Cover image generated via Gemini image model")
+            except Exception:
+                logger.exception(
+                    "Failed to generate Gemini cover image, falling back to ComfyUI"
+                )
+        if not cover_url:
+            try:
+                prefix = f"Digest_Cover_{int(time.time() * 1000)}"
+                cover_url = await self.comfyui.generate_image(cover_prompt, prefix)
+                logger.info("Cover image: %s", cover_url)
+            except Exception:
+                logger.exception(
+                    "Failed to generate cover image, continuing without it"
+                )
+
+        return {
+            "cover_prompt": cover_prompt,
+            "cover_url": cover_url,
+            "markdown": self.format_markdown(briefing_body, cover_url, mode=mode),
+            "html": self.format_html(briefing_body, cover_url, mode=mode),
+        }
 
     async def simulate_briefing_body(
         self,

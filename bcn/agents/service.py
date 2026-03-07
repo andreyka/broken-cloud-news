@@ -73,9 +73,15 @@ async def generate_briefing(
     mode: str,
     agent_client: AgentClient | None = None,
 ) -> str:
-    """Generate one briefing for the requested workflow mode."""
-    client = _resolve_agent_client(settings, agent_client)
-    return await client.generate_briefing(mode)
+    """Backward-compatible wrapper for control-plane generation."""
+    from bcn.workflows.generation import execute_generation
+
+    return await execute_generation(
+        settings,
+        mode=mode,
+        source="cli",
+        manage_pool=True,
+    )
 
 
 async def critique_briefing(
