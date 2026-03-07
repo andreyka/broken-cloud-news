@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from uuid import UUID
 
@@ -13,14 +12,12 @@ from a2a.types import AgentSkill
 from a2a.utils import new_agent_text_message
 from typing_extensions import override
 
-from bcn.agents.analyst.llm import AnalystLLM
+from bcn.agents.analyst.service import AnalystService
 from bcn.agents.base import enqueue_event_safe
 from bcn.common.config import Settings
 from bcn.common.db import get_new_items
 from bcn.common.db import release_items_from_analyzing
 from bcn.common.db import update_item_analyzed
-from bcn.common.llm import LLMClient
-from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +37,10 @@ class AnalystExecutor(AgentExecutor):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.llm_client = LLMClient.from_settings(settings)
-        self.analyst_llm = AnalystLLM(self.llm_client)
-        self.scraper = Scraper(
-            content_limit=settings.scrape_content_limit,
-            min_content_length=settings.scrape_min_content_length,
-        )
+        self.service = AnalystService(settings)
+        self.llm_client = self.service.llm_client
+        self.analyst_llm = self.service.analyst_llm
+        self.scraper = self.service.scraper
 
     @override
     async def execute(
@@ -97,67 +92,9 @@ class AnalystExecutor(AgentExecutor):
         await enqueue_event_safe(event_queue, new_agent_text_message(msg))
 
     async def _analyze_item_and_save(self, item: dict) -> None:
-        title: str = item["title"] or ""
-        content: str = item["full_content"] or ""
-
-        if not content and item["url"]:
-            if item["source_type"] in ("rss", "ghsa"):
-                content = await self.scraper.scrape(item["url"])
-
-        if item["source_type"] == "ghsa":
-            try:
-                raw = (
-                    json.loads(item["raw_data"])
-                    if isinstance(item["raw_data"], str)
-                    else item["raw_data"]
-                )
-                desc = raw.get("description", "")
-                severity = raw.get("severity", "")
-                if desc and (not content or len(content) < 200):
-                    content = f"[Severity: {severity}]\n{desc}\n\n{content or ''}"
-            except Exception:
-                pass
-        elif item["source_type"] in ("twitter", "reddit"):
-            try:
-                raw = (
-                    json.loads(item["raw_data"])
-                    if isinstance(item["raw_data"], str)
-                    else item["raw_data"]
-                )
-                references = raw.get("references", [])
-                for ref in references[:3]:
-                    if isinstance(ref, dict) and ref.get("url"):
-                        scraped_ref = await self.scraper.scrape(ref["url"])
-                        if scraped_ref:
-                            content += f"\n\n--- Scraped content from {ref['url']} ---\n{scraped_ref[:3000]}"
-            except Exception as exc:
-                logger.warning(
-                    "Failed to scrape %s references for %s: %s",
-                    item["source_type"],
-                    item["id"],
-                    exc,
-                )
-
-        if not content:
-            content = title
-
-        result = await self.analyst_llm.analyze_item(
-            title, content, url=item["url"] or ""
-        )
-        await update_item_analyzed(
-            item_id=item["id"],
-            summary=result.summary,
-            relevance_score=result.relevance_score,
-            ai_tags=result.tags,
-            full_content=(content if content != title else item["full_content"]),
-            image_prompt=result.image_prompt,
-            canonical_url=result.canonical_url,
-        )
-        logger.info(
-            "Analyzed %s [%s] score=%d",
-            item["source_id"],
-            item["source_type"],
-            result.relevance_score,
+        await self.service.analyze_item_and_save(
+            item,
+            update_item_fn=update_item_analyzed,
         )
 
     @staticmethod
@@ -171,8 +108,7 @@ class AnalystExecutor(AgentExecutor):
 
     async def close(self) -> None:
         """Release analyst resources."""
-        await self.scraper.close()
-        await self.llm_client.close()
+        await self.service.close()
 
     @override
     async def cancel(

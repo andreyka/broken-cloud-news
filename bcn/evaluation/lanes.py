@@ -9,13 +9,13 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from bcn.agents.writer.agent import WriterExecutor
+from bcn.agents.writer.service import WriterService
+from bcn.agents.writer.service import WriterWorkflowProtocol
 from bcn.common.config import Settings
 from bcn.common.db import get_distributed_briefings
 from bcn.common.db import get_generation_runs_for_export
 from bcn.common.db import get_human_reviews
 from bcn.common.db import get_recent_briefings
-from bcn.common.db import get_recent_published_items
 from bcn.common.db import get_top_items_for_period
 from bcn.common.db import preview_analyzed_items
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -72,66 +72,16 @@ def load_settings_with_overrides(
 
 
 async def _select_items_for_workflow(
-    writer: WriterExecutor,
+    writer: WriterWorkflowProtocol,
     item_dicts: list[dict[str, Any]],
     workflow_mode: str,
 ) -> dict[str, Any]:
     """Select items for one workflow mode without mutating DB state."""
-    if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
-        selected = writer._select_items_for_monthly_newsletter(item_dicts)
-        if not selected:
-            return {
-                "decision": "skip",
-                "reason": "not_enough_diverse_items_after_monthly_selection",
-                "mode": "monthly_newsletter",
-                "selected_items": [],
-            }
-        return {
-            "decision": "generate",
-            "reason": "monthly_selection_ready",
-            "mode": "monthly_newsletter",
-            "selected_items": selected,
-        }
-
-    if bool(writer.settings.briefing_skip_if_no_high_signal):
-        high_signal = writer.selector.high_signal_count(item_dicts)
-        min_high_signal = max(1, int(writer.settings.briefing_min_high_signal_to_publish))
-        if high_signal < min_high_signal:
-            return {
-                "decision": "skip",
-                "reason": f"high_signal_below_threshold:{high_signal}<{min_high_signal}",
-                "mode": "standard",
-                "selected_items": [],
-            }
-
-    recent_published = await get_recent_published_items(
-        hours=writer.settings.briefing_novelty_lookback_hours,
-        limit=writer.settings.briefing_novelty_max_items,
-    )
-    quiet_mode = writer._is_quiet_day(item_dicts)
-    mode = "quiet_day" if quiet_mode else "standard"
-    selected = writer._select_items_for_briefing(
-        item_dicts,
-        recent_published=[dict(r) for r in recent_published],
-        quiet_mode=quiet_mode,
-    )
-    if not selected:
-        return {
-            "decision": "skip",
-            "reason": "no_items_remained_after_selection_constraints",
-            "mode": mode,
-            "selected_items": [],
-        }
-    return {
-        "decision": "generate",
-        "reason": "selection_ready",
-        "mode": mode,
-        "selected_items": selected,
-    }
+    return await writer.select_items_for_workflow(item_dicts, workflow_mode)
 
 
 async def _evaluate_existing_markdown(
-    writer: WriterExecutor,
+    writer: WriterWorkflowProtocol,
     *,
     markdown: str,
     selected_items: list[dict[str, Any]],
@@ -139,190 +89,45 @@ async def _evaluate_existing_markdown(
     mode: str,
 ) -> dict[str, Any]:
     """Score one existing markdown draft against current release checks."""
-    min_chars, target_chars, hard_max_chars = writer._char_limits(
-        mode,
-        selected_count=len(selected_items),
-    )
-    normalized = writer._normalize_section_headings(
-        writer._dedupe_markdown_links((markdown or "").strip())
-    )
-    normalized = writer._de_template_fields(normalized)
-    normalized = writer._enforce_release_link_hygiene(
-        normalized,
-        selected_items,
-        hard_max_chars=hard_max_chars,
-    )
-
-    gate = writer._quality_gate(
-        markdown=normalized,
+    evaluation = await writer.evaluate_existing_markdown(
+        markdown=markdown,
         selected_items=selected_items,
+        history=history,
         mode=mode,
-        min_chars=min_chars,
-        hard_max_chars=hard_max_chars,
-    )
-    if writer.settings.briefing_critique_enabled:
-        critique = await writer.critic_llm.critique_briefing(
-            draft_markdown=normalized,
-            items=selected_items,
-            mode=mode,
-            gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
-            gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
-            recent_briefings=history,
-        )
-    else:
-        critique = {
-            "passed": True,
-            "score": 100,
-            "dimension_scores": {
-                "actionability": 100,
-                "source_diversity": 100,
-                "link_hygiene": 100,
-                "clarity": 100,
-                "style": 100,
-                "novelty": 100,
-            },
-            "issues": [],
-            "recommendations": [],
-        }
-
-    if writer.settings.briefing_verifier_enabled:
-        verifier = await writer.verifier.evaluate(
-            normalized,
-            selected_items,
-            mode=mode,
-        )
-    else:
-        verifier = {
-            "passed": True,
-            "score": 100,
-            "hard_issues": [],
-            "blocking_hard_issues": [],
-            "soft_issues": [],
-            "issues": [],
-            "recommendations": [],
-        }
-
-    critique_passed = writer._passes_critic_thresholds(critique)
-    release_passed = (
-        bool(gate.get("passed", False))
-        and critique_passed
-        and bool(verifier.get("passed", True))
     )
     rubric = score_feedback_rubric(
-        normalized,
+        str(evaluation["markdown"]),
         selected_items,
-        gate,
-        min_chars=min_chars,
-        hard_max_chars=hard_max_chars,
+        evaluation["gate"],
+        min_chars=int(evaluation["min_chars"]),
+        hard_max_chars=int(evaluation["hard_max_chars"]),
     )
-    return {
-        "markdown": normalized,
-        "mode": mode,
-        "min_chars": min_chars,
-        "target_chars": target_chars,
-        "hard_max_chars": hard_max_chars,
-        "gate": gate,
-        "critique": critique,
-        "verifier": verifier,
-        "rubric": rubric,
-        "release_passed": release_passed,
-    }
+    evaluation["rubric"] = rubric
+    return evaluation
 
 
 async def _generate_release_candidate(
-    writer: WriterExecutor,
+    writer: WriterWorkflowProtocol,
     *,
     selected_items: list[dict[str, Any]],
     history: list[dict[str, Any]],
     mode: str,
 ) -> dict[str, Any]:
     """Generate and evaluate one release candidate without publishing it."""
-    min_chars, target_chars, hard_max_chars = writer._char_limits(
-        mode,
-        selected_count=len(selected_items),
-    )
-
-    draft = await writer.writer_llm.generate_briefing(
-        selected_items,
-        recent_briefings=history,
-        mode=mode,
-    )
-    draft = await writer._postprocess_briefing(
-        briefing_body=draft,
+    evaluation = await writer.generate_release_candidate(
         selected_items=selected_items,
+        history=history,
         mode=mode,
-        min_chars=min_chars,
-        target_chars=target_chars,
-        hard_max_chars=hard_max_chars,
     )
-
-    rewrites = 0
-    max_rewrites = max(0, int(writer.settings.briefing_critique_max_rounds))
-    while True:
-        evaluation = await _evaluate_existing_markdown(
-            writer,
-            markdown=draft,
-            selected_items=selected_items,
-            history=history,
-            mode=mode,
-        )
-        evaluation["rewrites"] = rewrites
-        if bool(evaluation["release_passed"]):
-            return evaluation
-        if rewrites >= max_rewrites:
-            return evaluation
-
-        gate = evaluation["gate"]
-        critique = evaluation["critique"]
-        verifier = evaluation["verifier"]
-        feedback: list[str] = []
-        feedback.extend(str(i) for i in gate.get("issues", []))
-        feedback.extend(str(i) for i in critique.get("issues", []))
-        feedback.extend(str(i) for i in critique.get("recommendations", []))
-        feedback.extend(str(i) for i in verifier.get("issues", []))
-        feedback.extend(str(i) for i in verifier.get("recommendations", []))
-        missing_items = writer._missing_items_for_markdown(draft, selected_items)
-        missing_urls = [str(i.get("url", "")) for i in missing_items if i.get("url")]
-        if missing_items:
-            draft = writer._append_missing_items_section(draft, missing_items)
-            draft = writer._normalize_section_headings(
-                writer._dedupe_markdown_links(draft.strip())
-            )
-            draft = writer._de_template_fields(draft)
-
-        feedback_context = writer._build_rewrite_feedback_context(
-            gate=gate,
-            critique=critique,
-            verification=verifier,
-            mode=mode,
-            min_chars=int(evaluation["min_chars"]),
-            target_chars=int(evaluation["target_chars"]),
-            hard_max_chars=int(evaluation["hard_max_chars"]),
-            rewrite_attempt=rewrites + 1,
-            max_rewrites=max_rewrites,
-            selected_items=selected_items,
-            missing_selected_urls=missing_urls,
-        )
-
-        rewrites += 1
-        draft = await writer.writer_llm.revise_briefing(
-            draft_markdown=draft,
-            items=selected_items,
-            feedback=feedback,
-            feedback_context=feedback_context,
-            mode=mode,
-            min_chars=int(evaluation["min_chars"]),
-            target_chars=int(evaluation["target_chars"]),
-            hard_max_chars=int(evaluation["hard_max_chars"]),
-        )
-        draft = await writer._postprocess_briefing(
-            briefing_body=draft,
-            selected_items=selected_items,
-            mode=mode,
-            min_chars=int(evaluation["min_chars"]),
-            target_chars=int(evaluation["target_chars"]),
-            hard_max_chars=int(evaluation["hard_max_chars"]),
-        )
+    rubric = score_feedback_rubric(
+        str(evaluation["markdown"]),
+        selected_items,
+        evaluation["gate"],
+        min_chars=int(evaluation["min_chars"]),
+        hard_max_chars=int(evaluation["hard_max_chars"]),
+    )
+    evaluation["rubric"] = rubric
+    return evaluation
 
 
 def _benchmark_case_pass(
@@ -723,10 +528,10 @@ async def run_benchmark_pack(
         settings,
         candidate_overrides_path,
     )
-    champion_writer = WriterExecutor(settings)
+    champion_writer = WriterService(settings)
     candidate_writer = champion_writer
     if candidate_settings.model_dump() != settings.model_dump():
-        candidate_writer = WriterExecutor(candidate_settings)
+        candidate_writer = WriterService(candidate_settings)
 
     try:
         results: list[dict[str, Any]] = []
@@ -831,8 +636,10 @@ async def run_shadow_lane(
         settings,
         candidate_overrides_path,
     )
-    champion_writer = WriterExecutor(settings)
-    candidate_writer = WriterExecutor(candidate_settings)
+    champion_writer = WriterService(settings)
+    candidate_writer = champion_writer
+    if candidate_settings.model_dump() != settings.model_dump():
+        candidate_writer = WriterService(candidate_settings)
 
     try:
         if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
@@ -949,4 +756,5 @@ async def run_shadow_lane(
         return report
     finally:
         await champion_writer.close()
-        await candidate_writer.close()
+        if candidate_writer is not champion_writer:
+            await candidate_writer.close()
