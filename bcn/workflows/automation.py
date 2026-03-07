@@ -108,31 +108,43 @@ async def job_shadow_regular_briefing() -> None:
         return
 
     from bcn.common.db import ensure_evaluation_tables
-    from bcn.common.db import insert_evaluation_report
+    from bcn.common.db import complete_evaluation_run
+    from bcn.common.db import create_evaluation_run
+    from bcn.common.db import fail_evaluation_run
     from bcn.evaluation import run_shadow_lane
 
-    report = await run_shadow_lane(
-        settings,
-        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
-        candidate_overrides_path=overrides_path,
-        include_text=bool(settings.shadow_include_text),
-    )
     await ensure_evaluation_tables()
-    run_id = await insert_evaluation_report(
-        report,
+    run_id = await create_evaluation_run(
+        lane="shadow",
         source="scheduler",
+        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
         notes="Scheduled pre-publish shadow evaluation.",
     )
-    summary = report.get("summary") if isinstance(report, dict) else {}
-    if not isinstance(summary, dict):
-        summary = {}
-    logger.info(
-        "Stored scheduled shadow evaluation run_id=%s recommendation=%s confidence=%s item_pool=%s",
-        run_id,
-        summary.get("recommendation", "hold"),
-        summary.get("confidence", "low"),
-        report.get("item_pool_count", 0),
-    )
+    try:
+        report = await run_shadow_lane(
+            settings,
+            workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
+            candidate_overrides_path=overrides_path,
+            include_text=bool(settings.shadow_include_text),
+        )
+        await complete_evaluation_run(
+            run_id,
+            report,
+            notes="Scheduled pre-publish shadow evaluation.",
+        )
+        summary = report.get("summary") if isinstance(report, dict) else {}
+        if not isinstance(summary, dict):
+            summary = {}
+        logger.info(
+            "Stored scheduled shadow evaluation run_id=%s recommendation=%s confidence=%s item_pool=%s",
+            run_id,
+            summary.get("recommendation", "hold"),
+            summary.get("confidence", "low"),
+            report.get("item_pool_count", 0),
+        )
+    except Exception as exc:
+        await fail_evaluation_run(run_id, error_message=str(exc))
+        raise
 
 
 # Backward-compatible alias for older imports/tests.

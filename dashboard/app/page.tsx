@@ -56,6 +56,29 @@ function laneTitle(lane: string): string {
   return lane;
 }
 
+function runStateLabel(run: EvaluationRunSummary | null): string {
+  if (!run) {
+    return "Awaiting run";
+  }
+  if (run.status === "running") {
+    return "Running now";
+  }
+  if (run.status === "failed") {
+    return "Failed";
+  }
+  return `${formatDate(run.createdAt)} UTC`;
+}
+
+function statusLabel(run: EvaluationRunSummary): string {
+  if (run.status === "running") {
+    return "Running";
+  }
+  if (run.status === "failed") {
+    return "Failed";
+  }
+  return "Completed";
+}
+
 function replayDecision(summary: Record<string, unknown>): Record<string, unknown> {
   return asObject(summary.decision);
 }
@@ -177,6 +200,92 @@ function EvaluationLaneCard({
     );
   }
 
+  if (run.status === "running") {
+    return (
+      <section className={`lane-card lane-card-${lane}`}>
+        <div className="lane-card-head">
+          <span className={`lane-pill lane-${lane}`}>{laneTitle(lane)}</span>
+          <div className="lane-head-meta">
+            <span className="run-state run-state-running">Running</span>
+            <span className="lane-timestamp">{formatDate(run.createdAt)} UTC</span>
+          </div>
+        </div>
+        <h2>Run in progress</h2>
+        <p className="lane-copy">
+          {lane === "benchmark"
+            ? "Champion and challenger are being graded against the benchmark pack."
+            : "Champion and challenger are being generated against the live item pool."}
+        </p>
+        <div className="metric-grid">
+          <div className="metric-cell">
+            <span className="metric-label">Status</span>
+            <strong className="metric-value">running</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Started</span>
+            <strong className="metric-value">{formatDate(run.createdAt)}</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Source</span>
+            <strong className="metric-value">{run.source}</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Mode</span>
+            <strong className="metric-value">{run.workflowMode || "n/a"}</strong>
+          </div>
+        </div>
+        <div className="lane-footer">
+          <span className="lane-meta">No summary yet. This row will update on completion.</span>
+          <Link className="inline-link" href={`/runs/${run.id}`}>
+            Open run
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
+  if (run.status === "failed") {
+    return (
+      <section className={`lane-card lane-card-${lane}`}>
+        <div className="lane-card-head">
+          <span className={`lane-pill lane-${lane}`}>{laneTitle(lane)}</span>
+          <div className="lane-head-meta">
+            <span className="run-state run-state-failed">Failed</span>
+            <span className="lane-timestamp">{formatDate(run.createdAt)} UTC</span>
+          </div>
+        </div>
+        <h2>Run failed</h2>
+        <p className="lane-copy">
+          {run.errorMessage || "The latest run did not complete. Open the detail page for the failure record."}
+        </p>
+        <div className="metric-grid">
+          <div className="metric-cell">
+            <span className="metric-label">Status</span>
+            <strong className="metric-value">failed</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Started</span>
+            <strong className="metric-value">{formatDate(run.createdAt)}</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Finished</span>
+            <strong className="metric-value">{formatDate(run.finishedAt)}</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Source</span>
+            <strong className="metric-value">{run.source}</strong>
+          </div>
+        </div>
+        <div className="lane-footer">
+          <span className="lane-meta">Latest evaluation record ended in failure.</span>
+          <Link className="inline-link" href={`/runs/${run.id}`}>
+            Open run
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
   const summary = run.summary;
   const detailLabel =
     lane === "benchmark" ? "Candidate pass" : "Selection overlap";
@@ -195,7 +304,10 @@ function EvaluationLaneCard({
     <section className={`lane-card lane-card-${lane}`}>
       <div className="lane-card-head">
         <span className={`lane-pill lane-${lane}`}>{laneTitle(lane)}</span>
-        <span className="lane-timestamp">{formatDate(run.createdAt)} UTC</span>
+        <div className="lane-head-meta">
+          <span className="run-state run-state-completed">Completed</span>
+          <span className="lane-timestamp">{formatDate(run.createdAt)} UTC</span>
+        </div>
       </div>
       <h2>{metric(summary, "recommendation")}</h2>
       <p className="lane-copy">
@@ -276,8 +388,7 @@ export default async function Home() {
           <span>Current control signal</span>
           <strong>{heroSignal || "hold"}</strong>
           <small>
-            Benchmark {formatDate(benchmark?.createdAt ?? null)} UTC · Shadow{" "}
-            {formatDate(shadow?.createdAt ?? null)} UTC
+            Benchmark {runStateLabel(benchmark)} · Shadow {runStateLabel(shadow)}
           </small>
         </div>
       </section>
@@ -299,6 +410,7 @@ export default async function Home() {
         <div className="runs-table">
           <div className="runs-row runs-head">
             <span>Lane</span>
+            <span>Status</span>
             <span>Created</span>
             <span>Recommendation</span>
             <span>Confidence</span>
@@ -308,7 +420,11 @@ export default async function Home() {
           {runs.map((run) => {
             const summary = run.summary;
             const primarySignal =
-              run.lane === "benchmark"
+              run.status === "running"
+                ? "in progress"
+                : run.status === "failed"
+                  ? run.errorMessage || "failed"
+                  : run.lane === "benchmark"
                 ? `pass ${metric(summary, "candidate_case_pass_rate")} vs ${metric(
                     summary,
                     "champion_case_pass_rate",
@@ -320,6 +436,9 @@ export default async function Home() {
             return (
               <div className="runs-row" key={run.id}>
                 <span className={`lane-pill lane-${run.lane}`}>{laneTitle(run.lane)}</span>
+                <span className={`run-state run-state-${run.status}`}>
+                  {statusLabel(run)}
+                </span>
                 <span>{formatDate(run.createdAt)}</span>
                 <span>{metric(summary, "recommendation")}</span>
                 <span>{metric(summary, "confidence")}</span>
