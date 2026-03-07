@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bcn.common.config import Settings
+from bcn.workflows.modes._schedule import schedule_start_time
 from bcn.workflows.modes.common import run_generation_and_distribution
 
 MODE = "regular_daily_briefing"
@@ -45,6 +46,7 @@ def build_trigger(settings: Settings):
         hour=_hour_expression(settings),
         minute=settings.distribute_minute,
         timezone=settings.distribute_timezone,
+        start_time=schedule_start_time(settings.distribute_timezone),
     )
 
 
@@ -57,6 +59,7 @@ def build_shadow_trigger(settings: Settings):
         hour=shadow_hours,
         minute=shadow_minute,
         timezone=settings.distribute_timezone,
+        start_time=schedule_start_time(settings.distribute_timezone),
     )
 
 

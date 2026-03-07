@@ -5,6 +5,7 @@ from datetime import timezone
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pytest
 import click
@@ -57,6 +58,24 @@ def test_build_regular_briefing_trigger_legacy_fallback_hour():
     assert str(trigger.timezone) == "America/Los_Angeles"
 
 
+def test_build_regular_briefing_trigger_preserves_first_local_slot(monkeypatch):
+    start = datetime(2026, 3, 7, 2, 0, 6, 320330, tzinfo=ZoneInfo("America/Los_Angeles"))
+    monkeypatch.setattr(
+        "bcn.workflows.modes.regular_daily_briefing.schedule_start_time",
+        lambda timezone_name: start,
+    )
+
+    settings = Settings(
+        distribute_hours=[9, 13, 19],
+        distribute_minute=0,
+        distribute_timezone="America/Los_Angeles",
+    )
+    trigger = build_regular_briefing_trigger(settings)
+
+    assert trigger.start_time == start
+    assert trigger.next() == datetime(2026, 3, 7, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+
 def test_build_shadow_regular_briefing_trigger_offsets_multi_hour_schedule():
     settings = Settings(
         distribute_hours=[19, 9, 13],
@@ -68,6 +87,25 @@ def test_build_shadow_regular_briefing_trigger_offsets_multi_hour_schedule():
     assert trigger.hour == "8,12,18"
     assert trigger.minute == 15
     assert str(trigger.timezone) == "UTC"
+
+
+def test_build_shadow_regular_briefing_trigger_preserves_first_local_slot(monkeypatch):
+    start = datetime(2026, 3, 7, 2, 0, 6, 320330, tzinfo=ZoneInfo("America/Los_Angeles"))
+    monkeypatch.setattr(
+        "bcn.workflows.modes.regular_daily_briefing.schedule_start_time",
+        lambda timezone_name: start,
+    )
+
+    settings = Settings(
+        distribute_hours=[9, 13, 19],
+        distribute_minute=0,
+        distribute_timezone="America/Los_Angeles",
+        shadow_minutes_before_publish=45,
+    )
+    trigger = build_shadow_regular_briefing_trigger(settings)
+
+    assert trigger.start_time == start
+    assert trigger.next() == datetime(2026, 3, 7, 8, 15, tzinfo=ZoneInfo("America/Los_Angeles"))
 
 
 def test_build_shadow_regular_briefing_trigger_wraps_before_midnight():
@@ -235,13 +273,20 @@ async def test_run_writer_distributor_handoff_skips_unstructured_writer_output()
 
 
 def test_build_regular_monthly_newsletter_trigger():
-    settings = Settings(
-        monthly_newsletter_day=3,
-        monthly_newsletter_hour=17,
-        monthly_newsletter_minute=5,
-        monthly_newsletter_timezone="America/Los_Angeles",
-    )
-    trigger = build_regular_monthly_newsletter_trigger(settings)
+    start = datetime(2026, 3, 1, 2, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch(
+        "bcn.workflows.modes.regular_monthly_newsletter.schedule_start_time",
+        return_value=start,
+    ):
+        settings = Settings(
+            monthly_newsletter_day=3,
+            monthly_newsletter_hour=17,
+            monthly_newsletter_minute=5,
+            monthly_newsletter_timezone="America/Los_Angeles",
+        )
+        trigger = build_regular_monthly_newsletter_trigger(settings)
+
+    assert trigger.start_time == start
     assert trigger.day == 3
     assert trigger.hour == 17
     assert trigger.minute == 5
