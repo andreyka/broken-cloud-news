@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -68,14 +69,24 @@ export default async function RunPage({ params }: RunPageProps) {
   return (
     <main className="shell">
       <section className="hero compact-hero">
-        <div>
-          <p className="eyebrow">{run.lane} lane</p>
-          <h1>Evaluation run {run.id.slice(0, 8)}</h1>
-          <p className="lede">
-            Created {formatDate(run.createdAt)} UTC · recommendation{" "}
-            {metric(summary, "recommendation")} · confidence{" "}
-            {metric(summary, "confidence")}
-          </p>
+        <div className="brand-lockup brand-lockup-compact">
+          <Image
+            src="/logo.png"
+            alt="Broken Cloud News"
+            width={72}
+            height={72}
+            className="brand-logo brand-logo-compact"
+            priority
+          />
+          <div>
+            <p className="eyebrow">{run.lane} lane</p>
+            <h1>Evaluation run {run.id.slice(0, 8)}</h1>
+            <p className="lede">
+              Created {formatDate(run.createdAt)} UTC · recommendation{" "}
+              {metric(summary, "recommendation")} · confidence{" "}
+              {metric(summary, "confidence")}
+            </p>
+          </div>
         </div>
         <Link className="inline-link" href="/">
           Back to overview
