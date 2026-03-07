@@ -17,7 +17,6 @@ from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.agents.writer.service import WriterService
-from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.db import append_generation_round
 from bcn.common.db import create_generation_run
@@ -67,11 +66,7 @@ class WriterExecutor(AgentExecutor):
         self.llm_client = self.service.llm_client
         self.writer_llm = self.service.writer_llm
         self.critic_llm = self.service.critic_llm
-        self.comfyui = ComfyUIClient(
-            base_url=settings.comfyui_url,
-            timeout=settings.comfyui_timeout,
-            poll_interval=settings.comfyui_poll_interval,
-        )
+        self.comfyui = self.service.comfyui
         self.selector = self.service.selector
         self.quality = self.service.quality
         self.verifier = self.service.verifier
@@ -175,7 +170,6 @@ class WriterExecutor(AgentExecutor):
     async def close(self) -> None:
         """Release writer resources."""
         await self.service.close()
-        await self.comfyui.close()
 
     @staticmethod
     def _compose_handoff_message(

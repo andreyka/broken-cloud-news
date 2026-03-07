@@ -119,11 +119,11 @@ def parse_writer_handoff_payload(text: str) -> WriterHandoff | None:
 async def run_writer_distributor_handoff(
     *,
     mode: str,
-    run_writer: Callable[[str], Awaitable[str]],
+    run_generation: Callable[[str], Awaitable[str]],
     run_distribution: Callable[[str, UUID], Awaitable[str]],
 ) -> tuple[str, str | None]:
     """Run writer->distributor handoff from explicit writer payload."""
-    writer_result = await run_writer(f"generate_briefing::{mode}")
+    writer_result = await run_generation(mode)
     handoff = parse_writer_handoff_payload(writer_result)
     if not handoff:
         logger.warning(
@@ -162,10 +162,17 @@ async def run_writer_distributor_handoff(
 
 async def run_generation_and_distribution(mode: str) -> None:
     """Run one writer->distributor handoff cycle for the given workflow mode."""
+    from bcn.workflows.generation import execute_generation
+
     settings, agent_client = require_runtime()
     await run_writer_distributor_handoff(
         mode=mode,
-        run_writer=agent_client.call_writer,
+        run_generation=lambda workflow_mode: execute_generation(
+            settings,
+            mode=workflow_mode,
+            source="scheduler",
+            manage_pool=False,
+        ),
         run_distribution=lambda dispatch_mode, briefing_id: execute_distribution(
             settings,
             mode=dispatch_mode,

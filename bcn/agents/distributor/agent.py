@@ -14,6 +14,7 @@ from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
 from bcn.agents.distributor.service import DistributorService
+from bcn.agents.distributor.service import _distribution_redaction_secrets
 from bcn.agents.distributor.service import normalize_distribution_mode
 from bcn.agents.distributor.service import parse_delivery_request_payload
 from bcn.agents.distributor.service import render_delivery_result_payload

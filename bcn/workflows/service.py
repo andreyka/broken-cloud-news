@@ -9,7 +9,6 @@ from collections.abc import Callable
 from typing import Any
 
 from bcn.common.agent_client import AgentClient
-from bcn.common.agent_client import build_direct_agent_client
 from bcn.common.agent_client import build_port_sender_agent_client
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
@@ -29,6 +28,7 @@ from bcn.workflows.automation import (
 )
 from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.distribution import execute_distribution
+from bcn.workflows.generation import execute_generation
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import run_writer_distributor_handoff
@@ -48,18 +48,17 @@ async def execute_workflow_mode(
     run_agent_directly: AgentRunner | None = None,
 ) -> tuple[str, str | None]:
     """Run one workflow mode cycle without the daemon scheduler."""
-    if agent_client is None:
-        if run_agent_directly is not None:
-            agent_client = build_direct_agent_client(
-                settings,
-                runner=run_agent_directly,
-            )
-        else:
-            agent_client = build_direct_agent_client(settings)
+    del agent_client
+    del run_agent_directly
 
     return await run_writer_distributor_handoff(
         mode=mode,
-        run_writer=agent_client.call_writer,
+        run_generation=lambda workflow_mode: execute_generation(
+            settings,
+            mode=workflow_mode,
+            source="workflow_service",
+            manage_pool=True,
+        ),
         run_distribution=lambda dispatch_mode, briefing_id: execute_distribution(
             settings,
             mode=dispatch_mode,
