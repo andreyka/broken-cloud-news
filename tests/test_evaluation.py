@@ -4,6 +4,7 @@ from datetime import datetime
 from datetime import timezone
 import json
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 from click.testing import CliRunner
 
@@ -252,6 +253,52 @@ def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     assert create_mock.await_count == 1
     assert complete_mock.await_count == 1
     assert fail_mock.await_count == 0
+
+
+def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
+    runner = CliRunner()
+    output_path = tmp_path / "shadow_report.json"
+    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
+    run_mock = AsyncMock(
+        return_value={
+            "item_pool_count": 3,
+            "lane": "shadow",
+            "workflow_mode": "regular_daily_briefing",
+            "summary": {
+                "selection_overlap_ratio": 0.5,
+                "recommendation": "hold",
+                "confidence": "low",
+            },
+            "champion": {
+                "selected_items": [
+                    {
+                        "id": uuid4(),
+                        "title": "Alpha",
+                    }
+                ]
+            },
+            "candidate": {
+                "selected_items": [
+                    {
+                        "id": uuid4(),
+                        "title": "Beta",
+                    }
+                ]
+            },
+        }
+    )
+    monkeypatch.setattr("bcn.evaluation.run_shadow_lane", run_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["shadow", "--output", str(output_path), "--no-store-db"],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert isinstance(payload["champion"]["selected_items"][0]["id"], str)
+    assert isinstance(payload["candidate"]["selected_items"][0]["id"], str)
 
 
 def test_evaluation_runs_command_lists_recent_rows(monkeypatch):
