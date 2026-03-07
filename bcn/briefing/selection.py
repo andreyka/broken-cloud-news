@@ -188,6 +188,20 @@ class BriefingSelector:
                 return False
             return True
 
+        def can_force_add_unique(item: dict) -> bool:
+            """Allow a last-resort add without reintroducing recent coverage."""
+            item_id = str(item.get("id"))
+            if item_id in selected_ids:
+                return False
+
+            if self.is_duplicate_of(item, selected):
+                return False
+
+            if self.is_duplicate_of(item, recent_items):
+                return False
+
+            return True
+
         def add(item: dict) -> None:
             nonlocal ai_count
             item_id = str(item.get("id"))
@@ -254,8 +268,7 @@ class BriefingSelector:
             for item in ranked:
                 if len(selected) >= max_items:
                     break
-                item_id = str(item.get("id"))
-                if item_id in selected_ids:
+                if not can_force_add_unique(item):
                     continue
                 add(item)
 
