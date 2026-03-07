@@ -110,14 +110,6 @@ def _extract_text_from_rpc_result(result: dict[str, Any]) -> str | None:
     return None
 
 
-def _write_json_report(path: Path, payload: object) -> None:
-    """Write report JSON with support for UUID/datetime-like objects."""
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
-
-
 async def _send_to_agent(
     port: int, skill: str, *, timeout_seconds: int = 180
 ) -> str:
@@ -515,65 +507,18 @@ def simulate(
     settings = Settings()
 
     async def _run():
-        from bcn.common.db import close_pool
-        from bcn.common.db import count_simulation_runs
-        from bcn.common.db import ensure_simulation_tables
-        from bcn.common.db import get_latest_simulation_report
-        from bcn.common.db import get_pool
-        from bcn.common.db import insert_simulation_report
-        from bcn.simulation import compare_simulation_reports
-        from bcn.simulation import simulate_historical_briefings
+        from bcn.evaluation.service import execute_simulation_lane
 
-        await get_pool(settings)
-        out_file = Path(output_path)
-        baseline_report: dict[str, Any] | None = None
-
-        if store_db:
-            await ensure_simulation_tables()
-            existing_runs = await count_simulation_runs()
-            if existing_runs == 0 and out_file.exists():
-                try:
-                    previous_payload = json.loads(out_file.read_text(encoding="utf-8"))
-                    if isinstance(previous_payload, dict) and isinstance(
-                        previous_payload.get("results"), list
-                    ):
-                        imported_id = await insert_simulation_report(
-                            previous_payload,
-                            report_path=str(out_file),
-                            source="imported_file",
-                            notes="Imported from existing simulation output file.",
-                        )
-                        click.echo(
-                            f"Imported baseline simulation from {output_path} (run_id={imported_id})"
-                        )
-                except Exception as exc:
-                    click.echo(
-                        f"Skipped baseline import from {output_path}: {exc}", err=True
-                    )
-            baseline_report = await get_latest_simulation_report()
-
-        report = await simulate_historical_briefings(
-            settings=settings,
+        report = await execute_simulation_lane(
+            settings,
             limit=max(0, int(limit)),
             since_days=max(0, int(since_days)),
+            output_path=output_path,
             include_text=include_text,
-            apply_critic_rewrites=with_critic_rewrites,
+            with_critic_rewrites=with_critic_rewrites,
             reanalyze_items=reanalyze_items,
+            store_db=store_db,
         )
-
-        if store_db:
-            run_id = await insert_simulation_report(
-                report,
-                report_path=str(out_file),
-                source="cli",
-            )
-            report["db_run_id"] = str(run_id)
-            if baseline_report:
-                comparison = compare_simulation_reports(report, baseline_report)
-                comparison["baseline_db_run_id"] = baseline_report.get("db_run_id")
-                report["comparison_to_previous_run"] = comparison
-
-        _write_json_report(out_file, report)
 
         summary = report.get("summary", {}) if isinstance(report, dict) else {}
         click.echo(
@@ -657,7 +602,6 @@ def simulate(
                 click.echo("No previous simulation run available for comparison.")
         click.echo(f"Report written to {output_path}")
         click.echo("No distribution action was performed.")
-        await close_pool()
 
     asyncio.run(_run())
 
@@ -706,26 +650,19 @@ def benchmark_pack(
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.evaluation import build_benchmark_pack
+        from bcn.evaluation.service import build_benchmark_pack_artifact
 
-        await get_pool(settings)
-        pack = await build_benchmark_pack(
+        pack = await build_benchmark_pack_artifact(
             settings,
             limit=max(0, int(limit)),
             since_days=max(0, int(since_days)),
             include_unreviewed=include_unreviewed,
             include_nonpublishable=include_nonpublishable,
-        )
-        Path(output_path).write_text(
-            json.dumps(pack, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            output_path=output_path,
         )
         click.echo(
             f"Benchmark pack written to {output_path} (cases={pack.get('count', 0)})"
         )
-        await close_pool()
 
     asyncio.run(_run())
 
@@ -773,62 +710,31 @@ def benchmark(
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import complete_evaluation_run
-        from bcn.common.db import create_evaluation_run
-        from bcn.common.db import ensure_evaluation_tables
-        from bcn.common.db import fail_evaluation_run
-        from bcn.common.db import get_pool
-        from bcn.evaluation import run_benchmark_pack
+        from bcn.evaluation.service import execute_benchmark_lane
 
-        await get_pool(settings)
-        run_id = None
-        try:
-            if store_db:
-                await ensure_evaluation_tables()
-                run_id = await create_evaluation_run(
-                    lane="benchmark",
-                    source="cli",
-                    report_path=str(Path(output_path)),
-                    pack_path=cases_path,
-                )
-
-            report = await run_benchmark_pack(
-                settings,
-                cases_path=cases_path,
-                candidate_overrides_path=candidate_overrides,
-                include_text=include_text,
-            )
-            _write_json_report(Path(output_path), report)
-            if store_db and run_id is not None:
-                await complete_evaluation_run(
-                    run_id,
-                    report,
-                    report_path=str(Path(output_path)),
-                )
-                report["db_run_id"] = str(run_id)
-                _write_json_report(Path(output_path), report)
-            summary = report.get("summary", {}) if isinstance(report, dict) else {}
-            click.echo(
-                "Benchmark complete: "
-                f"count={report.get('count', 0)} "
-                f"champion_pass={summary.get('champion_case_pass_rate', 0)} "
-                f"candidate_pass={summary.get('candidate_case_pass_rate', 0)}"
-            )
-            click.echo(
-                "Recommendation: "
-                f"{summary.get('recommendation', 'hold')} "
-                f"(confidence={summary.get('confidence', 'low')})"
-            )
-            if store_db:
-                click.echo(f"DB run id: {report.get('db_run_id')}")
-            click.echo(f"Report written to {output_path}")
-        except Exception as exc:
-            if store_db and run_id is not None:
-                await fail_evaluation_run(run_id, error_message=str(exc))
-            raise
-        finally:
-            await close_pool()
+        report = await execute_benchmark_lane(
+            settings,
+            cases_path=cases_path,
+            candidate_overrides_path=candidate_overrides,
+            output_path=output_path,
+            include_text=include_text,
+            store_db=store_db,
+        )
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        click.echo(
+            "Benchmark complete: "
+            f"count={report.get('count', 0)} "
+            f"champion_pass={summary.get('champion_case_pass_rate', 0)} "
+            f"candidate_pass={summary.get('candidate_case_pass_rate', 0)}"
+        )
+        click.echo(
+            "Recommendation: "
+            f"{summary.get('recommendation', 'hold')} "
+            f"(confidence={summary.get('confidence', 'low')})"
+        )
+        if store_db:
+            click.echo(f"DB run id: {report.get('db_run_id')}")
+        click.echo(f"Report written to {output_path}")
 
     asyncio.run(_run())
 
@@ -876,62 +782,31 @@ def shadow(
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import complete_evaluation_run
-        from bcn.common.db import create_evaluation_run
-        from bcn.common.db import ensure_evaluation_tables
-        from bcn.common.db import fail_evaluation_run
-        from bcn.common.db import get_pool
-        from bcn.evaluation import run_shadow_lane
+        from bcn.evaluation.service import execute_shadow_lane
 
-        await get_pool(settings)
-        run_id = None
-        try:
-            if store_db:
-                await ensure_evaluation_tables()
-                run_id = await create_evaluation_run(
-                    lane="shadow",
-                    source="cli",
-                    report_path=str(Path(output_path)),
-                    workflow_mode=mode,
-                )
-
-            report = await run_shadow_lane(
-                settings,
-                workflow_mode=mode,
-                candidate_overrides_path=candidate_overrides,
-                include_text=include_text,
-            )
-            _write_json_report(Path(output_path), report)
-            if store_db and run_id is not None:
-                await complete_evaluation_run(
-                    run_id,
-                    report,
-                    report_path=str(Path(output_path)),
-                )
-                report["db_run_id"] = str(run_id)
-                _write_json_report(Path(output_path), report)
-            summary = report.get("summary", {}) if isinstance(report, dict) else {}
-            click.echo(
-                "Shadow evaluation complete: "
-                f"mode={mode} "
-                f"item_pool={report.get('item_pool_count', 0)} "
-                f"selection_overlap={summary.get('selection_overlap_ratio', 0)}"
-            )
-            click.echo(
-                "Recommendation: "
-                f"{summary.get('recommendation', 'hold')} "
-                f"(confidence={summary.get('confidence', 'low')})"
-            )
-            if store_db:
-                click.echo(f"DB run id: {report.get('db_run_id')}")
-            click.echo(f"Report written to {output_path}")
-        except Exception as exc:
-            if store_db and run_id is not None:
-                await fail_evaluation_run(run_id, error_message=str(exc))
-            raise
-        finally:
-            await close_pool()
+        report = await execute_shadow_lane(
+            settings,
+            workflow_mode=mode,
+            candidate_overrides_path=candidate_overrides,
+            output_path=output_path,
+            include_text=include_text,
+            store_db=store_db,
+        )
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        click.echo(
+            "Shadow evaluation complete: "
+            f"mode={mode} "
+            f"item_pool={report.get('item_pool_count', 0)} "
+            f"selection_overlap={summary.get('selection_overlap_ratio', 0)}"
+        )
+        click.echo(
+            "Recommendation: "
+            f"{summary.get('recommendation', 'hold')} "
+            f"(confidence={summary.get('confidence', 'low')})"
+        )
+        if store_db:
+            click.echo(f"DB run id: {report.get('db_run_id')}")
+        click.echo(f"Report written to {output_path}")
 
     asyncio.run(_run())
 
