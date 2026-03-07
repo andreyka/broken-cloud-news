@@ -6,7 +6,7 @@
 
 ## Architecture
 
-Six A2A agents work together (four scheduled pipeline agents plus critic and verifier quality agents), coordinated by an internal scheduler. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
+Six A2A agents work together (four scheduled pipeline agents plus critic and verifier quality agents), coordinated by a dedicated workflow orchestration layer. Each agent runs as an independent HTTP server using the Google Agent-to-Agent protocol.
 
 <div align="center">
 
@@ -87,7 +87,37 @@ flowchart TB
 | **Verifier** | 9006 | On-demand | Verifies factual grounding, link hygiene, and hard issue checks |
 | **Distributor** | 9004 | After Writer | Mode-aware distribution (daily/ad-hoc: Telegram+Discord, monthly: email) |
 
-All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The scheduler orchestrates the pipeline automatically in daemon mode.
+All agents communicate via the **A2A JSON-RPC protocol** and share state through PostgreSQL. The workflow layer orchestrates the pipeline automatically in daemon mode.
+
+### Orchestration Layer
+
+The main orchestration logic is no longer embedded in `cli.py`.
+
+- [`bcn/workflows/service.py`](bcn/workflows/service.py) owns daemon startup, scheduler registration, and workflow-mode execution.
+- [`bcn/workflows/automation.py`](bcn/workflows/automation.py) exposes scheduled jobs and mode-aware automation entry points.
+- [`bcn/common/agent_runtime.py`](bcn/common/agent_runtime.py) owns reusable agent transport helpers and in-process direct execution.
+- [`bcn/cli.py`](bcn/cli.py) is now primarily a thin entrypoint: parse flags, call services, print summaries.
+
+Important distinction:
+- This orchestration layer is a `service layer in code`, not a separately deployed network service.
+- In the current deployment, `bcn run` starts the scheduler and all six A2A agent servers inside the BCN app/container.
+- The agents expose microservice-like HTTP boundaries, but today they are `co-deployed`, not independently deployed microservices.
+
+So the current architecture is best described as a `modular monolith with internal A2A agent boundaries`, not a fully split microservice system.
+
+### Deployment Model
+
+Today there are two different layers to keep in mind:
+
+- `Code architecture`: workflow service, evaluation service, A2A agents, DB layer, distributors.
+- `Deployment architecture`: one main BCN daemon/container, one Postgres container, one dashboard container, and supporting proxy/bridge containers.
+
+That means:
+- in `daemon mode`, the workflow service calls agents over local/internal HTTP A2A endpoints
+- some CLI commands still use direct in-process agent execution through `bcn.common.agent_runtime`
+- agents share one Postgres database
+- benchmark/shadow/replay lanes are internal evaluation services, not separate deployed apps
+- the Next.js dashboard is separate and read-only against persisted evaluation data
 
 ---
 
@@ -146,6 +176,10 @@ bcn pipeline --mode regular_daily_briefing
 ```bash
 bcn run
 ```
+
+`bcn run` now delegates to the workflow orchestration service in
+[`bcn/workflows/service.py`](bcn/workflows/service.py), which boots the A2A
+agents, scheduler, and recurring jobs.
 
 **Docker (full stack):**
 ```bash
@@ -351,7 +385,6 @@ async with httpx.AsyncClient(timeout=180) as http:
 ```
 bcn/
   cli.py              CLI command wiring (thin entrypoint)
-  simulation.py       Historical briefing replay + comparison scoring
   common/
     config.py         Pydantic Settings (env vars)
     db.py             asyncpg database layer
@@ -360,9 +393,16 @@ bcn/
     comfyui.py        ComfyUI Flux client (cover images)
     scraper.py        Playwright headless Chromium scraper
     url_policy.py     SSRF policy + URL normalization helpers
+    agent_runtime.py  Reusable A2A transport + direct agent execution helpers
+  evaluation/
+    README.md         Replay / benchmark / shadow lane documentation
+    lanes.py          Benchmark + shadow lane logic
+    service.py        Evaluation persistence + report orchestration
+    simulation.py     Historical replay lane implementation
   workflows/
     runtime.py        Shared runtime wiring (settings + sender)
     automation.py     Scheduler jobs + mode facade
+    service.py        Daemon startup + workflow-mode orchestration
     modes/
       common.py
       regular_daily_briefing.py
