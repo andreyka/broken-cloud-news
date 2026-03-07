@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+import click
 from click.testing import CliRunner
 
 import bcn.cli as cli_module
@@ -447,3 +448,38 @@ def test_newsletter_subscribers_remove_command(monkeypatch):
     assert result.exit_code == 0
     assert "Removed newsletter subscriber: alice@example.com" in result.output
     assert remove_mock.await_count == 1
+
+
+def test_workflow_run_command_delegates_to_workflow_service(monkeypatch):
+    runner = CliRunner()
+    execute_mock = AsyncMock(
+        return_value=("writer_handoff::{}", "Distributed to: {'telegram': 'ok'}")
+    )
+    monkeypatch.setattr(cli_module, "execute_workflow_mode", execute_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["workflow-run", "--mode", REGULAR_DAILY_BRIEFING_MODE],
+    )
+
+    assert result.exit_code == 0
+    assert "writer_handoff::" in result.output
+    assert "Distributed to:" in result.output
+    assert execute_mock.await_count == 1
+    assert execute_mock.await_args.kwargs["mode"] == REGULAR_DAILY_BRIEFING_MODE
+    assert execute_mock.await_args.kwargs["run_agent_directly"] is cli_module._run_agent_directly
+
+
+def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):
+    runner = CliRunner()
+    daemon_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(cli_module, "run_daemon", daemon_mock)
+
+    result = runner.invoke(cli_module.cli, ["run"])
+
+    assert result.exit_code == 0
+    assert daemon_mock.await_count == 1
+    settings_arg = daemon_mock.await_args.args[0]
+    assert isinstance(settings_arg, Settings)
+    assert daemon_mock.await_args.kwargs["emit"] is click.echo
+    assert callable(daemon_mock.await_args.kwargs["sender"])

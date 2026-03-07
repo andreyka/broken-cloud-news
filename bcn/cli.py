@@ -8,33 +8,20 @@ import logging
 from pathlib import Path
 from typing import Any
 from uuid import UUID
-from uuid import uuid4
 
 import click
-import httpx
 
+from bcn.common.agent_runtime import extract_text_from_rpc_result as _extract_text_from_rpc_result
+from bcn.common.agent_runtime import run_agent_directly as _run_agent_directly
+from bcn.common.agent_runtime import send_to_agent as _send_to_agent
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
-from bcn.workflows.automation import build_shadow_regular_briefing_trigger
-from bcn.workflows.automation import configure_scheduler_runtime
-from bcn.workflows.automation import job_analyze_items
-from bcn.workflows.automation import job_collect_ghsa
-from bcn.workflows.automation import job_collect_reddit
-from bcn.workflows.automation import job_collect_rss
-from bcn.workflows.automation import job_collect_twitter
-from bcn.workflows.automation import (
-    job_publish_regular_briefing as _job_daily_digest,
-)
-from bcn.workflows.automation import (
-    job_publish_regular_monthly_newsletter as _job_monthly_newsletter,
-)
-from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.modes import AD_HOC_MODE
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
-from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
-from bcn.workflows.modes.common import run_writer_distributor_handoff
+from bcn.workflows.service import execute_workflow_mode
+from bcn.workflows.service import run_daemon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,190 +33,6 @@ logger = logging.getLogger("bcn")
 _build_daily_digest_trigger = build_regular_briefing_trigger
 _build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
-
-
-# ---------------------------------------------------------------------------
-# A2A client helpers
-# ---------------------------------------------------------------------------
-def _extract_text_parts(parts: Any) -> str | None:
-    """Extract non-empty text fragments from A2A `parts` payloads."""
-    if not isinstance(parts, list):
-        return None
-    texts: list[str] = []
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        text = part.get("text")
-        if isinstance(text, str) and text.strip():
-            texts.append(text)
-            continue
-        root = part.get("root")
-        if not isinstance(root, dict):
-            continue
-        root_text = root.get("text")
-        if isinstance(root_text, str) and root_text.strip():
-            texts.append(root_text)
-    if not texts:
-        return None
-    return "\n".join(texts)
-
-
-def _extract_text_from_rpc_result(result: dict[str, Any]) -> str | None:
-    """Return agent text from known JSON-RPC response shapes."""
-    payload = result.get("result")
-    if not isinstance(payload, dict):
-        return None
-
-    artifacts = payload.get("artifacts")
-    if isinstance(artifacts, list):
-        for artifact in artifacts:
-            if not isinstance(artifact, dict):
-                continue
-            text = _extract_text_parts(artifact.get("parts"))
-            if text:
-                return text
-
-    text = _extract_text_parts(payload.get("parts"))
-    if text:
-        return text
-
-    message = payload.get("message")
-    if isinstance(message, dict):
-        text = _extract_text_parts(message.get("parts"))
-        if text:
-            return text
-
-    status = payload.get("status")
-    if isinstance(status, dict):
-        text = _extract_text_parts(status.get("parts"))
-        if text:
-            return text
-        msg = status.get("message")
-        if isinstance(msg, str) and msg.strip():
-            return msg
-    return None
-
-
-async def _send_to_agent(
-    port: int, skill: str, *, timeout_seconds: int = 180
-) -> str:
-    """Send a JSON-RPC message to a local A2A agent and return its reply.
-
-    Args:
-        port: TCP port the target agent is listening on.
-        skill: The skill/command string to send.
-
-    Returns:
-        The text content extracted from the agent's response.
-    """
-    from a2a.client import A2AClient
-    from a2a.types import Message
-    from a2a.types import MessageSendParams
-    from a2a.types import SendMessageRequest
-    from a2a.types import TextPart
-
-    async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
-        client = A2AClient(http_client, url=f"http://localhost:{port}")
-
-        message = Message(
-            role="user",
-            parts=[TextPart(text=skill)],
-            message_id=uuid4().hex,
-        )
-        request = SendMessageRequest(
-            id=uuid4().hex,
-            params=MessageSendParams(message=message),
-        )
-        response = await client.send_message(request)
-
-        # Extract text from response
-        result = response.model_dump(mode="json", exclude_none=True)
-        text = _extract_text_from_rpc_result(result)
-        return text if text else str(result)
-
-
-async def _run_agent_directly(
-    executor_cls: type,
-    settings: Settings,
-    skill: str,
-) -> str:
-    """Run an agent executor directly without the A2A server.
-
-    Used by CLI commands to invoke agent logic in-process rather than
-    through the JSON-RPC transport.
-
-    Args:
-        executor_cls: The ``AgentExecutor`` subclass to instantiate.
-        settings: Application settings.
-        skill: The skill/command string to pass to the executor.
-
-    Returns:
-        Concatenated text output from the executor.
-    """
-    from bcn.common.db import close_pool
-    from bcn.common.db import get_pool
-
-    await get_pool(settings)
-    executor = executor_cls(settings)
-
-    from a2a.server.agent_execution import RequestContext
-    from a2a.types import Message
-    from a2a.types import MessageSendParams
-    from a2a.types import TextPart
-
-    class ResultCapture:
-        """Lightweight event-queue stand-in that captures agent text output."""
-
-        def __init__(self) -> None:
-            self.messages: list[str] = []
-            self._events: list[Any] = []
-
-        @staticmethod
-        def _extract_part_text(part: Any) -> str:
-            """Extract text from A2A part wrappers or plain text parts."""
-            text = getattr(part, "text", None)
-            if isinstance(text, str):
-                return text
-            root = getattr(part, "root", None)
-            root_text = getattr(root, "text", None) if root is not None else None
-            return root_text if isinstance(root_text, str) else ""
-
-        def enqueue_event(self, event: Any) -> None:
-            """Capture text parts from an agent event."""
-            self._events.append(event)
-            try:
-                parts = event.parts if hasattr(event, "parts") else []
-                for part in parts:
-                    text = self._extract_part_text(part).strip()
-                    if text:
-                        self.messages.append(text)
-            except Exception:
-                pass
-
-    capture = ResultCapture()
-
-    message = Message(
-        role="user",
-        parts=[TextPart(text=skill)],
-        message_id=uuid4().hex,
-    )
-    params = MessageSendParams(message=message)
-    context = RequestContext(request=params)
-
-    try:
-        await executor.execute(context=context, event_queue=capture)
-        return "\n".join(capture.messages) if capture.messages else "Done"
-    finally:
-        try:
-            close_fn = getattr(executor, "close", None)
-            if callable(close_fn):
-                maybe = close_fn()
-                if hasattr(maybe, "__await__"):
-                    await maybe
-        except Exception:
-            logger.exception("Failed to close %s executor", executor_cls.__name__)
-        finally:
-            await close_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -1803,27 +1606,10 @@ def workflow_run(mode: str) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.agents.distributor.agent import DistributorExecutor
-        from bcn.agents.writer.agent import WriterExecutor
-
-        async def _run_writer(skill: str) -> str:
-            return await _run_agent_directly(
-                executor_cls=WriterExecutor,
-                settings=settings,
-                skill=skill,
-            )
-
-        async def _run_distributor(skill: str) -> str:
-            return await _run_agent_directly(
-                executor_cls=DistributorExecutor,
-                settings=settings,
-                skill=skill,
-            )
-
-        writer_result, distribute_result = await run_writer_distributor_handoff(
+        writer_result, distribute_result = await execute_workflow_mode(
+            settings,
             mode=mode,
-            run_writer=_run_writer,
-            run_distributor=_run_distributor,
+            run_agent_directly=_run_agent_directly,
         )
         click.echo(writer_result)
         if not distribute_result:
@@ -1843,27 +1629,6 @@ def run() -> None:
     settings = Settings()
 
     async def _daemon() -> None:
-        from apscheduler import AsyncScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
-
-        from bcn.agents.analyst.agent import AnalystExecutor
-        from bcn.agents.analyst.agent import SKILLS as ANAL_SKILLS
-        from bcn.agents.base import build_agent_card
-        from bcn.agents.base import serve_agent
-        from bcn.agents.collector.agent import CollectorExecutor
-        from bcn.agents.collector.agent import SKILLS as COLL_SKILLS
-        from bcn.agents.critic.agent import CriticExecutor
-        from bcn.agents.critic.agent import SKILLS as CRIT_SKILLS
-        from bcn.agents.distributor.agent import DistributorExecutor
-        from bcn.agents.distributor.agent import SKILLS as DIST_SKILLS
-        from bcn.agents.verifier.agent import SKILLS as VERI_SKILLS
-        from bcn.agents.verifier.agent import VerifierExecutor
-        from bcn.agents.writer.agent import SKILLS as WRIT_SKILLS
-        from bcn.agents.writer.agent import WriterExecutor
-        from bcn.common.db import close_pool
-        from bcn.common.db import finalize_stale_pending_generation_runs
-        from bcn.common.db import get_pool
-
         async def _send_with_runtime_timeout(port: int, skill: str) -> str:
             return await _send_to_agent(
                 port,
@@ -1871,190 +1636,11 @@ def run() -> None:
                 timeout_seconds=settings.a2a_request_timeout_seconds,
             )
 
-        configure_scheduler_runtime(settings, _send_with_runtime_timeout)
-
-        await get_pool(settings)
-        try:
-            finalized = await finalize_stale_pending_generation_runs(
-                max_age_minutes=max(
-                    1, int(getattr(settings, "generation_run_stale_pending_minutes", 180))
-                ),
-                decision="BLOCKED",
-                decision_reason="daemon_auto_finalize_stale_pending_run",
-            )
-            if finalized:
-                logger.warning(
-                    "Auto-finalized %d stale PENDING generation runs during daemon startup",
-                    finalized,
-                )
-        except Exception:
-            logger.exception("Failed to auto-finalize stale PENDING generation runs")
-
-        click.echo("Starting Broken Cloud News agents...")
-
-        # Build agent cards
-        collector_card = build_agent_card(
-            "BCN Collector",
-            "Collects cloud security news from GHSA, Twitter, RSS, Reddit",
-            f"http://localhost:{settings.collector_port}/",
-            COLL_SKILLS,
+        await run_daemon(
+            settings,
+            sender=_send_with_runtime_timeout,
+            emit=click.echo,
         )
-        analyst_card = build_agent_card(
-            "BCN Analyst",
-            "Analyzes news items for relevance scoring",
-            f"http://localhost:{settings.analyst_port}/",
-            ANAL_SKILLS,
-        )
-        writer_card = build_agent_card(
-            "BCN Writer",
-            "Generates security briefings with cover images",
-            f"http://localhost:{settings.writer_port}/",
-            WRIT_SKILLS,
-        )
-        distributor_card = build_agent_card(
-            "BCN Distributor",
-            "Distributes briefings to Telegram/Discord (daily, ad-hoc) or Email (monthly)",
-            f"http://localhost:{settings.distributor_port}/",
-            DIST_SKILLS,
-        )
-        critic_card = build_agent_card(
-            "BCN Critic",
-            "Critiques briefing quality and provides recommendations",
-            f"http://localhost:{settings.critic_port}/",
-            CRIT_SKILLS,
-        )
-        verifier_card = build_agent_card(
-            "BCN Verifier",
-            "Verifies briefing facts, links, and top-story quality",
-            f"http://localhost:{settings.verifier_port}/",
-            VERI_SKILLS,
-        )
-
-        # Create executors
-        collector_exec = CollectorExecutor(settings)
-        analyst_exec = AnalystExecutor(settings)
-        writer_exec = WriterExecutor(settings)
-        distributor_exec = DistributorExecutor(settings)
-        critic_exec = CriticExecutor(settings)
-        verifier_exec = VerifierExecutor(settings)
-        executors = [
-            collector_exec,
-            analyst_exec,
-            writer_exec,
-            distributor_exec,
-            critic_exec,
-            verifier_exec,
-        ]
-
-        # Launch agent servers
-        tasks: list[asyncio.Task[Any]] = []
-
-        click.echo(f"  Collector on :{settings.collector_port}")
-        click.echo(f"  Analyst  on :{settings.analyst_port}")
-        click.echo(f"  Writer   on :{settings.writer_port}")
-        click.echo(f"  Distributor on :{settings.distributor_port}")
-        click.echo(f"  Critic on :{settings.critic_port}")
-        click.echo(f"  Verifier on :{settings.verifier_port}")
-
-        try:
-            tasks = [
-                asyncio.create_task(
-                    serve_agent(collector_card, collector_exec, settings.collector_port)
-                ),
-                asyncio.create_task(
-                    serve_agent(analyst_card, analyst_exec, settings.analyst_port)
-                ),
-                asyncio.create_task(
-                    serve_agent(writer_card, writer_exec, settings.writer_port)
-                ),
-                asyncio.create_task(
-                    serve_agent(
-                        distributor_card, distributor_exec, settings.distributor_port
-                    )
-                ),
-                asyncio.create_task(
-                    serve_agent(critic_card, critic_exec, settings.critic_port)
-                ),
-                asyncio.create_task(
-                    serve_agent(verifier_card, verifier_exec, settings.verifier_port)
-                ),
-            ]
-
-            # Set up scheduler (job functions are module-level for APScheduler 4.x)
-            async with AsyncScheduler() as scheduler:
-                # Collection schedules
-                await scheduler.add_schedule(
-                    job_collect_ghsa,
-                    IntervalTrigger(hours=settings.ghsa_interval_hours),
-                    id="ghsa_collector",
-                )
-                await scheduler.add_schedule(
-                    job_collect_rss,
-                    IntervalTrigger(hours=settings.rss_interval_hours),
-                    id="rss_collector",
-                )
-                await scheduler.add_schedule(
-                    job_collect_reddit,
-                    IntervalTrigger(hours=settings.reddit_interval_hours),
-                    id="reddit_collector",
-                )
-                await scheduler.add_schedule(
-                    job_collect_twitter,
-                    IntervalTrigger(hours=settings.twitter_interval_hours),
-                    id="twitter_collector",
-                )
-
-                # Analyst schedule
-                await scheduler.add_schedule(
-                    job_analyze_items,
-                    IntervalTrigger(minutes=settings.analyst_interval_minutes),
-                    id="analyst",
-                )
-
-                if settings.shadow_enabled:
-                    await scheduler.add_schedule(
-                        job_shadow_regular_briefing,
-                        build_shadow_regular_briefing_trigger(settings),
-                        id=f"{REGULAR_DAILY_BRIEFING_MODE}_shadow",
-                    )
-
-                # Regular briefing cycle: write + distribute
-                await scheduler.add_schedule(
-                    _job_daily_digest,
-                    build_regular_briefing_trigger(settings),
-                    id=REGULAR_DAILY_BRIEFING_MODE,
-                )
-                if settings.monthly_newsletter_enabled:
-                    await scheduler.add_schedule(
-                        _job_monthly_newsletter,
-                        build_regular_monthly_newsletter_trigger(settings),
-                        id=REGULAR_MONTHLY_NEWSLETTER_MODE,
-                    )
-
-                await scheduler.start_in_background()
-                click.echo("Scheduler started. Press Ctrl+C to stop.")
-                await asyncio.gather(*tasks)
-        finally:
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-
-            for executor in executors:
-                close_fn = getattr(executor, "close", None)
-                if callable(close_fn):
-                    try:
-                        maybe = close_fn()
-                        if hasattr(maybe, "__await__"):
-                            await maybe
-                    except Exception:
-                        logger.exception(
-                            "Failed to close %s executor", executor.__class__.__name__
-                        )
-            try:
-                await close_pool()
-            except Exception:
-                logger.exception("Failed to close DB pool during daemon shutdown")
 
     try:
         asyncio.run(_daemon())
