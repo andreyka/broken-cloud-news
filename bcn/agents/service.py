@@ -129,7 +129,12 @@ async def distribute_briefing(
     briefing_id: UUID | None = None,
     agent_client: AgentClient | None = None,
 ) -> str:
-    """Distribute the latest or explicitly requested draft briefing."""
-    client = _resolve_agent_client(settings, agent_client)
-    return await client.distribute_briefing(mode=mode, briefing_id=briefing_id)
+    """Backward-compatible wrapper for control-plane distribution."""
+    from bcn.workflows.distribution import execute_distribution
 
+    return await execute_distribution(
+        settings,
+        mode=mode,
+        briefing_id=briefing_id,
+        manage_pool=True,
+    )

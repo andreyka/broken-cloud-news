@@ -65,6 +65,21 @@ def _fake_context(text: str = "collect_all"):
     return RequestContext(request=MessageSendParams(message=msg))
 
 
+def _event_text(event) -> str:
+    """Extract human-readable text from one queued agent event."""
+    texts: list[str] = []
+    for part in getattr(event, "parts", []) or []:
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+            continue
+        root = getattr(part, "root", None)
+        root_text = getattr(root, "text", None) if root is not None else None
+        if isinstance(root_text, str) and root_text.strip():
+            texts.append(root_text.strip())
+    return "\n".join(texts)
+
+
 class TestCliHelpers:
     @pytest.mark.asyncio
     async def test_run_agent_directly_closes_pool_when_close_fails(self):
@@ -1808,9 +1823,9 @@ class TestWriterExecutor:
 # ── Distributor tests ────────────────────────────────────────────────────
 
 
-class TestDistributorExecutor:
+class TestDistributorService:
     def test_build_channels_daily_mode_only_telegram_and_discord(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.distributor.service import DistributorService
 
         settings = _make_settings(
             telegram_bot_token="123:abc",
@@ -1824,13 +1839,13 @@ class TestDistributorExecutor:
             email_recipients=["team@example.com"],
             slack_webhook_url="https://hooks.slack.com/services/T/B/X",
         )
-        executor = DistributorExecutor(settings)
-        channels = executor._build_channels(mode="regular_daily_briefing")
+        service = DistributorService(settings)
+        channels = service._build_channels(mode="regular_daily_briefing")
         names = [name for name, _channel in channels]
         assert names == ["telegram", "discord"]
 
     def test_build_channels_monthly_mode_email_only(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.distributor.service import DistributorService
 
         settings = _make_settings(
             telegram_bot_token="123:abc",
@@ -1843,8 +1858,8 @@ class TestDistributorExecutor:
             email_from="news@example.com",
             email_recipients=["team@example.com"],
         )
-        executor = DistributorExecutor(settings)
-        channels = executor._build_channels(
+        service = DistributorService(settings)
+        channels = service._build_channels(
             mode="regular_monthly_newsletter",
             newsletter_recipients=["subscriber@example.com"],
         )
@@ -1852,7 +1867,7 @@ class TestDistributorExecutor:
         assert names == ["email"]
 
     def test_build_channels_monthly_mode_without_recipients_skips_email(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.distributor.service import DistributorService
 
         settings = _make_settings(
             smtp_host="smtp.example.com",
@@ -1860,145 +1875,46 @@ class TestDistributorExecutor:
             smtp_password="pass",
             email_from="news@example.com",
         )
-        executor = DistributorExecutor(settings)
-        channels = executor._build_channels(
+        service = DistributorService(settings)
+        channels = service._build_channels(
             mode="regular_monthly_newsletter",
             newsletter_recipients=[],
         )
         assert channels == []
 
-    def test_extract_requested_mode(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        mode = DistributorExecutor._extract_requested_mode(
-            "distribute_briefing::123e4567-e89b-12d3-a456-426614174000::regular_monthly_newsletter"
-        )
-        assert mode == "regular_monthly_newsletter"
-
     @pytest.mark.asyncio
-    async def test_no_briefing(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+    async def test_deliver_returns_no_channels_message(self):
+        from bcn.agents.distributor.service import DeliveryRequest
+        from bcn.agents.distributor.service import DistributorService
 
         settings = _make_settings()
-        executor = DistributorExecutor(settings)
+        service = DistributorService(settings)
 
-        with patch(
-            "bcn.agents.distributor.agent.claim_latest_draft_briefing",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("distribute")
-            await executor.execute(ctx, eq)
+        result = await service.deliver(
+            DeliveryRequest(
+                briefing={
+                    "id": uuid4(),
+                    "created_at": datetime.now(timezone.utc),
+                    "content_markdown": "**Draft**",
+                    "content_html": "<p>Draft</p>",
+                    "cover_image_url": "",
+                    "item_ids": [],
+                },
+                mode="regular_daily_briefing",
+            )
+        )
 
-        assert any("No new briefing" in str(e) for e in eq.events)
+        assert result.results == {}
+        assert result.attempts == ()
+        assert result.all_ok is False
+        assert result.message == (
+            "No distribution channels configured for mode=regular_daily_briefing"
+        )
 
     @pytest.mark.asyncio
-    async def test_claims_requested_briefing_id_when_provided(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        settings = _make_settings()
-        executor = DistributorExecutor(settings)
-        briefing_id = uuid4()
-        briefing = {
-            "id": briefing_id,
-            "created_at": datetime.now(timezone.utc),
-            "content_markdown": "**Draft**",
-            "content_html": "<p>Draft</p>",
-            "cover_image_url": "",
-            "item_ids": [],
-        }
-
-        with (
-            patch(
-                "bcn.agents.distributor.agent.claim_draft_briefing_by_id",
-                new_callable=AsyncMock,
-                return_value=briefing,
-            ) as mock_claim_by_id,
-            patch(
-                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
-                new_callable=AsyncMock,
-            ) as mock_claim_latest,
-            patch.object(executor, "_build_channels", return_value=[]),
-            patch(
-                "bcn.agents.distributor.agent.release_briefing_for_retry",
-                new_callable=AsyncMock,
-            ) as mock_release,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context(f"distribute_briefing::{briefing_id}")
-            await executor.execute(ctx, eq)
-
-        mock_claim_by_id.assert_called_once()
-        claim_args, claim_kwargs = mock_claim_by_id.await_args
-        assert claim_args == (briefing_id,)
-        assert claim_kwargs["max_distribution_retries"] == (
-            settings.distribution_retry_max_attempts
-        )
-        assert claim_kwargs["stale_distributing_minutes"] == (
-            settings.distribution_retry_stale_distributing_minutes
-        )
-        mock_claim_latest.assert_not_called()
-        mock_release.assert_called_once()
-        release_args, release_kwargs = mock_release.await_args
-        assert release_args == (briefing_id,)
-        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
-        assert any("No distribution channels configured" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_skips_stale_latest_draft(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        settings = _make_settings(
-            briefing_distribution_max_draft_age_minutes=60,
-            telegram_bot_token="123:abc",
-            telegram_chat_id="@broken-cloud",
-        )
-        executor = DistributorExecutor(settings)
-        stale_created_at = datetime.now(timezone.utc) - timedelta(hours=3)
-        stale_briefing = {
-            "id": uuid4(),
-            "created_at": stale_created_at,
-            "content_markdown": "**Old draft**",
-            "content_html": "<p>Old draft</p>",
-            "cover_image_url": "",
-            "item_ids": [],
-        }
-
-        with (
-            patch(
-                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
-                new_callable=AsyncMock,
-                return_value=stale_briefing,
-            ),
-            patch(
-                "bcn.agents.distributor.agent.mark_briefing_distributed",
-                new_callable=AsyncMock,
-            ) as mock_mark,
-            patch(
-                "bcn.agents.distributor.agent.mark_items_published",
-                new_callable=AsyncMock,
-            ) as mock_publish,
-            patch(
-                "bcn.agents.distributor.agent.release_briefing_for_retry",
-                new_callable=AsyncMock,
-            ) as mock_release,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("distribute")
-            await executor.execute(ctx, eq)
-
-        assert any("Latest draft is stale" in str(e) for e in eq.events)
-        mock_mark.assert_not_called()
-        mock_publish.assert_not_called()
-        mock_release.assert_called_once()
-        release_args, release_kwargs = mock_release.await_args
-        assert release_args == (stale_briefing["id"],)
-        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
-
-    @pytest.mark.asyncio
-    async def test_partial_channel_failure_keeps_briefing_draft(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+    async def test_deliver_partial_channel_failure_returns_incomplete_result(self):
+        from bcn.agents.distributor.service import DeliveryRequest
+        from bcn.agents.distributor.service import DistributorService
 
         class _FakeChannel:
             def __init__(self, ok: bool):
@@ -2015,70 +1931,42 @@ class TestDistributorExecutor:
                 self.closed += 1
 
         settings = _make_settings()
-        executor = DistributorExecutor(settings)
-        briefing = {
-            "id": uuid4(),
-            "created_at": datetime.now(timezone.utc),
-            "content_markdown": "**Draft**",
-            "content_html": "<p>Draft</p>",
-            "cover_image_url": "",
-            "item_ids": [uuid4()],
-        }
+        service = DistributorService(settings)
         ok_channel = _FakeChannel(True)
         fail_channel = _FakeChannel(False)
 
-        with (
-            patch(
-                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
-                new_callable=AsyncMock,
-                return_value=briefing,
-            ),
-            patch(
-                "bcn.agents.distributor.agent.get_distribution_outcomes",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch.object(
-                executor,
-                "_build_channels",
-                return_value=[("telegram", ok_channel), ("slack", fail_channel)],
-            ),
-            patch(
-                "bcn.agents.distributor.agent.upsert_distribution_outcome",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "bcn.agents.distributor.agent.mark_briefing_distributed",
-                new_callable=AsyncMock,
-            ) as mock_mark,
-            patch(
-                "bcn.agents.distributor.agent.mark_items_published",
-                new_callable=AsyncMock,
-            ) as mock_publish,
-            patch(
-                "bcn.agents.distributor.agent.release_briefing_for_retry",
-                new_callable=AsyncMock,
-            ) as mock_release,
+        with patch.object(
+            service,
+            "_build_channels",
+            return_value=[("telegram", ok_channel), ("slack", fail_channel)],
         ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("distribute")
-            await executor.execute(ctx, eq)
+            result = await service.deliver(
+                DeliveryRequest(
+                    briefing={
+                        "id": uuid4(),
+                        "created_at": datetime.now(timezone.utc),
+                        "content_markdown": "**Draft**",
+                        "content_html": "<p>Draft</p>",
+                        "cover_image_url": "",
+                        "item_ids": [uuid4()],
+                    },
+                    mode="regular_daily_briefing",
+                )
+            )
 
-        assert any("incomplete" in str(e).lower() for e in eq.events)
+        assert result.results == {"telegram": "ok", "slack": "failed"}
+        assert result.all_ok is False
         assert ok_channel.sent == 1
         assert fail_channel.sent == 1
         assert ok_channel.closed == 1
         assert fail_channel.closed == 1
-        mock_mark.assert_not_called()
-        mock_publish.assert_not_called()
-        mock_release.assert_called_once()
-        release_args, release_kwargs = mock_release.await_args
-        assert release_args == (briefing["id"],)
-        assert release_kwargs["max_retries"] == settings.distribution_retry_max_attempts
+        assert [attempt.channel for attempt in result.attempts] == ["telegram", "slack"]
+        assert "incomplete" in result.message.lower()
 
     @pytest.mark.asyncio
-    async def test_skips_previously_successful_channels_and_finishes_distribution(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
+    async def test_deliver_skips_previously_successful_channels(self):
+        from bcn.agents.distributor.service import DeliveryRequest
+        from bcn.agents.distributor.service import DistributorService
 
         class _FakeChannel:
             def __init__(self):
@@ -2094,59 +1982,118 @@ class TestDistributorExecutor:
                 self.closed += 1
 
         settings = _make_settings()
-        executor = DistributorExecutor(settings)
-        briefing = {
-            "id": uuid4(),
-            "created_at": datetime.now(timezone.utc),
-            "content_markdown": "**Draft**",
-            "content_html": "<p>Draft</p>",
-            "cover_image_url": "",
-            "item_ids": [uuid4()],
-        }
+        service = DistributorService(settings)
         telegram = _FakeChannel()
         slack = _FakeChannel()
 
-        with (
-            patch(
-                "bcn.agents.distributor.agent.claim_latest_draft_briefing",
-                new_callable=AsyncMock,
-                return_value=briefing,
-            ),
-            patch(
-                "bcn.agents.distributor.agent.get_distribution_outcomes",
-                new_callable=AsyncMock,
-                return_value=[{"channel": "telegram", "status": "ok"}],
-            ),
-            patch.object(
-                executor,
-                "_build_channels",
-                return_value=[("telegram", telegram), ("slack", slack)],
-            ),
-            patch(
-                "bcn.agents.distributor.agent.upsert_distribution_outcome",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "bcn.agents.distributor.agent.mark_briefing_distributed",
-                new_callable=AsyncMock,
-            ) as mock_mark,
-            patch(
-                "bcn.agents.distributor.agent.mark_items_published",
-                new_callable=AsyncMock,
-            ) as mock_publish,
-            patch(
-                "bcn.agents.distributor.agent.release_briefing_for_retry",
-                new_callable=AsyncMock,
-            ) as mock_release,
+        with patch.object(
+            service,
+            "_build_channels",
+            return_value=[("telegram", telegram), ("slack", slack)],
         ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("distribute")
-            await executor.execute(ctx, eq)
+            result = await service.deliver(
+                DeliveryRequest(
+                    briefing={
+                        "id": uuid4(),
+                        "created_at": datetime.now(timezone.utc),
+                        "content_markdown": "**Draft**",
+                        "content_html": "<p>Draft</p>",
+                        "cover_image_url": "",
+                        "item_ids": [uuid4()],
+                    },
+                    mode="regular_daily_briefing",
+                    previous_ok_channels=frozenset({"telegram"}),
+                )
+            )
 
         assert telegram.sent == 0
         assert slack.sent == 1
         assert telegram.closed == 1
         assert slack.closed == 1
-        mock_mark.assert_called_once()
-        mock_publish.assert_called_once()
-        mock_release.assert_not_called()
+        assert result.results == {"telegram": "ok", "slack": "ok"}
+        assert result.all_ok is True
+        assert [attempt.channel for attempt in result.attempts] == ["slack"]
+
+
+class TestDistributorExecutor:
+    def test_extract_requested_mode(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        mode = DistributorExecutor._extract_requested_mode(
+            "distribute_briefing::123e4567-e89b-12d3-a456-426614174000::regular_monthly_newsletter"
+        )
+        assert mode == "regular_monthly_newsletter"
+
+    @pytest.mark.asyncio
+    async def test_legacy_request_returns_boundary_message(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+
+        settings = _make_settings()
+        executor = DistributorExecutor(settings)
+        eq = FakeEventQueue()
+
+        await executor.execute(_fake_context("distribute_briefing"), eq)
+
+        assert any(
+            "explicit delivery payload" in _event_text(event).lower()
+            for event in eq.events
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_delivery_request_emits_structured_result(self):
+        from bcn.agents.distributor.agent import DistributorExecutor
+        from bcn.agents.distributor.service import ChannelDeliveryResult
+        from bcn.agents.distributor.service import DeliveryRequest
+        from bcn.agents.distributor.service import DeliveryResult
+        from bcn.agents.distributor.service import parse_delivery_result_payload
+        from bcn.agents.distributor.service import render_delivery_request_payload
+
+        settings = _make_settings()
+        executor = DistributorExecutor(settings)
+        briefing_id = uuid4()
+        expected = DeliveryResult(
+            mode="regular_daily_briefing",
+            results={"telegram": "ok"},
+            attempts=(
+                ChannelDeliveryResult(
+                    channel="telegram",
+                    status="ok",
+                    external_message_id="42",
+                    metadata={"primary_message_id": "42"},
+                ),
+            ),
+            all_ok=True,
+            message="Distributed to: {'telegram': 'ok'} (mode=regular_daily_briefing)",
+        )
+
+        with patch.object(
+            executor._service,
+            "deliver",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ):
+            eq = FakeEventQueue()
+            await executor.execute(
+                _fake_context(
+                    render_delivery_request_payload(
+                        DeliveryRequest(
+                            briefing={
+                                "id": briefing_id,
+                                "created_at": datetime.now(timezone.utc),
+                                "content_markdown": "**Draft**",
+                                "content_html": "<p>Draft</p>",
+                                "cover_image_url": "",
+                                "item_ids": [],
+                            },
+                            mode="regular_daily_briefing",
+                        )
+                    )
+                ),
+                eq,
+            )
+
+        assert len(eq.events) == 1
+        text = _event_text(eq.events[0])
+        payload = parse_delivery_result_payload(text)
+        assert payload == expected
+        assert expected.message in text

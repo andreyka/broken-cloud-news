@@ -10,6 +10,7 @@ import logging
 import re
 from uuid import UUID
 
+from bcn.workflows.distribution import execute_distribution
 from bcn.workflows.runtime import require_runtime
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ async def run_writer_distributor_handoff(
     *,
     mode: str,
     run_writer: Callable[[str], Awaitable[str]],
-    run_distributor: Callable[[str], Awaitable[str]],
+    run_distribution: Callable[[str, UUID], Awaitable[str]],
 ) -> tuple[str, str | None]:
     """Run writer->distributor handoff from explicit writer payload."""
     writer_result = await run_writer(f"generate_briefing::{mode}")
@@ -155,17 +156,20 @@ async def run_writer_distributor_handoff(
             handoff.mode,
             mode,
         )
-    distributor_result = await run_distributor(
-        f"distribute_briefing::{handoff.briefing_id}::{dispatch_mode}",
-    )
+    distributor_result = await run_distribution(dispatch_mode, handoff.briefing_id)
     return writer_result, distributor_result
 
 
 async def run_generation_and_distribution(mode: str) -> None:
     """Run one writer->distributor handoff cycle for the given workflow mode."""
-    _settings, agent_client = require_runtime()
+    settings, agent_client = require_runtime()
     await run_writer_distributor_handoff(
         mode=mode,
         run_writer=agent_client.call_writer,
-        run_distributor=agent_client.call_distributor,
+        run_distribution=lambda dispatch_mode, briefing_id: execute_distribution(
+            settings,
+            mode=dispatch_mode,
+            briefing_id=briefing_id,
+            manage_pool=False,
+        ),
     )

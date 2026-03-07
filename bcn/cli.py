@@ -14,7 +14,6 @@ import click
 from bcn.agents.service import analyze_items as execute_analysis
 from bcn.agents.service import collect_news
 from bcn.agents.service import critique_briefing
-from bcn.agents.service import distribute_briefing as execute_distribution
 from bcn.agents.service import generate_briefing as execute_briefing_generation
 from bcn.agents.service import verify_briefing
 from bcn.common.agent_client import build_default_agent_client
@@ -25,6 +24,7 @@ from bcn.common.agent_runtime import send_to_agent as _send_to_agent
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.distribution import execute_distribution
 from bcn.workflows.modes import AD_HOC_MODE
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -636,7 +636,6 @@ def evaluation_runs(lane: str | None, limit: int) -> None:
 def distribute(briefing_id: str | None, mode: str) -> None:
     """Send the latest briefing to configured distribution channels."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run() -> None:
         parsed_briefing_id: UUID | None = None
@@ -652,7 +651,6 @@ def distribute(briefing_id: str | None, mode: str) -> None:
             settings,
             mode=mode,
             briefing_id=parsed_briefing_id,
-            agent_client=agent_client,
         )
         click.echo(result)
 
