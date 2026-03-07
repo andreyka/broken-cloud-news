@@ -665,29 +665,35 @@ class TestWriterExecutor:
         )
 
     @pytest.mark.asyncio
-    async def test_monthly_mode_uses_period_query(self):
+    async def test_execute_delegates_to_generation_control_plane(self):
         from bcn.agents.writer.agent import WriterExecutor
 
         settings = _make_settings()
         executor = WriterExecutor(settings)
 
-        with (
-            patch(
-                "bcn.agents.writer.agent.get_top_items_for_period",
+        try:
+            with patch(
+                "bcn.agents.writer.agent.execute_generation",
                 new_callable=AsyncMock,
-                return_value=[],
-            ) as mock_period,
-            patch(
-                "bcn.agents.writer.agent.get_analyzed_items",
-                new_callable=AsyncMock,
-            ) as mock_daily,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("generate_briefing::regular_monthly_newsletter")
-            await executor.execute(ctx, eq)
+                return_value=(
+                    'writer_handoff::{"mode":"regular_monthly_newsletter",'
+                    '"decision":"skip","item_count":0}\n'
+                    "Monthly newsletter skipped"
+                ),
+            ) as mock_execute:
+                eq = FakeEventQueue()
+                ctx = _fake_context("generate_briefing::regular_monthly_newsletter")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
 
-        mock_period.assert_awaited_once()
-        mock_daily.assert_not_called()
+        mock_execute.assert_awaited_once_with(
+            settings,
+            mode="regular_monthly_newsletter",
+            writer_service=executor.service,
+            source="writer_agent",
+            manage_pool=False,
+        )
         assert any("monthly newsletter skipped" in str(e).lower() for e in eq.events)
 
     @respx.mock
@@ -698,15 +704,23 @@ class TestWriterExecutor:
         settings = _make_settings()
         executor = WriterExecutor(settings)
 
-        with patch(
-            "bcn.agents.writer.agent.get_analyzed_items",
-            new_callable=AsyncMock,
-            return_value=[],
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("generate_briefing")
-            await executor.execute(ctx, eq)
+        try:
+            with patch(
+                "bcn.agents.writer.agent.execute_generation",
+                new_callable=AsyncMock,
+                return_value=(
+                    'writer_handoff::{"mode":"regular_daily_briefing",'
+                    '"decision":"skip","item_count":0}\n'
+                    "Quiet day — no items scored >= 7 in the last 24h. Skipping briefing."
+                ),
+            ) as mock_execute:
+                eq = FakeEventQueue()
+                ctx = _fake_context("generate_briefing")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
 
+        mock_execute.assert_awaited_once()
         assert any("no items" in str(e).lower() for e in eq.events)
 
     @pytest.mark.asyncio
@@ -718,11 +732,13 @@ class TestWriterExecutor:
 
         with (
             patch(
-                "bcn.agents.writer.agent.get_analyzed_items",
+                "bcn.agents.writer.agent.execute_generation",
                 new_callable=AsyncMock,
-                return_value=[{"id": "x"}],
+                return_value="writer_handoff::{}",
             ),
-            patch.object(executor, "_execute_core", new_callable=AsyncMock),
+            patch.object(
+                executor.service, "close", new_callable=AsyncMock
+            ) as mock_service_close,
             patch.object(
                 executor.llm_client, "close", new_callable=AsyncMock
             ) as mock_llm_close,
@@ -733,138 +749,33 @@ class TestWriterExecutor:
             eq = FakeEventQueue()
             ctx = _fake_context("generate_briefing")
             await executor.execute(ctx, eq)
+            mock_service_close.assert_not_awaited()
+            await executor.close()
+            mock_service_close.assert_awaited_once()
 
         mock_llm_close.assert_not_called()
         mock_comfy_close.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_critique_loop_honors_max_rewrites(self):
+    async def test_execute_supports_async_event_queue(self):
         from bcn.agents.writer.agent import WriterExecutor
 
-        settings = _make_settings(
-            briefing_critique_enabled=True,
-            briefing_critique_max_rounds=5,
-            briefing_verifier_enabled=False,
-        )
+        settings = _make_settings()
         executor = WriterExecutor(settings)
 
-        selected = [
-            {
-                "id": str(uuid4()),
-                "title": "Cloud issue",
-                "summary": "Patch guidance",
-                "relevance_score": 9,
-                "source_type": "rss",
-                "url": "https://example.com/advisory",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
+        try:
+            with patch(
+                "bcn.agents.writer.agent.execute_generation",
+                new_callable=AsyncMock,
+                return_value="writer_handoff::{}\nBriefing created",
+            ):
+                eq = FakeAsyncEventQueue()
+                ctx = _fake_context("generate_briefing")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
 
-        with (
-            patch(
-                "bcn.agents.writer.agent.get_analyzed_items",
-                new_callable=AsyncMock,
-                return_value=selected,
-            ),
-            patch(
-                "bcn.agents.writer.agent.get_recent_published_items",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "bcn.agents.writer.agent.get_recent_briefings",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "bcn.agents.writer.agent.insert_briefing",
-                new_callable=AsyncMock,
-                return_value=uuid4(),
-            ),
-            patch(
-                "bcn.agents.writer.agent.create_generation_run",
-                new_callable=AsyncMock,
-                return_value=uuid4(),
-            ),
-            patch(
-                "bcn.agents.writer.agent.append_generation_round",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "bcn.agents.writer.agent.insert_generation_preference_pair",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "bcn.agents.writer.agent.finalize_generation_run",
-                new_callable=AsyncMock,
-            ),
-            patch.object(executor, "_select_items_for_briefing", return_value=selected),
-            patch.object(
-                executor,
-                "_postprocess_briefing",
-                new_callable=AsyncMock,
-                side_effect=lambda **kw: kw["briefing_body"],
-            ),
-            patch.object(
-                executor,
-                "_quality_gate",
-                return_value={
-                    "passed": True,
-                    "hard_issues": [],
-                    "soft_issues": [],
-                    "issues": [],
-                },
-            ),
-            patch.object(
-                executor.writer_llm,
-                "generate_briefing",
-                new_callable=AsyncMock,
-                return_value="Initial draft",
-            ),
-            patch.object(
-                executor.critic_llm,
-                "critique_briefing",
-                new_callable=AsyncMock,
-                return_value={
-                    "passed": False,
-                    "score": 40,
-                    "issues": ["Needs improvements"],
-                    "recommendations": ["Make it stronger"],
-                },
-            ) as mock_critique,
-            patch.object(
-                executor.writer_llm,
-                "revise_briefing",
-                new_callable=AsyncMock,
-                return_value="Rewritten draft",
-            ) as mock_revise,
-            patch.object(
-                executor.writer_llm,
-                "generate_cover_prompt",
-                new_callable=AsyncMock,
-                return_value="cover prompt",
-            ),
-            patch.object(
-                executor.comfyui,
-                "generate_image",
-                new_callable=AsyncMock,
-                return_value="",
-            ),
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("generate_briefing")
-            await executor.execute(ctx, eq)
-
-        # initial critique + one critique after each rewrite
-        assert mock_critique.await_count == 6
-        assert mock_revise.await_count == 5
-        first_rewrite_kwargs = mock_revise.await_args_list[0].kwargs
-        assert "feedback_context" in first_rewrite_kwargs
-        feedback_context = first_rewrite_kwargs["feedback_context"]
-        assert isinstance(feedback_context, dict)
-        assert "blocking" in feedback_context
-        assert "critic" in feedback_context
-        assert "coverage" in feedback_context
+        assert any("Briefing created" in str(e) for e in eq.events)
 
     def test_selection_limits_single_domain(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -1623,109 +1534,28 @@ class TestWriterExecutor:
         assert executor._passes_critic_thresholds(critique) is False
 
     @pytest.mark.asyncio
-    async def test_unhandled_writer_error_finalizes_trace_as_blocked(self):
+    async def test_legacy_writer_agent_surfaces_control_plane_failure_message(self):
         from bcn.agents.writer.agent import WriterExecutor
 
-        settings = _make_settings(
-            briefing_critique_enabled=False,
-            briefing_verifier_enabled=False,
-        )
+        settings = _make_settings()
         executor = WriterExecutor(settings)
-        selected = [
-            {
-                "id": str(uuid4()),
-                "title": "Cloud issue",
-                "summary": "Patch guidance",
-                "relevance_score": 9,
-                "source_type": "rss",
-                "url": "https://example.com/advisory",
-                "published_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
-        run_id = uuid4()
 
-        with (
-            patch(
-                "bcn.agents.writer.agent.get_analyzed_items",
+        try:
+            with patch(
+                "bcn.agents.writer.agent.execute_generation",
                 new_callable=AsyncMock,
-                return_value=selected,
-            ),
-            patch(
-                "bcn.agents.writer.agent.get_recent_published_items",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "bcn.agents.writer.agent.get_recent_briefings",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch(
-                "bcn.agents.writer.agent.create_generation_run",
-                new_callable=AsyncMock,
-                return_value=run_id,
-            ),
-            patch(
-                "bcn.agents.writer.agent.finalize_generation_run",
-                new_callable=AsyncMock,
-            ) as mock_finalize,
-            patch(
-                "bcn.agents.writer.agent.append_generation_round",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "bcn.agents.writer.agent.insert_briefing",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("db down"),
-            ),
-            patch.object(executor, "_select_items_for_briefing", return_value=selected),
-            patch.object(
-                executor,
-                "_postprocess_briefing",
-                new_callable=AsyncMock,
-                side_effect=lambda **kw: kw["briefing_body"],
-            ),
-            patch.object(
-                executor,
-                "_quality_gate",
-                return_value={
-                    "passed": True,
-                    "hard_issues": [],
-                    "soft_issues": [],
-                    "issues": [],
-                },
-            ),
-            patch.object(
-                executor.writer_llm,
-                "generate_briefing",
-                new_callable=AsyncMock,
-                return_value="**Cloud issue**\n[Ref](https://example.com/advisory)",
-            ),
-            patch.object(
-                executor.writer_llm,
-                "generate_cover_prompt",
-                new_callable=AsyncMock,
-                return_value="cover prompt",
-            ),
-            patch.object(
-                executor.comfyui,
-                "generate_image",
-                new_callable=AsyncMock,
-                return_value="",
-            ),
-            patch(
-                "bcn.agents.writer.agent.finalize_stale_pending_generation_runs",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("generate_briefing")
-            await executor.execute(ctx, eq)
+                return_value=(
+                    'writer_handoff::{"mode":"regular_daily_briefing",'
+                    '"decision":"blocked","item_count":1}\n'
+                    "Blocking publish: internal writer error during generation."
+                ),
+            ):
+                eq = FakeEventQueue()
+                ctx = _fake_context("generate_briefing")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
 
-        assert mock_finalize.await_count == 1
-        assert mock_finalize.await_args.kwargs["run_id"] == run_id
-        assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
         assert any("internal writer error" in str(e).lower() for e in eq.events)
 
 

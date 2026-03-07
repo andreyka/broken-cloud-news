@@ -16,7 +16,6 @@ from bcn.agents.service import collect_news
 from bcn.agents.service import critique_briefing
 from bcn.agents.service import generate_briefing as execute_briefing_generation
 from bcn.agents.service import verify_briefing
-from bcn.common.agent_client import build_default_agent_client
 from bcn.common.agent_client import build_port_sender_agent_client
 from bcn.common.agent_runtime import extract_text_from_rpc_result as _extract_text_from_rpc_result
 from bcn.common.agent_runtime import run_agent_directly as _run_agent_directly
@@ -41,17 +40,6 @@ logger = logging.getLogger("bcn")
 _build_daily_digest_trigger = build_regular_briefing_trigger
 _build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
-
-
-def _build_cli_agent_client(settings: Settings):
-    """Build the default client used by CLI agent-facing commands."""
-    return build_default_agent_client(
-        settings,
-        direct_runner=_run_agent_directly,
-        a2a_sender=_send_to_agent,
-        timeout_seconds=settings.a2a_request_timeout_seconds,
-    )
-
 
 # ---------------------------------------------------------------------------
 # CLI Commands
@@ -169,7 +157,6 @@ def write(mode: str) -> None:
 def critique(latest: bool, file_path: str | None, text_input: str | None) -> None:
     """Run the critic against latest briefing or provided markdown text."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
         result = await critique_briefing(
@@ -177,7 +164,6 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
             latest=latest,
             file_path=file_path,
             text_input=text_input,
-            agent_client=agent_client,
         )
         click.echo(result)
 
@@ -191,7 +177,6 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
 def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
     """Run factual verifier against latest briefing or provided markdown text."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
         result = await verify_briefing(
@@ -199,7 +184,6 @@ def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
             latest=latest,
             file_path=file_path,
             text_input=text_input,
-            agent_client=agent_client,
         )
         click.echo(result)
 

@@ -7,35 +7,21 @@ from typing import Literal
 from uuid import UUID
 
 from bcn.common.agent_client import AgentClient
-from bcn.common.agent_client import build_default_agent_client
 from bcn.common.config import Settings
 
 CollectionSource = Literal["all", "ghsa", "rss", "twitter", "reddit"]
 
-
-def _resolve_agent_client(
-    settings: Settings,
-    agent_client: AgentClient | None,
-) -> AgentClient:
-    """Return the provided client or the default client for these settings."""
-    return agent_client if agent_client is not None else build_default_agent_client(settings)
-
-
-def _resolve_markdown_input(
+def _resolve_markdown_text(
     *,
-    latest: bool,
     file_path: str | None,
     text_input: str | None,
-    latest_skill: str,
-    markdown_skill_prefix: str,
-) -> str:
-    """Return the skill payload for latest-vs-explicit markdown commands."""
+) -> str | None:
+    """Return explicit markdown text from CLI input, if any."""
     if text_input:
-        return f"{markdown_skill_prefix}{text_input}"
+        return text_input
     if file_path:
-        body = Path(file_path).read_text(encoding="utf-8")
-        return f"{markdown_skill_prefix}{body}"
-    return latest_skill if latest or (not file_path and not text_input) else ""
+        return Path(file_path).read_text(encoding="utf-8")
+    return None
 
 
 async def collect_news(
@@ -100,17 +86,21 @@ async def critique_briefing(
     agent_client: AgentClient | None = None,
 ) -> str:
     """Critique the latest or explicitly supplied markdown."""
-    client = _resolve_agent_client(settings, agent_client)
-    skill = _resolve_markdown_input(
-        latest=latest,
+    del agent_client
+
+    from bcn.workflows.review import execute_critique
+
+    markdown = _resolve_markdown_text(
         file_path=file_path,
         text_input=text_input,
-        latest_skill="critique_latest",
-        markdown_skill_prefix="critique_markdown::",
     )
-    if skill == "critique_latest":
-        return await client.critique_latest()
-    return await client.call_critic(skill)
+    return await execute_critique(
+        settings,
+        latest=latest or markdown is None,
+        markdown=markdown,
+        source="cli",
+        manage_pool=True,
+    )
 
 
 async def verify_briefing(
@@ -122,17 +112,21 @@ async def verify_briefing(
     agent_client: AgentClient | None = None,
 ) -> str:
     """Verify the latest or explicitly supplied markdown."""
-    client = _resolve_agent_client(settings, agent_client)
-    skill = _resolve_markdown_input(
-        latest=latest,
+    del agent_client
+
+    from bcn.workflows.review import execute_verification
+
+    markdown = _resolve_markdown_text(
         file_path=file_path,
         text_input=text_input,
-        latest_skill="verify_latest",
-        markdown_skill_prefix="verify_markdown::",
     )
-    if skill == "verify_latest":
-        return await client.verify_latest()
-    return await client.call_verifier(skill)
+    return await execute_verification(
+        settings,
+        latest=latest or markdown is None,
+        markdown=markdown,
+        source="cli",
+        manage_pool=True,
+    )
 
 
 async def distribute_briefing(

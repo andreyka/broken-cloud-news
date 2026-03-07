@@ -450,6 +450,36 @@ def test_collect_command_delegates_to_collection_service(monkeypatch):
     assert run_mock.await_args.kwargs == {"source": "ghsa"}
 
 
+def test_critique_command_delegates_to_control_plane(monkeypatch):
+    runner = CliRunner()
+    run_mock = AsyncMock(return_value='{"critic_score": 88}')
+    monkeypatch.setattr(cli_module, "critique_briefing", run_mock)
+
+    result = runner.invoke(cli_module.cli, ["critique", "--text", "**Draft**"])
+
+    assert result.exit_code == 0
+    assert '"critic_score": 88' in result.output
+    assert run_mock.await_count == 1
+    assert isinstance(run_mock.await_args.kwargs["settings"], Settings)
+    assert run_mock.await_args.kwargs["text_input"] == "**Draft**"
+    assert "agent_client" not in run_mock.await_args.kwargs
+
+
+def test_verify_command_delegates_to_control_plane(monkeypatch):
+    runner = CliRunner()
+    run_mock = AsyncMock(return_value='{"verifier_score": 92}')
+    monkeypatch.setattr(cli_module, "verify_briefing", run_mock)
+
+    result = runner.invoke(cli_module.cli, ["verify", "--text", "**Draft**"])
+
+    assert result.exit_code == 0
+    assert '"verifier_score": 92' in result.output
+    assert run_mock.await_count == 1
+    assert isinstance(run_mock.await_args.kwargs["settings"], Settings)
+    assert run_mock.await_args.kwargs["text_input"] == "**Draft**"
+    assert "agent_client" not in run_mock.await_args.kwargs
+
+
 def test_newsletter_subscribers_list_command(monkeypatch):
     runner = CliRunner()
     now = datetime.now(timezone.utc)
