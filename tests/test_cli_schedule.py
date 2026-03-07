@@ -12,8 +12,10 @@ import bcn.cli as cli_module
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
 from bcn.workflows.automation import extract_briefing_id
+from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -46,6 +48,33 @@ def test_build_regular_briefing_trigger_legacy_fallback_hour():
     assert trigger.hour == "9"
     assert trigger.minute == 15
     assert str(trigger.timezone) == "America/Los_Angeles"
+
+
+def test_build_shadow_regular_briefing_trigger_offsets_multi_hour_schedule():
+    settings = Settings(
+        distribute_hours=[19, 9, 13],
+        distribute_minute=0,
+        distribute_timezone="UTC",
+        shadow_minutes_before_publish=45,
+    )
+    trigger = build_shadow_regular_briefing_trigger(settings)
+    assert trigger.hour == "8,12,18"
+    assert trigger.minute == 15
+    assert str(trigger.timezone) == "UTC"
+
+
+def test_build_shadow_regular_briefing_trigger_wraps_before_midnight():
+    settings = Settings(
+        distribute_hour=0,
+        distribute_hours=[],
+        distribute_minute=15,
+        distribute_timezone="UTC",
+        shadow_minutes_before_publish=45,
+    )
+    trigger = build_shadow_regular_briefing_trigger(settings)
+    assert trigger.hour == "23"
+    assert trigger.minute == 30
+    assert str(trigger.timezone) == "UTC"
 
 
 def test_extract_briefing_id_from_writer_message():
@@ -298,6 +327,46 @@ async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode():
             9004,
             f"distribute_briefing::{briefing_id}::{REGULAR_MONTHLY_NEWSLETTER_MODE}",
         )
+    )
+
+
+@pytest.mark.asyncio
+async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path):
+    overrides_path = tmp_path / "candidate.json"
+    overrides_path.write_text('{"llm_model_writer":"candidate"}', encoding="utf-8")
+    settings = Settings(
+        shadow_enabled=True,
+        shadow_candidate_overrides_path=str(overrides_path),
+        shadow_include_text=True,
+    )
+    configure_scheduler_runtime(settings, AsyncMock())
+
+    ensure_mock = AsyncMock()
+    insert_mock = AsyncMock(return_value="shadow-run-id")
+    run_mock = AsyncMock(
+        return_value={
+            "lane": "shadow",
+            "item_pool_count": 5,
+            "summary": {"recommendation": "promote", "confidence": "medium"},
+        }
+    )
+    monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", ensure_mock)
+    monkeypatch.setattr("bcn.common.db.insert_evaluation_report", insert_mock)
+    monkeypatch.setattr("bcn.evaluation.run_shadow_lane", run_mock)
+
+    await job_shadow_regular_briefing()
+
+    run_mock.assert_awaited_once_with(
+        settings,
+        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
+        candidate_overrides_path=str(overrides_path),
+        include_text=True,
+    )
+    ensure_mock.assert_awaited_once()
+    insert_mock.assert_awaited_once_with(
+        run_mock.return_value,
+        source="scheduler",
+        notes="Scheduled pre-publish shadow evaluation.",
     )
 
 

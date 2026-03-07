@@ -126,6 +126,14 @@ class Settings(BaseSettings):
             raise ValueError("monthly_newsletter_minute must be between 0 and 59")
         return minute
 
+    @field_validator("shadow_minutes_before_publish")
+    @classmethod
+    def _validate_shadow_minutes_before_publish(cls, v: int) -> int:
+        minutes = int(v)
+        if minutes < 0 or minutes >= 24 * 60:
+            raise ValueError("shadow_minutes_before_publish must be between 0 and 1439")
+        return minutes
+
     @field_validator("telegram_overflow_mode")
     @classmethod
     def _validate_telegram_overflow_mode(cls, v: str) -> str:
@@ -367,6 +375,10 @@ class Settings(BaseSettings):
     monthly_newsletter_hour: int = 9
     monthly_newsletter_minute: int = 0
     monthly_newsletter_timezone: str = "UTC"
+    shadow_enabled: bool = False
+    shadow_minutes_before_publish: int = 45
+    shadow_candidate_overrides_path: str = ""
+    shadow_include_text: bool = False
     a2a_request_timeout_seconds: int = 180
     generation_run_stale_pending_minutes: int = 180
     analysis_retry_max_attempts: int = 5

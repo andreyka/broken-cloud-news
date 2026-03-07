@@ -16,6 +16,7 @@ import httpx
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
 from bcn.workflows.automation import job_analyze_items
 from bcn.workflows.automation import job_collect_ghsa
@@ -28,6 +29,7 @@ from bcn.workflows.automation import (
 from bcn.workflows.automation import (
     job_publish_regular_monthly_newsletter as _job_monthly_newsletter,
 )
+from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.modes import AD_HOC_MODE
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -2025,6 +2027,13 @@ def run() -> None:
                     IntervalTrigger(minutes=settings.analyst_interval_minutes),
                     id="analyst",
                 )
+
+                if settings.shadow_enabled:
+                    await scheduler.add_schedule(
+                        job_shadow_regular_briefing,
+                        build_shadow_regular_briefing_trigger(settings),
+                        id=f"{REGULAR_DAILY_BRIEFING_MODE}_shadow",
+                    )
 
                 # Regular briefing cycle: write + distribute
                 await scheduler.add_schedule(

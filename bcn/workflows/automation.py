@@ -8,10 +8,17 @@ This module provides:
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from bcn.common.config import Settings
+from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
 from bcn.workflows.modes.regular_daily_briefing import (
     build_trigger as build_regular_briefing_trigger,
+)
+from bcn.workflows.modes.regular_daily_briefing import (
+    build_shadow_trigger as build_shadow_regular_briefing_trigger,
 )
 from bcn.workflows.modes.regular_daily_briefing import (
     run as job_publish_regular_briefing,
@@ -25,6 +32,8 @@ from bcn.workflows.modes.regular_monthly_newsletter import (
 from bcn.workflows.runtime import configure_runtime
 from bcn.workflows.runtime import require_runtime
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "configure_scheduler_runtime",
     "job_collect_ghsa",
@@ -34,8 +43,10 @@ __all__ = [
     "job_analyze_items",
     "job_publish_regular_briefing",
     "job_publish_regular_monthly_newsletter",
+    "job_shadow_regular_briefing",
     "job_publish_daily_digest",
     "build_regular_briefing_trigger",
+    "build_shadow_regular_briefing_trigger",
     "build_regular_monthly_newsletter_trigger",
     "extract_briefing_id",
 ]
@@ -74,6 +85,54 @@ async def job_analyze_items() -> None:
     """Scheduled job: trigger item analysis."""
     settings, sender = require_runtime()
     await sender(settings.analyst_port, "analyze_new_items")
+
+
+async def job_shadow_regular_briefing() -> None:
+    """Scheduled job: run shadow evaluation before the regular briefing slot."""
+    settings, _sender = require_runtime()
+    if not bool(settings.shadow_enabled):
+        logger.info("Shadow scheduler triggered while disabled; skipping.")
+        return
+
+    overrides_path = str(settings.shadow_candidate_overrides_path or "").strip() or None
+    if not overrides_path:
+        logger.info(
+            "Shadow evaluation skipped: BCN_SHADOW_CANDIDATE_OVERRIDES_PATH is not configured."
+        )
+        return
+    if not Path(overrides_path).exists():
+        logger.warning(
+            "Shadow evaluation skipped: candidate overrides file not found: %s",
+            overrides_path,
+        )
+        return
+
+    from bcn.common.db import ensure_evaluation_tables
+    from bcn.common.db import insert_evaluation_report
+    from bcn.evaluation import run_shadow_lane
+
+    report = await run_shadow_lane(
+        settings,
+        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
+        candidate_overrides_path=overrides_path,
+        include_text=bool(settings.shadow_include_text),
+    )
+    await ensure_evaluation_tables()
+    run_id = await insert_evaluation_report(
+        report,
+        source="scheduler",
+        notes="Scheduled pre-publish shadow evaluation.",
+    )
+    summary = report.get("summary") if isinstance(report, dict) else {}
+    if not isinstance(summary, dict):
+        summary = {}
+    logger.info(
+        "Stored scheduled shadow evaluation run_id=%s recommendation=%s confidence=%s item_pool=%s",
+        run_id,
+        summary.get("recommendation", "hold"),
+        summary.get("confidence", "low"),
+        report.get("item_pool_count", 0),
+    )
 
 
 # Backward-compatible alias for older imports/tests.
