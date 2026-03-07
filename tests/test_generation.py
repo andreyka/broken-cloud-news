@@ -296,3 +296,112 @@ async def test_execute_generation_blocks_publish_and_releases_claimed_items():
     mock_finalize.assert_awaited_once()
     assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
     mock_release.assert_awaited_once_with([item_id])
+
+
+@pytest.mark.asyncio
+async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
+    settings = _make_settings()
+    item_id = uuid4()
+    run_id = uuid4()
+    selected_items = [
+        {
+            "id": item_id,
+            "title": "Kubernetes issue",
+            "summary": "Critical cluster issue",
+            "url": "https://example.com/item",
+        }
+    ]
+    candidate = {
+        "markdown": "Final body",
+        "gate": {"passed": True},
+        "critique": {"passed": True, "score": 95, "issues": [], "recommendations": []},
+        "verifier": {"passed": True, "issues": [], "recommendations": []},
+        "release_passed": True,
+        "rewrites": 1,
+        "rounds": [],
+        "preference_pairs": [],
+    }
+    service = _make_writer_service(
+        selected_items=selected_items,
+        candidate=candidate,
+        artifact={
+            "cover_prompt": "cover prompt",
+            "cover_url": "https://example.com/cover.png",
+            "markdown": "# Final",
+            "html": "<h1>Final</h1>",
+        },
+    )
+
+    with (
+        patch("bcn.workflows.generation.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.generation.finalize_stale_pending_generation_runs",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "bcn.workflows.generation.get_analyzed_items",
+            new_callable=AsyncMock,
+            return_value=[
+                {
+                    "id": item_id,
+                    "status": "WRITING",
+                    "title": "Kubernetes issue",
+                    "summary": "Critical cluster issue",
+                    "url": "https://example.com/item",
+                    "published_at": datetime.now(timezone.utc),
+                }
+            ],
+        ),
+        patch(
+            "bcn.workflows.generation.get_recent_published_items",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.get_recent_briefings",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.create_generation_run",
+            new_callable=AsyncMock,
+            return_value=run_id,
+        ),
+        patch(
+            "bcn.workflows.generation.append_generation_round",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.generation.insert_generation_preference_pair",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.generation.insert_briefing",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ),
+        patch(
+            "bcn.workflows.generation.finalize_generation_run",
+            new_callable=AsyncMock,
+        ) as mock_finalize,
+        patch(
+            "bcn.workflows.generation.release_items_from_writing",
+            new_callable=AsyncMock,
+        ) as mock_release,
+    ):
+        result = await execute_generation(
+            settings,
+            mode="regular_daily_briefing",
+            writer_service=service,
+            manage_pool=False,
+        )
+
+    handoff = parse_writer_handoff_payload(result)
+    assert handoff is not None
+    assert handoff.decision == "blocked"
+    assert "internal writer error" in result.lower()
+    assert mock_finalize.await_count == 1
+    assert mock_finalize.await_args.kwargs["run_id"] == run_id
+    assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
+    mock_release.assert_awaited_once_with([item_id])
