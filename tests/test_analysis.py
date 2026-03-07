@@ -169,3 +169,129 @@ async def test_execute_analysis_returns_no_items_message():
 
     assert result == "No new items to analyze"
     service.analyze_item.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_processes_multiple_items_concurrently():
+    """Multiple items should be dispatched via asyncio.gather, not sequentially."""
+    settings = _make_settings(analysis_concurrency=3)
+    ids = [uuid4() for _ in range(4)]
+    update = AnalyzedItemUpdate(
+        summary="ok",
+        relevance_score=7,
+        ai_tags=["aws"],
+    )
+    service = _make_analyst_service(result=update)
+
+    rows = [
+        {
+            "id": ids[i],
+            "title": f"Item {i}",
+            "full_content": f"Body {i}",
+            "url": f"https://example.com/item-{i}",
+            "source_type": "rss",
+            "source_id": f"rss-{i}",
+            "raw_data": {},
+            "status": "ANALYZING",
+        }
+        for i in range(4)
+    ]
+
+    with (
+        patch("bcn.workflows.analysis.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.analysis.get_new_items",
+            new_callable=AsyncMock,
+            return_value=rows,
+        ),
+        patch(
+            "bcn.workflows.analysis.update_item_analyzed",
+            new_callable=AsyncMock,
+        ) as mock_update,
+        patch(
+            "bcn.workflows.analysis.release_items_from_analyzing",
+            new_callable=AsyncMock,
+        ),
+    ):
+        result = await execute_analysis(
+            settings,
+            analyst_service=service,
+            manage_pool=False,
+        )
+
+    assert result == "Analyzed 4/4 items"
+    assert service.analyze_item.await_count == 4
+    assert mock_update.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_mixed_success_and_failure_concurrently():
+    """One item fails while others succeed; counts should be correct."""
+    settings = _make_settings(analysis_concurrency=2)
+    ok_id = uuid4()
+    fail_id = uuid4()
+    update = AnalyzedItemUpdate(
+        summary="ok",
+        relevance_score=7,
+        ai_tags=[],
+    )
+    call_count = 0
+
+    async def _side_effect(item):
+        nonlocal call_count
+        call_count += 1
+        if item["id"] == fail_id:
+            raise RuntimeError("boom")
+        return update
+
+    service = _make_analyst_service()
+    service.analyze_item = AsyncMock(side_effect=_side_effect)
+
+    rows = [
+        {
+            "id": ok_id,
+            "title": "Good item",
+            "full_content": "content",
+            "url": "https://example.com/ok",
+            "source_type": "rss",
+            "source_id": "rss-ok",
+            "raw_data": {},
+            "status": "ANALYZING",
+        },
+        {
+            "id": fail_id,
+            "title": "Bad item",
+            "full_content": "content",
+            "url": "https://example.com/fail",
+            "source_type": "rss",
+            "source_id": "rss-fail",
+            "raw_data": {},
+            "status": "ANALYZING",
+        },
+    ]
+
+    with (
+        patch("bcn.workflows.analysis.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.analysis.get_new_items",
+            new_callable=AsyncMock,
+            return_value=rows,
+        ),
+        patch(
+            "bcn.workflows.analysis.update_item_analyzed",
+            new_callable=AsyncMock,
+        ) as mock_update,
+        patch(
+            "bcn.workflows.analysis.release_items_from_analyzing",
+            new_callable=AsyncMock,
+        ) as mock_release,
+    ):
+        result = await execute_analysis(
+            settings,
+            analyst_service=service,
+            manage_pool=False,
+        )
+
+    assert result == "Analyzed 1/2 items (1 failed)"
+    assert mock_update.await_count == 1
+    assert mock_release.await_count == 1

@@ -1,5 +1,6 @@
 """Writer LLM interactions."""
 
+import asyncio
 import base64
 import json
 import logging
@@ -55,9 +56,9 @@ class WriterLLM:
         mode: str = "standard",
     ) -> str:
         """Generate an editorial briefing from story cards derived from items."""
-        entries: list[str] = []
-        for item in items:
-            entries.append(await self._build_briefing_entry(item))
+        entries = list(await asyncio.gather(
+            *(self._build_briefing_entry(item) for item in items)
+        ))
 
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
@@ -130,9 +131,9 @@ class WriterLLM:
         mode: str = "standard",
     ) -> str:
         """Rewrite a draft briefing to improve depth and ensure URL coverage."""
-        entries: list[str] = []
-        for item in items:
-            entries.append(await self._build_briefing_entry(item))
+        entries = list(await asyncio.gather(
+            *(self._build_briefing_entry(item) for item in items)
+        ))
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
 
@@ -184,9 +185,9 @@ class WriterLLM:
         hard_max_chars: int = 2300,
     ) -> str:
         """Regenerate a briefing draft using explicit critic/gate feedback."""
-        entries: list[str] = []
-        for item in items:
-            entries.append(await self._build_briefing_entry(item))
+        entries = list(await asyncio.gather(
+            *(self._build_briefing_entry(item) for item in items)
+        ))
         story_cards = await self._build_story_cards_markdown(entries, items)
         cards_text = "\n\n".join(story_cards)
 

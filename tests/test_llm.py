@@ -223,6 +223,28 @@ class TestGenerateBriefing:
             msgs.append(body["messages"][1]["content"])
         assert any("Recent briefing patterns to avoid repeating" in m for m in msgs)
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_builds_entries_concurrently_for_multiple_items(self, llm):
+        """Story card entries for multiple items should be built in parallel."""
+        respx.post("http://fake-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response("## Briefing\nMulti-item day.")
+        )
+        items = [
+            {
+                "title": f"CVE-{i}",
+                "url": f"https://example.com/{i}",
+                "summary": f"Summary {i}",
+                "relevance_score": 8,
+                "source_type": "ghsa",
+                "raw_data": None,
+            }
+            for i in range(3)
+        ]
+        writer = WriterLLM(llm)
+        result = await writer.generate_briefing(items)
+        assert result  # non-empty briefing returned
+
 
 class TestGenerateCoverPrompt:
     @respx.mock

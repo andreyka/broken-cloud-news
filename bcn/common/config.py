@@ -429,6 +429,7 @@ class Settings(BaseSettings):
     analysis_retry_base_delay_seconds: int = 300
     analysis_retry_max_delay_seconds: int = 7200
     analysis_retry_stale_analyzing_minutes: int = 120
+    analysis_concurrency: int = 5
 
     # Scraping
     scrape_content_limit: int = 10000

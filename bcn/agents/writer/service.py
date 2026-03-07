@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import re
@@ -302,18 +303,20 @@ class WriterService:
             min_chars=min_chars,
             hard_max_chars=hard_max_chars,
         )
-        critique = await self.critique_markdown(
-            normalized,
-            selected_items,
-            mode=mode,
-            gate_hard_issues=[str(issue) for issue in gate.get("hard_issues", [])],
-            gate_soft_issues=[str(issue) for issue in gate.get("soft_issues", [])],
-            recent_briefings=history,
-        )
-        verifier = await self.verify_markdown(
-            normalized,
-            selected_items,
-            mode=mode,
+        critique, verifier = await asyncio.gather(
+            self.critique_markdown(
+                normalized,
+                selected_items,
+                mode=mode,
+                gate_hard_issues=[str(issue) for issue in gate.get("hard_issues", [])],
+                gate_soft_issues=[str(issue) for issue in gate.get("soft_issues", [])],
+                recent_briefings=history,
+            ),
+            self.verify_markdown(
+                normalized,
+                selected_items,
+                mode=mode,
+            ),
         )
         critique_passed = self.passes_critic_thresholds(critique)
         release_passed = (

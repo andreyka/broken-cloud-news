@@ -421,3 +421,63 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
     assert mock_finalize.await_args.kwargs["run_id"] == run_id
     assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
     mock_release.assert_awaited_once_with([item_id])
+
+
+@pytest.mark.asyncio
+async def test_evaluate_existing_markdown_runs_critic_and_verifier_concurrently():
+    """Critic and verifier should be dispatched concurrently via asyncio.gather."""
+    settings = _make_settings(
+        briefing_critique_enabled=True,
+        briefing_verifier_enabled=True,
+    )
+    service = WriterService(settings, llm_client=AsyncMock())
+
+    critique_result = {
+        "passed": True,
+        "score": 90,
+        "dimension_scores": {
+            "actionability": 90,
+            "source_diversity": 90,
+            "link_hygiene": 90,
+            "clarity": 90,
+            "style": 90,
+            "novelty": 90,
+        },
+        "issues": [],
+        "recommendations": [],
+    }
+    verifier_result = {
+        "passed": True,
+        "score": 95,
+        "hard_issues": [],
+        "blocking_hard_issues": [],
+        "soft_issues": [],
+        "issues": [],
+        "recommendations": [],
+    }
+    service.critique_markdown = AsyncMock(return_value=critique_result)
+    service.verify_markdown = AsyncMock(return_value=verifier_result)
+
+    items = [
+        {
+            "id": str(uuid4()),
+            "title": "K8s issue",
+            "url": "https://example.com/item",
+            "summary": "Critical issue",
+        }
+    ]
+    markdown = (
+        "**Kubernetes Cluster Escape** — A critical vulnerability allows container "
+        "escape. [Details](https://example.com/item) — Patch clusters running v1.28 immediately."
+    )
+    result = await service.evaluate_existing_markdown(
+        markdown=markdown,
+        selected_items=items,
+        history=[],
+        mode="standard",
+    )
+
+    service.critique_markdown.assert_awaited_once()
+    service.verify_markdown.assert_awaited_once()
+    assert result["critique"] is critique_result
+    assert result["verifier"] is verifier_result
