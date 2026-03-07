@@ -133,7 +133,7 @@ bcn review-queue --only-unreviewed                        # List briefings needi
 bcn finalize-pending-runs --max-age-minutes 180           # Finalize stale trace runs stuck in PENDING
 bcn record-outcome --briefing-id <uuid> --channel telegram --views 1200 --clicks 74
 bcn import-history --file ./channel_history.txt --dry-run # Parse historical channel posts
-bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets
+bcn export-training --output-dir training_export          # Export SFT + preference JSONL datasets, including shadow preferences
 bcn distribute --mode regular_daily_briefing
 bcn distribute --mode regular_monthly_newsletter --briefing-id <uuid>
 bcn newsletter-subscribers add you@example.com
@@ -192,7 +192,7 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_SHADOW_ENABLED` | `false` | Enable scheduled pre-publish shadow runs in daemon mode |
 | `BCN_SHADOW_MINUTES_BEFORE_PUBLISH` | `45` | Minutes before each daily publish slot to execute the shadow lane |
 | `BCN_SHADOW_CANDIDATE_OVERRIDES_PATH` | empty | JSON overrides file for the challenger used by scheduled shadow |
-| `BCN_SHADOW_INCLUDE_TEXT` | `false` | Persist generated text in scheduled shadow reports |
+| `BCN_SHADOW_INCLUDE_TEXT` | `false` | Persist generated text in scheduled shadow reports (recommended `true` if you want future Qwen preference/export data) |
 | `BCN_MONTHLY_NEWSLETTER_ENABLED` | `true` | Enable monthly newsletter scheduler job |
 | `BCN_MONTHLY_NEWSLETTER_DAY` | `1` | Day-of-month for monthly newsletter publish |
 | `BCN_MONTHLY_NEWSLETTER_HOUR` | `9` | Hour for monthly newsletter publish |

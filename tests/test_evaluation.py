@@ -10,6 +10,7 @@ from click.testing import CliRunner
 import bcn.cli as cli_module
 from bcn.common.config import Settings
 from bcn.evaluation import build_benchmark_summary
+from bcn.evaluation import build_shadow_preference_pair
 from bcn.evaluation import build_shadow_summary
 from bcn.evaluation import load_settings_with_overrides
 
@@ -90,6 +91,47 @@ def test_build_shadow_summary_prefers_candidate_when_only_candidate_passes():
 
     assert summary["recommendation"] == "promote_candidate"
     assert summary["candidate_release_passed"] is True
+
+
+def test_build_shadow_preference_pair_prefers_candidate_on_high_confidence_report():
+    report = {
+        "workflow_mode": "regular_daily_briefing",
+        "selection_overlap_ratio": 0.75,
+        "summary": {
+            "recommendation": "promote_candidate",
+            "confidence": "high",
+            "score_delta": 6,
+        },
+        "champion": {
+            "markdown": "champion draft",
+            "selected_items": [{"id": "a", "title": "Alpha"}],
+        },
+        "candidate": {
+            "markdown": "candidate draft",
+            "selected_items": [{"id": "a", "title": "Alpha"}],
+        },
+    }
+
+    pair = build_shadow_preference_pair(report)
+
+    assert pair is not None
+    assert pair["preferred_side"] == "candidate"
+    assert pair["chosen"] == "candidate draft"
+    assert pair["rejected"] == "champion draft"
+
+
+def test_build_shadow_preference_pair_skips_low_confidence_or_low_overlap():
+    report = {
+        "selection_overlap_ratio": 0.4,
+        "summary": {
+            "recommendation": "promote_candidate",
+            "confidence": "low",
+        },
+        "champion": {"markdown": "champion"},
+        "candidate": {"markdown": "candidate"},
+    }
+
+    assert build_shadow_preference_pair(report) is None
 
 
 def test_load_settings_with_overrides_validates_file(tmp_path):

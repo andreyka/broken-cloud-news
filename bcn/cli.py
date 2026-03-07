@@ -1415,26 +1415,36 @@ def import_history(
     show_default=True,
     help="Include blocked generations in exports.",
 )
+@click.option(
+    "--include-shadow-preferences/--generation-only",
+    default=True,
+    show_default=True,
+    help="Include high-confidence shadow lane preference rows and raw shadow traces.",
+)
 def export_training(
     output_dir: str,
     limit: int,
     since_days: int,
     include_blocked: bool,
+    include_shadow_preferences: bool,
 ) -> None:
     """Export SFT + preference JSONL datasets from stored traces."""
     settings = Settings()
 
     async def _run() -> None:
         from datetime import datetime
+        from datetime import timezone
         from uuid import UUID
 
         from bcn.common.db import close_pool
         from bcn.common.db import get_distribution_outcomes
+        from bcn.common.db import get_evaluation_runs_for_export
         from bcn.common.db import get_generation_preference_pairs_for_runs
         from bcn.common.db import get_generation_rounds_for_runs
         from bcn.common.db import get_generation_runs_for_export
         from bcn.common.db import get_human_reviews
         from bcn.common.db import get_pool
+        from bcn.evaluation import build_shadow_preference_pair
 
         def _iso(value: Any) -> str | None:
             if isinstance(value, UUID):
@@ -1472,7 +1482,16 @@ def export_training(
             since_days=max(0, int(since_days)),
             include_blocked=include_blocked,
         )
-        if not runs:
+        shadow_runs = (
+            await get_evaluation_runs_for_export(
+                lane="shadow",
+                limit=max(0, int(limit)),
+                since_days=max(0, int(since_days)),
+            )
+            if include_shadow_preferences
+            else []
+        )
+        if not runs and not shadow_runs:
             click.echo("No generation runs found for export")
             await close_pool()
             return
@@ -1528,6 +1547,7 @@ def export_training(
         sft_path = out_dir / "sft.jsonl"
         pref_path = out_dir / "preference.jsonl"
         trace_path = out_dir / "trace_runs.jsonl"
+        shadow_trace_path = out_dir / "shadow_trace.jsonl"
         manifest_path = out_dir / "manifest.json"
 
         sft_rows: list[dict[str, Any]] = []
@@ -1702,6 +1722,58 @@ def export_training(
                     }
                 )
 
+        shadow_trace_rows: list[dict[str, Any]] = []
+        shadow_preference_rows = 0
+        for row in shadow_runs:
+            row_dict = dict(row)
+            report = _normalize_json(row_dict.get("report"), {})
+            summary = _normalize_json(row_dict.get("summary"), {})
+            if report and "summary" not in report:
+                report["summary"] = summary
+            trace_row = {
+                "shadow_run_id": str(row_dict.get("id")),
+                "created_at": _iso(row_dict.get("created_at")),
+                "generated_at": _iso(row_dict.get("generated_at")),
+                "workflow_mode": str(row_dict.get("workflow_mode") or ""),
+                "candidate_overrides": _normalize_json(
+                    row_dict.get("candidate_overrides"), {}
+                ),
+                "summary": summary,
+                "report": report,
+            }
+            shadow_trace_rows.append(trace_row)
+
+            pair = build_shadow_preference_pair(report)
+            if not pair:
+                continue
+            pref_rows.append(
+                {
+                    "id": f"shadow-{row_dict.get('id')}",
+                    "run_id": str(row_dict.get("id")),
+                    "source": "shadow_lane",
+                    "round_index": 0,
+                    "chosen": pair["chosen"],
+                    "rejected": pair["rejected"],
+                    "rationale": pair["rationale"],
+                    "context": {
+                        **pair["context"],
+                        "candidate_overrides": _normalize_json(
+                            row_dict.get("candidate_overrides"), {}
+                        ),
+                    },
+                    "metadata": {
+                        "created_at": _iso(row_dict.get("created_at")),
+                        "generated_at": _iso(row_dict.get("generated_at")),
+                        "workflow_mode": str(row_dict.get("workflow_mode") or ""),
+                        "preferred_side": pair["preferred_side"],
+                        "recommendation": pair["recommendation"],
+                        "confidence": pair["confidence"],
+                        "selection_overlap_ratio": pair["selection_overlap_ratio"],
+                    },
+                }
+            )
+            shadow_preference_rows += 1
+
         with sft_path.open("w", encoding="utf-8") as handle:
             for row in sft_rows:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -1711,22 +1783,29 @@ def export_training(
         with trace_path.open("w", encoding="utf-8") as handle:
             for row in trace_rows:
                 handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        with shadow_trace_path.open("w", encoding="utf-8") as handle:
+            for row in shadow_trace_rows:
+                handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
         manifest = {
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "run_count": len(runs),
             "sft_rows": len(sft_rows),
             "preference_rows": len(pref_rows),
             "trace_rows": len(trace_rows),
+            "shadow_trace_rows": len(shadow_trace_rows),
+            "shadow_preference_rows": shadow_preference_rows,
             "filters": {
                 "limit": int(limit),
                 "since_days": int(since_days),
                 "include_blocked": bool(include_blocked),
+                "include_shadow_preferences": bool(include_shadow_preferences),
             },
             "files": {
                 "sft_jsonl": str(sft_path),
                 "preference_jsonl": str(pref_path),
                 "trace_jsonl": str(trace_path),
+                "shadow_trace_jsonl": str(shadow_trace_path),
             },
         }
         manifest_path.write_text(
@@ -1735,11 +1814,12 @@ def export_training(
 
         click.echo(
             f"Export complete: runs={len(runs)} sft_rows={len(sft_rows)} "
-            f"preference_rows={len(pref_rows)}"
+            f"preference_rows={len(pref_rows)} shadow_preference_rows={shadow_preference_rows}"
         )
         click.echo(f"  SFT: {sft_path}")
         click.echo(f"  Preference: {pref_path}")
         click.echo(f"  Traces: {trace_path}")
+        click.echo(f"  Shadow Traces: {shadow_trace_path}")
         click.echo(f"  Manifest: {manifest_path}")
         await close_pool()
 
