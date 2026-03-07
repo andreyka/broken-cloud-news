@@ -84,6 +84,7 @@ services:
         condition: service_healthy
     networks:
       - app_internal
+      - egress_public
 
 networks:
   app_internal:

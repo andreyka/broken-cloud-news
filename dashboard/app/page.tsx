@@ -1,7 +1,9 @@
+import Image from "next/image";
 import Link from "next/link";
 
 import {
   type EvaluationRunSummary,
+  type SimulationSummary,
   getLatestEvaluationRunByLane,
   getLatestSimulationSummary,
   getRecentEvaluationRuns,
@@ -18,6 +20,13 @@ function formatDate(value: string | null): string {
     timeStyle: "short",
     timeZone: "UTC",
   }).format(new Date(value));
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return {};
 }
 
 function metric(summary: Record<string, unknown>, key: string): string {
@@ -41,78 +50,186 @@ function laneTitle(lane: string): string {
   if (lane === "shadow") {
     return "Shadow";
   }
+  if (lane === "replay") {
+    return "Replay";
+  }
   return lane;
 }
 
-function replayRecommendation(summary: Record<string, unknown>): string {
-  const decision =
-    summary.decision && typeof summary.decision === "object"
-      ? (summary.decision as Record<string, unknown>)
-      : {};
-  return String(decision.recommendation || "hold");
+function replayDecision(summary: Record<string, unknown>): Record<string, unknown> {
+  return asObject(summary.decision);
 }
 
-function SummaryCard({
-  title,
+function ReplayCard({ replay }: { replay: SimulationSummary }) {
+  if (!replay) {
+    return (
+      <section className="lane-card lane-card-replay">
+        <div className="lane-card-head">
+          <span className="lane-pill lane-replay">Replay</span>
+          <span className="lane-timestamp">Awaiting run</span>
+        </div>
+        <h2>No replay baseline yet</h2>
+        <p className="lane-copy">
+          Run <code>bcn simulate --store-db</code> to populate historical drift data.
+        </p>
+        <div className="metric-grid">
+          <div className="metric-cell">
+            <span className="metric-label">Confidence</span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Avg delta</span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Win rate</span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Sample count</span>
+            <strong className="metric-value">0</strong>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const summary = replay.summary;
+  const decision = replayDecision(summary);
+  const winLoss = asObject(summary.win_loss);
+
+  return (
+    <section className="lane-card lane-card-replay">
+      <div className="lane-card-head">
+        <span className="lane-pill lane-replay">Replay</span>
+        <span className="lane-timestamp">{formatDate(replay.createdAt)} UTC</span>
+      </div>
+      <h2>{metric(decision, "recommendation")}</h2>
+      <p className="lane-copy">
+        Historical regression lane across stored briefings. Use it to spot drift in
+        the writer stack before promotion.
+      </p>
+      <div className="metric-grid">
+        <div className="metric-cell">
+          <span className="metric-label">Confidence</span>
+          <strong className="metric-value">{metric(decision, "confidence")}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Avg delta</span>
+          <strong className="metric-value">{metric(summary, "avg_delta")}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Win rate</span>
+          <strong className="metric-value">{metric(winLoss, "win_rate_no_ties")}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Sample count</span>
+          <strong className="metric-value">{String(replay.count)}</strong>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function EvaluationLaneCard({
+  lane,
   run,
-  accent,
 }: {
-  title: string;
+  lane: "benchmark" | "shadow";
   run: EvaluationRunSummary | null;
-  accent: "amber" | "teal";
 }) {
   if (!run) {
     return (
-      <section className={`panel panel-${accent}`}>
-        <p className="eyebrow">{title}</p>
-        <h2>No runs yet</h2>
-        <p className="muted">This lane has not written a persisted run yet.</p>
+      <section className={`lane-card lane-card-${lane}`}>
+        <div className="lane-card-head">
+          <span className={`lane-pill lane-${lane}`}>{laneTitle(lane)}</span>
+          <span className="lane-timestamp">Awaiting run</span>
+        </div>
+        <h2>No persisted run yet</h2>
+        <p className="lane-copy">
+          {lane === "benchmark"
+            ? "Persist a benchmark report before promoting a challenger."
+            : "Enable scheduled shadow runs or execute one manually to monitor today's candidate."}
+        </p>
+        <div className="metric-grid">
+          <div className="metric-cell">
+            <span className="metric-label">Confidence</span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">Cases</span>
+            <strong className="metric-value">0</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">
+              {lane === "benchmark" ? "Candidate pass" : "Overlap"}
+            </span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+          <div className="metric-cell">
+            <span className="metric-label">
+              {lane === "benchmark" ? "Champion pass" : "Score delta"}
+            </span>
+            <strong className="metric-value">n/a</strong>
+          </div>
+        </div>
       </section>
     );
   }
 
   const summary = run.summary;
   const detailLabel =
-    run.lane === "benchmark" ? "Candidate pass rate" : "Selection overlap";
+    lane === "benchmark" ? "Candidate pass" : "Selection overlap";
   const detailValue =
-    run.lane === "benchmark"
+    lane === "benchmark"
       ? metric(summary, "candidate_case_pass_rate")
       : metric(summary, "selection_overlap_ratio");
+  const secondaryLabel =
+    lane === "benchmark" ? "Champion pass" : "Score delta";
+  const secondaryValue =
+    lane === "benchmark"
+      ? metric(summary, "champion_case_pass_rate")
+      : metric(summary, "score_delta");
+
   return (
-    <section className={`panel panel-${accent}`}>
-      <p className="eyebrow">{title}</p>
-      <h2>{String(summary.recommendation || "hold")}</h2>
-      <p className="muted">
-        {formatDate(run.createdAt)} UTC
-        {run.workflowMode ? ` · ${run.workflowMode}` : ""}
+    <section className={`lane-card lane-card-${lane}`}>
+      <div className="lane-card-head">
+        <span className={`lane-pill lane-${lane}`}>{laneTitle(lane)}</span>
+        <span className="lane-timestamp">{formatDate(run.createdAt)} UTC</span>
+      </div>
+      <h2>{metric(summary, "recommendation")}</h2>
+      <p className="lane-copy">
+        {lane === "benchmark"
+          ? "Release gate for champion vs challenger on curated editorial cases."
+          : "Live pre-publish challenger check against the current item pool."}
       </p>
-      <div className="stat-grid">
-        <div>
-          <span className="stat-label">Confidence</span>
-          <strong>{metric(summary, "confidence")}</strong>
+      <div className="metric-grid">
+        <div className="metric-cell">
+          <span className="metric-label">Confidence</span>
+          <strong className="metric-value">{metric(summary, "confidence")}</strong>
         </div>
-        <div>
-          <span className="stat-label">Cases</span>
-          <strong>{run.count}</strong>
+        <div className="metric-cell">
+          <span className="metric-label">Cases</span>
+          <strong className="metric-value">{String(run.count)}</strong>
         </div>
-        <div>
-          <span className="stat-label">{detailLabel}</span>
-          <strong>{detailValue}</strong>
+        <div className="metric-cell">
+          <span className="metric-label">{detailLabel}</span>
+          <strong className="metric-value">{detailValue}</strong>
         </div>
-        <div>
-          <span className="stat-label">
-            {run.lane === "benchmark" ? "Champion pass rate" : "Score delta"}
-          </span>
-          <strong>
-            {run.lane === "benchmark"
-              ? metric(summary, "champion_case_pass_rate")
-              : metric(summary, "score_delta")}
-          </strong>
+        <div className="metric-cell">
+          <span className="metric-label">{secondaryLabel}</span>
+          <strong className="metric-value">{secondaryValue}</strong>
         </div>
       </div>
-      <Link className="inline-link" href={`/runs/${run.id}`}>
-        Open run
-      </Link>
+      <div className="lane-footer">
+        <span className="lane-meta">
+          {run.workflowMode ? `${run.workflowMode} · ` : ""}
+          source {run.source}
+        </span>
+        <Link className="inline-link" href={`/runs/${run.id}`}>
+          Open run
+        </Link>
+      </div>
     </section>
   );
 }
@@ -125,33 +242,48 @@ export default async function Home() {
     getRecentEvaluationRuns(18),
   ]);
 
+  const heroSignal =
+    metric(benchmark?.summary ?? {}, "recommendation") !== "n/a"
+      ? metric(benchmark?.summary ?? {}, "recommendation")
+      : metric(shadow?.summary ?? {}, "recommendation") !== "n/a"
+        ? metric(shadow?.summary ?? {}, "recommendation")
+        : metric(replayDecision(replay?.summary ?? {}), "recommendation");
+
   return (
     <main className="shell">
       <section className="hero">
-        <div>
-          <p className="eyebrow">Broken Cloud News</p>
-          <h1>Evaluation control room</h1>
-          <p className="lede">
-            One place to check whether the challenger is safe, whether today’s
-            shadow run stayed clean, and whether the replay lane is drifting.
-          </p>
+        <div className="brand-lockup">
+          <Image
+            src="/logo.png"
+            alt="Broken Cloud News"
+            width={96}
+            height={96}
+            className="brand-logo"
+            priority
+          />
+          <div>
+            <p className="eyebrow">Broken Cloud News</p>
+            <h1>Evaluation control room</h1>
+            <p className="lede">
+              Three aligned lanes for promotion safety: curated benchmark,
+              pre-publish shadow, and historical replay drift.
+            </p>
+          </div>
         </div>
         <div className="hero-note">
-          <span>Replay lane</span>
-          <strong>
-            {replay ? replayRecommendation(replay.summary) : "n/a"}
-          </strong>
+          <span>Current control signal</span>
+          <strong>{heroSignal || "hold"}</strong>
           <small>
-            {replay
-              ? `latest run ${formatDate(replay.createdAt)} · count=${replay.count}`
-              : "No simulation run stored yet"}
+            Benchmark {formatDate(benchmark?.createdAt ?? null)} UTC · Shadow{" "}
+            {formatDate(shadow?.createdAt ?? null)} UTC
           </small>
         </div>
       </section>
 
-      <section className="card-grid">
-        <SummaryCard title="Latest benchmark" run={benchmark} accent="amber" />
-        <SummaryCard title="Latest shadow" run={shadow} accent="teal" />
+      <section className="lane-grid">
+        <EvaluationLaneCard lane="benchmark" run={benchmark} />
+        <EvaluationLaneCard lane="shadow" run={shadow} />
+        <ReplayCard replay={replay} />
       </section>
 
       <section className="panel">
