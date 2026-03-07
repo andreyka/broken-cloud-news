@@ -155,6 +155,10 @@ docker compose up -d
 The evaluation dashboard runs as a separate Next.js container on port `3007`
 and reads persisted benchmark and shadow runs directly from Postgres.
 
+The bundled challenger file [`bcn/config/shadow_qwen_spark.json`](bcn/config/shadow_qwen_spark.json)
+targets the internal `spark_bridge` service, which forwards to the SBC-visible
+Spark/Qwen endpoint without giving the main `bcn` container direct LAN access.
+
 The Compose stack now routes outbound HTTP(S) through an internal Squid proxy
 that blocks private/metadata destinations by default. Keep internal services
 such as Postgres/ComfyUI reachable via `NO_PROXY` hostnames (set `NO_PROXY`
