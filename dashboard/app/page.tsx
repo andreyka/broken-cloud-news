@@ -253,14 +253,16 @@ export default async function Home() {
     <main className="shell">
       <section className="hero">
         <div className="brand-lockup">
-          <Image
-            src="/logo.png"
-            alt="Broken Cloud News"
-            width={96}
-            height={96}
-            className="brand-logo"
-            priority
-          />
+          <div className="brand-logo-frame">
+            <Image
+              src="/logo.png"
+              alt="Broken Cloud News"
+              width={160}
+              height={160}
+              className="brand-logo"
+              priority
+            />
+          </div>
           <div>
             <p className="eyebrow">Broken Cloud News</p>
             <h1>Evaluation control room</h1>

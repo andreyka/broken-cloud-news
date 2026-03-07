@@ -70,14 +70,16 @@ export default async function RunPage({ params }: RunPageProps) {
     <main className="shell">
       <section className="hero compact-hero">
         <div className="brand-lockup brand-lockup-compact">
-          <Image
-            src="/logo.png"
-            alt="Broken Cloud News"
-            width={72}
-            height={72}
-            className="brand-logo brand-logo-compact"
-            priority
-          />
+          <div className="brand-logo-frame brand-logo-frame-compact">
+            <Image
+              src="/logo.png"
+              alt="Broken Cloud News"
+              width={144}
+              height={144}
+              className="brand-logo brand-logo-compact"
+              priority
+            />
+          </div>
           <div>
             <p className="eyebrow">{run.lane} lane</p>
             <h1>Evaluation run {run.id.slice(0, 8)}</h1>
