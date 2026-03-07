@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 import httpx
 
+from bcn.common.secrets import redact_error_text
 from bcn.common.url_policy import assert_public_http_url
 from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
@@ -43,6 +44,7 @@ class TelegramDistributor:
         self.api: str = f"https://api.telegram.org/bot{bot_token}"
         self.overflow_mode: str = overflow_mode
         self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
+        self._redaction_secrets: tuple[str, ...] = (self.bot_token,)
         self._client: httpx.AsyncClient = httpx.AsyncClient(timeout=30)
         self.last_result: dict[str, object] = {}
 
@@ -110,8 +112,12 @@ class TelegramDistributor:
                         result["caption_chars"] = len(caption)
                         result["message_ids"] = [photo_msg_id]
                 except Exception as exc:
-                    logger.warning("Failed to send cover photo: %s", exc)
-                    result["cover_image_error"] = str(exc)
+                    safe_error = redact_error_text(
+                        exc,
+                        secrets=self._redaction_secrets,
+                    )
+                    logger.warning("Failed to send cover photo: %s", safe_error)
+                    result["cover_image_error"] = safe_error
 
             if photo_msg_id is not None:
                 # Send overflow as a follow-up reply only when useful.
@@ -160,9 +166,14 @@ class TelegramDistributor:
             result["ok"] = True
             self.last_result = result
             return True
-        except Exception:
-            logger.exception("Telegram send failed")
+        except Exception as exc:
+            safe_error = redact_error_text(
+                exc,
+                secrets=self._redaction_secrets,
+            )
+            logger.error("Telegram send failed: %s", safe_error)
             result["ok"] = False
+            result["error"] = safe_error
             self.last_result = result
             return False
 
