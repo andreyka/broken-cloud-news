@@ -16,7 +16,10 @@ import re
 from statistics import mean
 from statistics import pstdev
 
-from bcn.agents.writer.agent import WriterExecutor
+from bcn.agents.analyst.service import AnalystService
+from bcn.agents.analyst.service import AnalystWorkflowProtocol
+from bcn.agents.writer.service import WriterService
+from bcn.agents.writer.service import WriterWorkflowProtocol
 from bcn.common.config import Settings
 from bcn.common.db import get_distributed_briefings
 from bcn.common.db import get_items_by_ids
@@ -569,129 +572,17 @@ def score_feedback_rubric(
 
 
 async def _simulate_briefing_body(
-    writer: WriterExecutor,
+    writer: WriterWorkflowProtocol,
     items: list[dict],
     recent_briefings: list[dict],
     *,
     apply_critic_rewrites: bool,
 ) -> tuple[str, dict[str, object]]:
-    quiet_mode = writer._is_quiet_day(items)
-    mode = "quiet_day" if quiet_mode else "standard"
-    min_chars, target_chars, hard_max_chars = writer._char_limits(
-        mode,
-        selected_count=len(items),
-    )
-
-    briefing_body = await writer.writer_llm.generate_briefing(
+    return await writer.simulate_briefing_body(
         items,
-        recent_briefings=recent_briefings,
-        mode=mode,
+        recent_briefings,
+        apply_critic_rewrites=apply_critic_rewrites,
     )
-    briefing_body = await writer._postprocess_briefing(
-        briefing_body=briefing_body,
-        selected_items=items,
-        mode=mode,
-        min_chars=min_chars,
-        target_chars=target_chars,
-        hard_max_chars=hard_max_chars,
-    )
-    min_chars, target_chars, hard_max_chars = writer._char_limits(
-        mode,
-        selected_count=len(items),
-    )
-
-    rewrites = 0
-    if apply_critic_rewrites and writer.settings.briefing_critique_enabled:
-        max_rewrites = max(0, int(writer.settings.briefing_critique_max_rounds))
-        while True:
-            min_chars, target_chars, hard_max_chars = writer._char_limits(
-                mode,
-                selected_count=len(items),
-            )
-            gate = writer._quality_gate(
-                markdown=briefing_body,
-                selected_items=items,
-                mode=mode,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
-            )
-            critique = await writer.critic_llm.critique_briefing(
-                draft_markdown=briefing_body,
-                items=items,
-                mode=mode,
-                gate_hard_issues=[str(i) for i in gate.get("hard_issues", [])],
-                gate_soft_issues=[str(i) for i in gate.get("soft_issues", [])],
-                recent_briefings=recent_briefings,
-            )
-            gate_passed = bool(gate.get("passed", False))
-            critic_passed = bool(critique.get("passed", False))
-            if gate_passed and critic_passed:
-                break
-            if rewrites >= max_rewrites:
-                break
-
-            feedback: list[str] = []
-            feedback.extend(gate.get("issues", []))
-            feedback.extend([str(i) for i in critique.get("issues", [])])
-            feedback.extend([str(r) for r in critique.get("recommendations", [])])
-            missing_items = writer._missing_items_for_markdown(briefing_body, items)
-            feedback_context = writer._build_rewrite_feedback_context(
-                gate=gate,
-                critique=critique,
-                verification={
-                    "passed": True,
-                    "score": 100,
-                    "hard_issues": [],
-                    "blocking_hard_issues": [],
-                    "soft_issues": [],
-                    "recommendations": [],
-                },
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-                rewrite_attempt=rewrites + 1,
-                max_rewrites=max_rewrites,
-                selected_items=items,
-                missing_selected_urls=[
-                    str(i.get("url", "")) for i in missing_items if i.get("url")
-                ],
-            )
-
-            rewrites += 1
-            briefing_body = await writer.writer_llm.revise_briefing(
-                draft_markdown=briefing_body,
-                items=items,
-                feedback=feedback,
-                feedback_context=feedback_context,
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-            )
-            briefing_body = await writer._postprocess_briefing(
-                briefing_body=briefing_body,
-                selected_items=items,
-                mode=mode,
-                min_chars=min_chars,
-                target_chars=target_chars,
-                hard_max_chars=hard_max_chars,
-            )
-
-    briefing_body = writer._normalize_section_headings(briefing_body)
-    briefing_body = writer._de_template_fields(briefing_body)
-    min_chars, target_chars, hard_max_chars = writer._char_limits(
-        mode,
-        selected_count=len(items),
-    )
-
-    meta = {
-        "mode": mode,
-        "rewrites": rewrites,
-        "min_chars": min_chars,
-        "hard_max_chars": hard_max_chars,
-    }
-    return briefing_body, meta
 
 
 async def simulate_historical_briefings(
@@ -722,225 +613,240 @@ async def simulate_historical_briefings(
 
     # Replay oldest -> newest for realistic style memory context.
     ordered = sorted(briefings, key=lambda b: b["created_at"])
-    writer = WriterExecutor(settings)
-    critic = writer.critic_llm  # reuse the critic from the writer
-
-    analyst = None
+    writer = WriterService(settings)
+    analyst: AnalystWorkflowProtocol | None = None
     if reanalyze_items:
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        analyst = AnalystExecutor(settings)
+        analyst = AnalystService(settings)
 
     results: list[dict[str, object]] = []
     recurring_notes: Counter[str] = Counter()
 
-    for idx, briefing in enumerate(ordered):
-        item_ids = list(briefing.get("item_ids") or [])
-        if not item_ids:
-            continue
-        item_rows = await get_items_by_ids(item_ids)
-        items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
-        if not items:
-            continue
-
-        if analyst and items:
-            logger.info(
-                "Re-analyzing %d items for briefing %s to capture new Analyst features (e.g. canonical URLs)...",
-                len(items),
-                briefing["id"],
-            )
-            for db_item in items:
-                # Mock a request context so we can run the analyst directly
-
-                # Check if it was a Twitter/Reddit item with raw_data
-                if db_item.get("source_type") in ("twitter", "reddit") and db_item.get(
-                    "raw_data"
-                ):
-                    # We can't easily re-run the collector, but we can re-run the execute loop if we mock the item check.
-                    # However, to avoid side-effects on the DB immediately, we can just run analyze_item locally.
-                    # Actually, we want it to update the DB so the generated briefing uses the canonical_url.
-                    await analyst._analyze_item_and_save(dict(db_item))
-
-            # Refetch items to get the newly updated DB fields (like url/canonical_url)
+    try:
+        for idx, briefing in enumerate(ordered):
+            item_ids = list(briefing.get("item_ids") or [])
+            if not item_ids:
+                continue
             item_rows = await get_items_by_ids(item_ids)
             items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
+            if not items:
+                continue
 
-        history_start = max(0, idx - int(settings.briefing_history_items))
-        history = [
-            {
-                "id": str(prev["id"]),
-                "content_markdown": _strip_cover_image(
-                    str(prev.get("content_markdown") or "")
-                ),
-            }
-            for prev in ordered[history_start:idx]
-        ]
+            if analyst and items:
+                logger.info(
+                    "Re-analyzing %d items for briefing %s to capture new Analyst features (e.g. canonical URLs)...",
+                    len(items),
+                    briefing["id"],
+                )
+                for db_item in items:
+                    if db_item.get("source_type") in ("twitter", "reddit") and db_item.get(
+                        "raw_data"
+                    ):
+                        await analyst.analyze_item_and_save(dict(db_item))
 
-        simulated_body, meta = await _simulate_briefing_body(
-            writer,
-            items,
-            history,
-            apply_critic_rewrites=apply_critic_rewrites,
-        )
-        actual_body = _strip_cover_image(str(briefing.get("content_markdown") or ""))
+                item_rows = await get_items_by_ids(item_ids)
+                items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
 
-        mode = str(meta["mode"])
-        min_chars = int(meta["min_chars"])
-        hard_max_chars = int(meta["hard_max_chars"])
+            history_start = max(0, idx - int(settings.briefing_history_items))
+            history = [
+                {
+                    "id": str(prev["id"]),
+                    "content_markdown": _strip_cover_image(
+                        str(prev.get("content_markdown") or "")
+                    ),
+                }
+                for prev in ordered[history_start:idx]
+            ]
 
-        actual_gate = writer._quality_gate(
-            markdown=actual_body,
-            selected_items=items,
-            mode=mode,
-            min_chars=min_chars,
-            hard_max_chars=hard_max_chars,
-        )
-        simulated_gate = writer._quality_gate(
-            markdown=simulated_body,
-            selected_items=items,
-            mode=mode,
-            min_chars=min_chars,
-            hard_max_chars=hard_max_chars,
-        )
+            simulated_body, meta = await _simulate_briefing_body(
+                writer,
+                items,
+                history,
+                apply_critic_rewrites=apply_critic_rewrites,
+            )
+            actual_body = _strip_cover_image(str(briefing.get("content_markdown") or ""))
 
-        actual_eval = score_feedback_rubric(
-            actual_body,
-            items,
-            actual_gate,
-            min_chars=min_chars,
-            hard_max_chars=hard_max_chars,
-        )
-        simulated_eval = score_feedback_rubric(
-            simulated_body,
-            items,
-            simulated_gate,
-            min_chars=min_chars,
-            hard_max_chars=hard_max_chars,
-        )
+            mode = str(meta["mode"])
+            min_chars = int(meta["min_chars"])
+            hard_max_chars = int(meta["hard_max_chars"])
 
-        actual_critic_eval = await critic.critique_briefing(
-            actual_body, items, mode=mode, recent_briefings=history
-        )
-        simulated_critic_eval = await critic.critique_briefing(
-            simulated_body, items, mode=mode, recent_briefings=history
-        )
-
-        actual_style_score = actual_critic_eval.get("dimension_scores", {}).get(
-            "style", 0
-        )
-        simulated_style_score = simulated_critic_eval.get("dimension_scores", {}).get(
-            "style", 0
-        )
-        actual_novelty_score = actual_critic_eval.get("dimension_scores", {}).get(
-            "novelty", 0
-        )
-        simulated_novelty_score = simulated_critic_eval.get("dimension_scores", {}).get(
-            "novelty", 0
-        )
-
-        for note in actual_eval["notes"]:
-            recurring_notes[str(note)] += 1
-
-        delta = int(simulated_eval["score"]) - int(actual_eval["score"])
-        entry: dict[str, object] = {
-            "briefing_id": str(briefing["id"]),
-            "created_at": briefing["created_at"].isoformat(),
-            "item_count": len(items),
-            "mode": mode,
-            "simulated_rewrites": int(meta["rewrites"]),
-            "actual_score": int(actual_eval["score"]),
-            "simulated_score": int(simulated_eval["score"]),
-            "actual_llm_tone_score": int(actual_style_score),
-            "simulated_llm_tone_score": int(simulated_style_score),
-            "actual_llm_novelty_score": int(actual_novelty_score),
-            "simulated_llm_novelty_score": int(simulated_novelty_score),
-            "delta": delta,
-            "actual_breakdown": actual_eval["breakdown"],
-            "simulated_breakdown": simulated_eval["breakdown"],
-            "actual_critic_dimension_scores": actual_critic_eval.get(
-                "dimension_scores", {}
-            ),
-            "simulated_critic_dimension_scores": simulated_critic_eval.get(
-                "dimension_scores", {}
-            ),
-            "actual_notes": actual_eval["notes"],
-            "simulated_notes": simulated_eval["notes"],
-            "actual_gate_hard_issues": [
-                str(i) for i in actual_gate.get("hard_issues", [])
-            ],
-            "simulated_gate_hard_issues": [
-                str(i) for i in simulated_gate.get("hard_issues", [])
-            ],
-        }
-        if include_text:
-            entry["actual_markdown"] = actual_body
-            entry["simulated_markdown"] = simulated_body
-        results.append(entry)
-        if (idx + 1) % 5 == 0:
-            logger.info(
-                "Simulation progress: %d/%d briefings processed",
-                idx + 1,
-                len(ordered),
+            actual_gate = writer.quality_gate(
+                markdown=actual_body,
+                selected_items=items,
+                mode=mode,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
+            )
+            simulated_gate = writer.quality_gate(
+                markdown=simulated_body,
+                selected_items=items,
+                mode=mode,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
             )
 
-    actual_scores = [int(r["actual_score"]) for r in results]
-    simulated_scores = [int(r["simulated_score"]) for r in results]
-    deltas = [int(r["delta"]) for r in results]
+            actual_eval = score_feedback_rubric(
+                actual_body,
+                items,
+                actual_gate,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
+            )
+            simulated_eval = score_feedback_rubric(
+                simulated_body,
+                items,
+                simulated_gate,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
+            )
 
-    actual_llm_tone_scores = [int(r["actual_llm_tone_score"]) for r in results]
-    simulated_llm_tone_scores = [int(r["simulated_llm_tone_score"]) for r in results]
-    actual_llm_novelty_scores = [int(r["actual_llm_novelty_score"]) for r in results]
-    simulated_llm_novelty_scores = [
-        int(r["simulated_llm_novelty_score"]) for r in results
-    ]
+            actual_critic_eval = await writer.critique_markdown(
+                actual_body,
+                items,
+                mode=mode,
+                recent_briefings=history,
+            )
+            simulated_critic_eval = await writer.critique_markdown(
+                simulated_body,
+                items,
+                mode=mode,
+                recent_briefings=history,
+            )
 
-    summary = {
-        "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
-        "avg_simulated_score": round(mean(simulated_scores), 2)
-        if simulated_scores
-        else 0.0,
-        "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2)
-        if actual_llm_tone_scores
-        else 0.0,
-        "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2)
-        if simulated_llm_tone_scores
-        else 0.0,
-        "avg_llm_tone_score_change": round(
-            mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores), 2
-        )
-        if simulated_llm_tone_scores and actual_llm_tone_scores
-        else 0.0,
-        "avg_actual_llm_novelty_score": round(mean(actual_llm_novelty_scores), 2)
-        if actual_llm_novelty_scores
-        else 0.0,
-        "avg_simulated_llm_novelty_score": round(mean(simulated_llm_novelty_scores), 2)
-        if simulated_llm_novelty_scores
-        else 0.0,
-        "avg_llm_novelty_score_change": round(
-            mean(simulated_llm_novelty_scores) - mean(actual_llm_novelty_scores), 2
-        )
-        if simulated_llm_novelty_scores and actual_llm_novelty_scores
-        else 0.0,
-        "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
-        "improved": sum(1 for d in deltas if d > 0),
-        "regressed": sum(1 for d in deltas if d < 0),
-        "equal": sum(1 for d in deltas if d == 0),
-        "top_actual_feedback_gaps": [
-            {"issue": issue, "count": count}
-            for issue, count in recurring_notes.most_common(8)
-        ],
-    }
-    summary.update(_build_decision_summary(results))
+            actual_style_score = actual_critic_eval.get("dimension_scores", {}).get(
+                "style",
+                0,
+            )
+            simulated_style_score = simulated_critic_eval.get("dimension_scores", {}).get(
+                "style",
+                0,
+            )
+            actual_novelty_score = actual_critic_eval.get("dimension_scores", {}).get(
+                "novelty",
+                0,
+            )
+            simulated_novelty_score = simulated_critic_eval.get("dimension_scores", {}).get(
+                "novelty",
+                0,
+            )
 
-    return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "count": len(results),
-        "limit": int(limit),
-        "since_days": int(since_days),
-        "apply_critic_rewrites": bool(apply_critic_rewrites),
-        "results": results,
-        "summary": summary,
-    }
+            for note in actual_eval["notes"]:
+                recurring_notes[str(note)] += 1
+
+            delta = int(simulated_eval["score"]) - int(actual_eval["score"])
+            entry: dict[str, object] = {
+                "briefing_id": str(briefing["id"]),
+                "created_at": briefing["created_at"].isoformat(),
+                "item_count": len(items),
+                "mode": mode,
+                "simulated_rewrites": int(meta["rewrites"]),
+                "actual_score": int(actual_eval["score"]),
+                "simulated_score": int(simulated_eval["score"]),
+                "actual_llm_tone_score": int(actual_style_score),
+                "simulated_llm_tone_score": int(simulated_style_score),
+                "actual_llm_novelty_score": int(actual_novelty_score),
+                "simulated_llm_novelty_score": int(simulated_novelty_score),
+                "delta": delta,
+                "actual_breakdown": actual_eval["breakdown"],
+                "simulated_breakdown": simulated_eval["breakdown"],
+                "actual_critic_dimension_scores": actual_critic_eval.get(
+                    "dimension_scores",
+                    {},
+                ),
+                "simulated_critic_dimension_scores": simulated_critic_eval.get(
+                    "dimension_scores",
+                    {},
+                ),
+                "actual_notes": actual_eval["notes"],
+                "simulated_notes": simulated_eval["notes"],
+                "actual_gate_hard_issues": [
+                    str(issue) for issue in actual_gate.get("hard_issues", [])
+                ],
+                "simulated_gate_hard_issues": [
+                    str(issue) for issue in simulated_gate.get("hard_issues", [])
+                ],
+            }
+            if include_text:
+                entry["actual_markdown"] = actual_body
+                entry["simulated_markdown"] = simulated_body
+            results.append(entry)
+            if (idx + 1) % 5 == 0:
+                logger.info(
+                    "Simulation progress: %d/%d briefings processed",
+                    idx + 1,
+                    len(ordered),
+                )
+
+        actual_scores = [int(row["actual_score"]) for row in results]
+        simulated_scores = [int(row["simulated_score"]) for row in results]
+        deltas = [int(row["delta"]) for row in results]
+
+        actual_llm_tone_scores = [int(row["actual_llm_tone_score"]) for row in results]
+        simulated_llm_tone_scores = [
+            int(row["simulated_llm_tone_score"]) for row in results
+        ]
+        actual_llm_novelty_scores = [
+            int(row["actual_llm_novelty_score"]) for row in results
+        ]
+        simulated_llm_novelty_scores = [
+            int(row["simulated_llm_novelty_score"]) for row in results
+        ]
+
+        summary = {
+            "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
+            "avg_simulated_score": round(mean(simulated_scores), 2)
+            if simulated_scores
+            else 0.0,
+            "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2)
+            if actual_llm_tone_scores
+            else 0.0,
+            "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2)
+            if simulated_llm_tone_scores
+            else 0.0,
+            "avg_llm_tone_score_change": round(
+                mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores),
+                2,
+            )
+            if simulated_llm_tone_scores and actual_llm_tone_scores
+            else 0.0,
+            "avg_actual_llm_novelty_score": round(mean(actual_llm_novelty_scores), 2)
+            if actual_llm_novelty_scores
+            else 0.0,
+            "avg_simulated_llm_novelty_score": round(
+                mean(simulated_llm_novelty_scores),
+                2,
+            )
+            if simulated_llm_novelty_scores
+            else 0.0,
+            "avg_llm_novelty_score_change": round(
+                mean(simulated_llm_novelty_scores) - mean(actual_llm_novelty_scores),
+                2,
+            )
+            if simulated_llm_novelty_scores and actual_llm_novelty_scores
+            else 0.0,
+            "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
+            "improved": sum(1 for delta in deltas if delta > 0),
+            "regressed": sum(1 for delta in deltas if delta < 0),
+            "equal": sum(1 for delta in deltas if delta == 0),
+            "top_actual_feedback_gaps": [
+                {"issue": issue, "count": count}
+                for issue, count in recurring_notes.most_common(8)
+            ],
+        }
+        summary.update(_build_decision_summary(results))
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "count": len(results),
+            "limit": int(limit),
+            "since_days": int(since_days),
+            "apply_critic_rewrites": bool(apply_critic_rewrites),
+            "results": results,
+            "summary": summary,
+        }
+    finally:
+        await writer.close()
+        if analyst is not None:
+            await analyst.close()
 
 
 def compare_simulation_reports(
