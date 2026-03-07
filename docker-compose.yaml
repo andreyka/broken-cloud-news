@@ -58,8 +58,8 @@ services:
       - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
       - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
       - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
-      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui,spark_bridge}
-      - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui,spark_bridge}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
+      - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
     dns:
       - 172.29.0.53
     ports:
