@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bcn.common.config import Settings
+from bcn.workflows.modes._schedule import schedule_start_time
 from bcn.workflows.modes.common import run_generation_and_distribution
 
 MODE = "regular_monthly_newsletter"
@@ -17,10 +18,10 @@ def build_trigger(settings: Settings):
         hour=settings.monthly_newsletter_hour,
         minute=settings.monthly_newsletter_minute,
         timezone=settings.monthly_newsletter_timezone,
+        start_time=schedule_start_time(settings.monthly_newsletter_timezone),
     )
 
 
 async def run() -> None:
     """Execute one regular monthly newsletter publication cycle."""
     await run_generation_and_distribution(mode=MODE)
-
