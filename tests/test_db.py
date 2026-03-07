@@ -119,6 +119,35 @@ async def test_list_recent_evaluation_runs_applies_lane_filter():
     assert "WHERE lane = $1" in sql
 
 
+@pytest.mark.asyncio
+async def test_get_evaluation_runs_for_export_reads_full_shadow_reports():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.get_evaluation_runs_for_export(
+                lane="shadow",
+                since_days=14,
+                limit=7,
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "FROM evaluation_runs" in sql
+    assert "candidate_overrides" in sql
+    assert "summary" in sql
+    assert "report" in sql
+    assert "lane = $1" in sql
+
+
 class _FakeTx:
     async def __aenter__(self):
         return self

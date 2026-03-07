@@ -1834,6 +1834,47 @@ async def list_recent_evaluation_runs(
     )
 
 
+async def get_evaluation_runs_for_export(
+    *,
+    lane: str = "shadow",
+    limit: int = 0,
+    since_days: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch persisted evaluation runs for downstream dataset export."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    params: list[Any] = [str(lane)]
+    where = [f"lane = ${len(params)}"]
+    if since_days > 0:
+        params.append(int(since_days))
+        where.append(f"created_at > NOW() - make_interval(days => ${len(params)})")
+
+    sql = (
+        """
+        SELECT
+            id,
+            created_at,
+            generated_at,
+            lane,
+            source,
+            workflow_mode,
+            candidate_overrides,
+            summary,
+            report
+        FROM evaluation_runs
+        WHERE
+        """
+        + " AND ".join(where)
+        + """
+        ORDER BY created_at DESC
+        """
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
 # ---------------------------------------------------------------------------
 # Fine-Tuning Data: Traces, Preferences, Reviews, Outcomes
 # ---------------------------------------------------------------------------

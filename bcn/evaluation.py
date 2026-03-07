@@ -507,6 +507,81 @@ def build_shadow_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def build_shadow_preference_pair(
+    result: dict[str, Any],
+    *,
+    min_overlap: float = 0.6,
+) -> dict[str, Any] | None:
+    """Return a preference pair from a high-signal shadow comparison.
+
+    Shadow comparisons are only useful as future preference data when:
+    - both champion and candidate produced markdown
+    - the evaluator made a directional recommendation
+    - confidence is at least medium
+    - item selection overlap is reasonably high
+    """
+    summary = result.get("summary") if isinstance(result, dict) else {}
+    if not isinstance(summary, dict):
+        summary = build_shadow_summary(result if isinstance(result, dict) else {})
+
+    champion = result.get("champion") if isinstance(result, dict) else {}
+    candidate = result.get("candidate") if isinstance(result, dict) else {}
+    if not isinstance(champion, dict):
+        champion = {}
+    if not isinstance(candidate, dict):
+        candidate = {}
+
+    recommendation = str(summary.get("recommendation") or "").strip().lower()
+    confidence = str(summary.get("confidence") or "").strip().lower()
+    overlap_ratio = float(
+        result.get(
+            "selection_overlap_ratio",
+            summary.get("selection_overlap_ratio", 0.0),
+        )
+        or 0.0
+    )
+
+    if recommendation not in {"promote_candidate", "keep_champion"}:
+        return None
+    if confidence not in {"medium", "high"}:
+        return None
+    if overlap_ratio < float(min_overlap):
+        return None
+
+    champion_markdown = str(champion.get("markdown") or "").strip()
+    candidate_markdown = str(candidate.get("markdown") or "").strip()
+    if not champion_markdown or not candidate_markdown:
+        return None
+
+    prefer_candidate = recommendation == "promote_candidate"
+    chosen = candidate_markdown if prefer_candidate else champion_markdown
+    rejected = champion_markdown if prefer_candidate else candidate_markdown
+    preferred_side = "candidate" if prefer_candidate else "champion"
+
+    return {
+        "preferred_side": preferred_side,
+        "recommendation": recommendation,
+        "confidence": confidence,
+        "selection_overlap_ratio": round(overlap_ratio, 3),
+        "chosen": chosen,
+        "rejected": rejected,
+        "rationale": (
+            "shadow_lane "
+            f"preferred={preferred_side} "
+            f"recommendation={recommendation} "
+            f"confidence={confidence} "
+            f"overlap={round(overlap_ratio, 3)} "
+            f"score_delta={summary.get('score_delta', 0)}"
+        ),
+        "context": {
+            "workflow_mode": str(result.get("workflow_mode") or ""),
+            "champion_selected_items": champion.get("selected_items", []),
+            "candidate_selected_items": candidate.get("selected_items", []),
+            "summary": summary,
+        },
+    }
+
+
 async def build_benchmark_pack(
     settings: Settings,
     *,
