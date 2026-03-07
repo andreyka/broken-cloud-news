@@ -655,6 +655,303 @@ def simulate(
     asyncio.run(_run())
 
 
+@cli.command("benchmark-pack")
+@click.option(
+    "--limit",
+    type=int,
+    default=50,
+    show_default=True,
+    help="How many benchmark cases to export (0 = all matching cases).",
+)
+@click.option(
+    "--since-days",
+    type=int,
+    default=90,
+    show_default=True,
+    help="Only include runs from the last N days.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="benchmark_pack.json",
+    show_default=True,
+    help="Where to write the benchmark pack JSON.",
+)
+@click.option(
+    "--include-unreviewed",
+    is_flag=True,
+    help="Include unreviewed published runs as fallback accept cases.",
+)
+@click.option(
+    "--include-nonpublishable",
+    is_flag=True,
+    help="Include reviewed reject/needs_work cases as informational benchmark rows.",
+)
+def benchmark_pack(
+    limit: int,
+    since_days: int,
+    output_path: str,
+    include_unreviewed: bool,
+    include_nonpublishable: bool,
+) -> None:
+    """Build a curated benchmark pack from stored runs and reviews."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.evaluation import build_benchmark_pack
+
+        await get_pool(settings)
+        pack = await build_benchmark_pack(
+            settings,
+            limit=max(0, int(limit)),
+            since_days=max(0, int(since_days)),
+            include_unreviewed=include_unreviewed,
+            include_nonpublishable=include_nonpublishable,
+        )
+        Path(output_path).write_text(
+            json.dumps(pack, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        click.echo(
+            f"Benchmark pack written to {output_path} (cases={pack.get('count', 0)})"
+        )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("benchmark")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(exists=True, dir_okay=False),
+    required=True,
+    help="Benchmark pack JSON created by `bcn benchmark-pack`.",
+)
+@click.option(
+    "--candidate-overrides",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file with challenger Settings overrides.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="benchmark_report.json",
+    show_default=True,
+    help="Where to write the benchmark report JSON.",
+)
+@click.option(
+    "--include-text",
+    is_flag=True,
+    help="Include selected items and history context in the JSON report.",
+)
+@click.option(
+    "--store-db/--no-store-db",
+    default=True,
+    show_default=True,
+    help="Persist benchmark runs in PostgreSQL.",
+)
+def benchmark(
+    cases_path: str,
+    candidate_overrides: str | None,
+    output_path: str,
+    include_text: bool,
+    store_db: bool,
+) -> None:
+    """Run champion and challenger against the benchmark pack."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import ensure_evaluation_tables
+        from bcn.common.db import get_pool
+        from bcn.common.db import insert_evaluation_report
+        from bcn.evaluation import run_benchmark_pack
+
+        await get_pool(settings)
+        report = await run_benchmark_pack(
+            settings,
+            cases_path=cases_path,
+            candidate_overrides_path=candidate_overrides,
+            include_text=include_text,
+        )
+        Path(output_path).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if store_db:
+            await ensure_evaluation_tables()
+            run_id = await insert_evaluation_report(
+                report,
+                report_path=str(Path(output_path)),
+                source="cli",
+            )
+            report["db_run_id"] = str(run_id)
+            Path(output_path).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        click.echo(
+            "Benchmark complete: "
+            f"count={report.get('count', 0)} "
+            f"champion_pass={summary.get('champion_case_pass_rate', 0)} "
+            f"candidate_pass={summary.get('candidate_case_pass_rate', 0)}"
+        )
+        click.echo(
+            "Recommendation: "
+            f"{summary.get('recommendation', 'hold')} "
+            f"(confidence={summary.get('confidence', 'low')})"
+        )
+        if store_db:
+            click.echo(f"DB run id: {report.get('db_run_id')}")
+        click.echo(f"Report written to {output_path}")
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("shadow")
+@click.option(
+    "--mode",
+    type=_WORKFLOW_MODE_CHOICES,
+    default=REGULAR_DAILY_BRIEFING_MODE,
+    show_default=True,
+    help="Workflow mode to evaluate in shadow.",
+)
+@click.option(
+    "--candidate-overrides",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON file with challenger Settings overrides.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    default="shadow_report.json",
+    show_default=True,
+    help="Where to write the shadow report JSON.",
+)
+@click.option(
+    "--include-text",
+    is_flag=True,
+    help="Include full generated markdown in the report.",
+)
+@click.option(
+    "--store-db/--no-store-db",
+    default=True,
+    show_default=True,
+    help="Persist shadow runs in PostgreSQL.",
+)
+def shadow(
+    mode: str,
+    candidate_overrides: str | None,
+    output_path: str,
+    include_text: bool,
+    store_db: bool,
+) -> None:
+    """Compare champion and challenger on current upcoming items without publishing."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import ensure_evaluation_tables
+        from bcn.common.db import get_pool
+        from bcn.common.db import insert_evaluation_report
+        from bcn.evaluation import run_shadow_lane
+
+        await get_pool(settings)
+        report = await run_shadow_lane(
+            settings,
+            workflow_mode=mode,
+            candidate_overrides_path=candidate_overrides,
+            include_text=include_text,
+        )
+        Path(output_path).write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if store_db:
+            await ensure_evaluation_tables()
+            run_id = await insert_evaluation_report(
+                report,
+                report_path=str(Path(output_path)),
+                source="cli",
+            )
+            report["db_run_id"] = str(run_id)
+            Path(output_path).write_text(
+                json.dumps(report, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        summary = report.get("summary", {}) if isinstance(report, dict) else {}
+        click.echo(
+            "Shadow evaluation complete: "
+            f"mode={mode} "
+            f"item_pool={report.get('item_pool_count', 0)} "
+            f"selection_overlap={summary.get('selection_overlap_ratio', 0)}"
+        )
+        click.echo(
+            "Recommendation: "
+            f"{summary.get('recommendation', 'hold')} "
+            f"(confidence={summary.get('confidence', 'low')})"
+        )
+        if store_db:
+            click.echo(f"DB run id: {report.get('db_run_id')}")
+        click.echo(f"Report written to {output_path}")
+        await close_pool()
+
+    asyncio.run(_run())
+
+
+@cli.command("evaluation-runs")
+@click.option(
+    "--lane",
+    type=click.Choice(["benchmark", "shadow"]),
+    help="Filter by evaluation lane.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=10,
+    show_default=True,
+    help="How many recent runs to show.",
+)
+def evaluation_runs(lane: str | None, limit: int) -> None:
+    """List recent stored benchmark and shadow runs."""
+    settings = Settings()
+
+    async def _run() -> None:
+        from bcn.common.db import close_pool
+        from bcn.common.db import get_pool
+        from bcn.common.db import list_recent_evaluation_runs
+
+        await get_pool(settings)
+        rows = await list_recent_evaluation_runs(lane=lane, limit=max(1, int(limit)))
+        if not rows:
+            click.echo("No evaluation runs found")
+            await close_pool()
+            return
+
+        for row in rows:
+            payload = dict(row)
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+            click.echo(
+                f"{payload.get('created_at').isoformat()} | "
+                f"lane={payload.get('lane')} | "
+                f"id={payload.get('id')} | "
+                f"recommendation={summary.get('recommendation', 'hold')} | "
+                f"confidence={summary.get('confidence', 'low')} | "
+                f"count={payload.get('count', 0)}"
+            )
+        await close_pool()
+
+    asyncio.run(_run())
+
+
 @cli.command()
 @click.option("--briefing-id", type=str, help="Distribute a specific DRAFT briefing UUID.")
 @click.option(
