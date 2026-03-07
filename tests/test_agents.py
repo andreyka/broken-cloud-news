@@ -138,16 +138,15 @@ class TestCliHelpers:
 # ── Collector tests ──────────────────────────────────────────────────────
 
 
-class TestCollectorExecutor:
+class TestCollectorService:
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa(self):
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
         settings = _make_settings()
-        executor = CollectorExecutor(settings)
+        service = CollectorService(settings)
 
-        # Mock GHSA GraphQL endpoint
         respx.post("https://api.github.com/graphql").mock(
             return_value=httpx.Response(
                 200,
@@ -174,27 +173,22 @@ class TestCollectorExecutor:
             )
         )
 
-        with patch(
-            "bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock
-        ) as mock_insert:
-            from uuid import uuid4
+        try:
+            items = await service.collect_ghsa_items()
+        finally:
+            await service.close()
 
-            mock_insert.return_value = uuid4()
-            count = await executor._collect_ghsa()
-
-        assert count == 1
-        mock_insert.assert_called_once()
-        call_kwargs = mock_insert.call_args
-        assert call_kwargs[1]["source_type"] == "ghsa"
-        assert call_kwargs[1]["source_id"] == "GHSA-test-0001"
+        assert len(items) == 1
+        assert items[0].source_type == "ghsa"
+        assert items[0].source_id == "GHSA-test-0001"
 
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa_filters_severity(self):
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
         settings = _make_settings()
-        executor = CollectorExecutor(settings)
+        service = CollectorService(settings)
 
         respx.post("https://api.github.com/graphql").mock(
             return_value=httpx.Response(
@@ -220,25 +214,24 @@ class TestCollectorExecutor:
             )
         )
 
-        with patch(
-            "bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock
-        ) as mock_insert:
-            count = await executor._collect_ghsa()
+        try:
+            items = await service.collect_ghsa_items()
+        finally:
+            await service.close()
 
-        assert count == 0
-        mock_insert.assert_not_called()
+        assert items == []
 
     @pytest.mark.asyncio
     async def test_collect_reddit(self):
         import json
 
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
         settings = _make_settings(
             reddit_subreddits=["netsec"],
             twitter_required_keywords=["cloud", "kubernetes", "cve"],
         )
-        executor = CollectorExecutor(settings)
+        service = CollectorService(settings)
 
         rss_body = """
         <rss version="2.0"><channel>
@@ -278,23 +271,16 @@ class TestCollectorExecutor:
                 return 200, json_body
             return 404, ""
 
-        executor.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
+        service.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
 
-        with patch(
-            "bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock
-        ) as mock_insert:
-            from uuid import uuid4
+        try:
+            items = await service.collect_reddit_items()
+        finally:
+            await service.close()
 
-            mock_insert.return_value = uuid4()
-            count = await executor._collect_reddit()
-
-        assert count == 1
-        mock_insert.assert_called_once()
-        assert (
-            mock_insert.call_args.kwargs["url"]
-            == "https://reddit.com/r/netsec/comments/abc123/test/"
-        )
-        raw = mock_insert.call_args.kwargs["raw_data"]
+        assert len(items) == 1
+        assert items[0].url == "https://reddit.com/r/netsec/comments/abc123/test/"
+        raw = items[0].raw_data
         assert raw["engagement"]["upvotes"] == 120
         assert raw["engagement"]["comments"] == 42
         assert raw["permalink"] == "https://reddit.com/r/netsec/comments/abc123/test/"
@@ -303,7 +289,7 @@ class TestCollectorExecutor:
                 "url": "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
             }
         ]
-        full_content = mock_insert.call_args.kwargs["full_content"] or ""
+        full_content = items[0].full_content or ""
         assert "Reference links:" in full_content
         assert "stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation" in full_content
 
@@ -311,13 +297,13 @@ class TestCollectorExecutor:
     async def test_collect_reddit_keeps_permalink_for_low_signal_outbound(self):
         import json
 
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
         settings = _make_settings(
             reddit_subreddits=["netsec"],
             twitter_required_keywords=["cloud", "kubernetes", "cve"],
         )
-        executor = CollectorExecutor(settings)
+        service = CollectorService(settings)
 
         rss_body = """
         <rss version="2.0"><channel>
@@ -357,23 +343,18 @@ class TestCollectorExecutor:
                 return 200, json_body
             return 404, ""
 
-        executor.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
+        service.scraper.fetch_text = AsyncMock(side_effect=mock_fetch_text)
 
-        with patch(
-            "bcn.agents.collector.agent.insert_news_item", new_callable=AsyncMock
-        ) as mock_insert:
-            from uuid import uuid4
+        try:
+            items = await service.collect_reddit_items()
+        finally:
+            await service.close()
 
-            mock_insert.return_value = uuid4()
-            count = await executor._collect_reddit()
-
-        assert count == 1
-        mock_insert.assert_called_once()
+        assert len(items) == 1
         assert (
-            mock_insert.call_args.kwargs["url"]
-            == "https://reddit.com/r/netsec/comments/zzz999/community_thread/"
+            items[0].url == "https://reddit.com/r/netsec/comments/zzz999/community_thread/"
         )
-        raw = mock_insert.call_args.kwargs["raw_data"]
+        raw = items[0].raw_data
         assert raw["references"] == [{"url": "https://www.youtube.com/watch?v=abc123"}]
 
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
@@ -422,6 +403,36 @@ class TestCollectorExecutor:
         assert "- https://github.com/org/repo" in content
         assert "- https://www.youtube.com/watch?v=abc123" in content
 
+
+class TestCollectorExecutor:
+    @pytest.mark.asyncio
+    async def test_execute_delegates_to_control_plane(self):
+        from bcn.agents.collector.agent import CollectorExecutor
+
+        settings = _make_settings()
+        executor = CollectorExecutor(settings)
+
+        try:
+            with patch(
+                "bcn.agents.collector.agent.execute_collection",
+                new_callable=AsyncMock,
+                return_value="GHSA: collected 1 items",
+            ) as mock_execute:
+                eq = FakeEventQueue()
+                ctx = _fake_context("collect ghsa")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
+
+        mock_execute.assert_awaited_once_with(
+            settings,
+            source="ghsa",
+            collector_service=executor.service,
+            origin="collector_agent",
+            manage_pool=False,
+        )
+        assert any("GHSA: collected 1 items" in str(e) for e in eq.events)
+
     @pytest.mark.asyncio
     async def test_execute_supports_async_event_queue(self):
         from bcn.agents.collector.agent import CollectorExecutor
@@ -429,12 +440,17 @@ class TestCollectorExecutor:
         settings = _make_settings()
         executor = CollectorExecutor(settings)
 
-        with patch.object(
-            executor, "_collect_all", new_callable=AsyncMock, return_value=(1, 2, 3, 4)
-        ):
-            eq = FakeAsyncEventQueue()
-            ctx = _fake_context("collect")
-            await executor.execute(ctx, eq)
+        try:
+            with patch(
+                "bcn.agents.collector.agent.execute_collection",
+                new_callable=AsyncMock,
+                return_value="All: GHSA=1, RSS=2, Twitter=3, Reddit=4",
+            ):
+                eq = FakeAsyncEventQueue()
+                ctx = _fake_context("collect")
+                await executor.execute(ctx, eq)
+        finally:
+            await executor.close()
 
         assert any(
             "All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e) for e in eq.events
@@ -448,12 +464,14 @@ class TestCollectorExecutor:
         executor = CollectorExecutor(settings)
 
         with (
-            patch.object(
-                executor,
-                "_collect_all",
+            patch(
+                "bcn.agents.collector.agent.execute_collection",
                 new_callable=AsyncMock,
-                return_value=(0, 0, 0, 0),
+                return_value="All: GHSA=0, RSS=0, Twitter=0, Reddit=0",
             ),
+            patch.object(
+                executor.service, "close", new_callable=AsyncMock
+            ) as mock_service_close,
             patch.object(
                 executor.scraper, "close", new_callable=AsyncMock
             ) as mock_scraper_close,
@@ -461,12 +479,15 @@ class TestCollectorExecutor:
                 executor._http, "aclose", new_callable=AsyncMock
             ) as mock_http_close,
         ):
-            eq = FakeEventQueue()
+            eq = FakeAsyncEventQueue()
             ctx = _fake_context("collect")
             await executor.execute(ctx, eq)
+            mock_service_close.assert_not_awaited()
+            mock_scraper_close.assert_not_called()
+            mock_http_close.assert_not_called()
+            await executor.close()
+            mock_service_close.assert_awaited_once()
 
-        mock_scraper_close.assert_not_called()
-        mock_http_close.assert_not_called()
 
 
 # ── Analyst tests ────────────────────────────────────────────────────────

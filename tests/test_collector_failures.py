@@ -20,54 +20,29 @@ def _make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
-class _FakeEventQueue:
-    def __init__(self):
-        self.events: list = []
-
-    def enqueue_event(self, event):
-        self.events.append(event)
-
-
-def _fake_context(text: str = "collect_all"):
-    from uuid import uuid4
-
-    from a2a.server.agent_execution import RequestContext
-    from a2a.types import Message
-    from a2a.types import MessageSendParams
-    from a2a.types import TextPart
-
-    msg = Message(role="user", parts=[TextPart(text=text)], message_id=uuid4().hex)
-    return RequestContext(request=MessageSendParams(message=msg))
-
-
 @pytest.mark.asyncio
-async def test_execute_reports_failed_sources_in_collect_all():
-    from bcn.agents.collector.agent import CollectorExecutor
+async def test_execute_collection_reports_failed_sources_in_collect_all():
+    from bcn.workflows.collection import execute_collection
 
     settings = _make_settings()
-    executor = CollectorExecutor(settings)
+    collector_service = AsyncMock()
+    collector_service.collect_ghsa_items.return_value = []
+    collector_service.collect_rss_items.side_effect = RuntimeError("rss failure")
+    collector_service.collect_twitter_items.return_value = []
+    collector_service.collect_reddit_items.return_value = []
 
-    with (
-        patch.object(executor, "_collect_ghsa", new_callable=AsyncMock, return_value=1),
-        patch.object(
-            executor,
-            "_collect_rss",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("rss failure"),
-        ),
-        patch.object(
-            executor,
-            "_collect_twitter",
-            new_callable=AsyncMock,
-            return_value=3,
-        ),
-        patch.object(
-            executor, "_collect_reddit", new_callable=AsyncMock, return_value=4
-        ),
+    with patch("bcn.workflows.collection.get_pool", new_callable=AsyncMock), patch(
+        "bcn.workflows.collection._persist_collected_items",
+        new_callable=AsyncMock,
+        side_effect=[1, 3, 4],
     ):
-        eq = _FakeEventQueue()
-        ctx = _fake_context("collect")
-        await executor.execute(ctx, eq)
+        result = await execute_collection(
+            settings,
+            source="all",
+            collector_service=collector_service,
+            origin="test",
+            manage_pool=False,
+        )
 
-    assert any("All: GHSA=1, RSS=0, Twitter=3, Reddit=4" in str(e) for e in eq.events)
-    assert any("failures: rss" in str(e).lower() for e in eq.events)
+    assert "All: GHSA=1, RSS=0, Twitter=3, Reddit=4" in result
+    assert "failures: rss" in result.lower()
