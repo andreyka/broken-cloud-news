@@ -1,0 +1,196 @@
+"""Control-plane distribution service for briefing delivery."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+import logging
+from uuid import UUID
+
+from bcn.agents.distributor.service import DeliveryRequest
+from bcn.agents.distributor.service import DistributorService
+from bcn.agents.distributor.service import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.agents.distributor.service import normalize_distribution_mode
+from bcn.common.config import Settings
+from bcn.common.db import claim_draft_briefing_by_id
+from bcn.common.db import claim_latest_draft_briefing
+from bcn.common.db import close_pool
+from bcn.common.db import get_distribution_outcomes
+from bcn.common.db import get_newsletter_subscribers
+from bcn.common.db import get_pool
+from bcn.common.db import mark_briefing_distributed
+from bcn.common.db import mark_items_published
+from bcn.common.db import release_briefing_for_retry
+from bcn.common.db import upsert_distribution_outcome
+logger = logging.getLogger(__name__)
+
+
+async def _claim_briefing(
+    settings: Settings,
+    *,
+    briefing_id: UUID | None,
+):
+    """Claim the requested or latest draft briefing for distribution."""
+    claim_kwargs = {
+        "stale_distributing_minutes": (
+            settings.distribution_retry_stale_distributing_minutes
+        ),
+        "max_distribution_retries": settings.distribution_retry_max_attempts,
+    }
+    if briefing_id is not None:
+        return await claim_draft_briefing_by_id(briefing_id, **claim_kwargs)
+    return await claim_latest_draft_briefing(**claim_kwargs)
+
+
+def _previously_ok_channels(rows: list[object]) -> set[str]:
+    """Extract channels that already have a successful delivery outcome."""
+    channels: set[str] = set()
+    for row in rows:
+        try:
+            channel = str(row["channel"]).strip().lower()
+            status = str(row["status"] or "").strip().lower()
+        except Exception:
+            continue
+        if channel and status == "ok":
+            channels.add(channel)
+    return channels
+
+
+def _stale_draft_message(
+    briefing: dict[str, object],
+    *,
+    max_age_minutes: int,
+) -> str | None:
+    """Return a stale-draft message when the claimed briefing is too old."""
+    if max_age_minutes <= 0:
+        return None
+    created_at = briefing.get("created_at")
+    if not isinstance(created_at, datetime):
+        return None
+    created_utc = (
+        created_at.astimezone(timezone.utc)
+        if created_at.tzinfo is not None
+        else created_at.replace(tzinfo=timezone.utc)
+    )
+    age = datetime.now(timezone.utc) - created_utc
+    if age <= timedelta(minutes=max_age_minutes):
+        return None
+    age_minutes = int(age.total_seconds() // 60)
+    return f"Latest draft is stale ({age_minutes} minutes old), skipping distribution"
+
+
+async def _newsletter_recipients_for_mode(mode: str) -> list[str]:
+    """Load newsletter recipients for monthly newsletter distribution."""
+    if mode != REGULAR_MONTHLY_NEWSLETTER_MODE:
+        return []
+    rows = await get_newsletter_subscribers(active_only=True)
+    recipients: list[str] = []
+    for row in rows:
+        email = str(dict(row).get("email") or "").strip()
+        if email:
+            recipients.append(email)
+    return recipients
+
+
+async def execute_distribution(
+    settings: Settings,
+    *,
+    mode: str,
+    briefing_id: UUID | None = None,
+    distributor_service: DistributorService | None = None,
+    manage_pool: bool = True,
+) -> str:
+    """Claim, deliver, and persist one distribution attempt."""
+    await get_pool(settings)
+    active_service = distributor_service or DistributorService(settings)
+    owns_service = distributor_service is None
+    claimed_briefing = None
+
+    try:
+        claimed_briefing = await _claim_briefing(settings, briefing_id=briefing_id)
+        if claimed_briefing is None:
+            if briefing_id is not None:
+                return (
+                    f"Requested briefing {briefing_id} is not available for distribution"
+                )
+            return "No new briefing to distribute"
+
+        should_release_for_retry = True
+        retry_error: str | None = None
+        try:
+            stale_message = _stale_draft_message(
+                dict(claimed_briefing),
+                max_age_minutes=max(
+                    0, int(settings.briefing_distribution_max_draft_age_minutes)
+                ),
+            )
+            if stale_message:
+                return stale_message
+
+            normalized_mode = normalize_distribution_mode(mode)
+            newsletter_recipients = await _newsletter_recipients_for_mode(
+                normalized_mode
+            )
+            previous_rows = await get_distribution_outcomes(
+                briefing_ids=[claimed_briefing["id"]]
+            )
+            delivery = await active_service.deliver(
+                DeliveryRequest(
+                    briefing=dict(claimed_briefing),
+                    mode=normalized_mode,
+                    newsletter_recipients=tuple(newsletter_recipients),
+                    previous_ok_channels=frozenset(
+                        _previously_ok_channels(previous_rows)
+                    ),
+                )
+            )
+
+            for attempt in delivery.attempts:
+                await upsert_distribution_outcome(
+                    briefing_id=claimed_briefing["id"],
+                    channel=attempt.channel,
+                    status=attempt.status,
+                    external_message_id=attempt.external_message_id,
+                    metrics={},
+                    metadata=attempt.metadata,
+                )
+
+            if delivery.all_ok:
+                await mark_briefing_distributed(
+                    claimed_briefing["id"],
+                    delivery.results,
+                )
+                item_ids = (
+                    list(claimed_briefing["item_ids"])
+                    if claimed_briefing["item_ids"]
+                    else []
+                )
+                await mark_items_published(item_ids)
+                should_release_for_retry = False
+            else:
+                failed_channels = sorted(
+                    channel
+                    for channel, status in delivery.results.items()
+                    if status != "ok"
+                )
+                if failed_channels:
+                    retry_error = "distribution_incomplete:" + ",".join(
+                        failed_channels
+                    )
+            logger.info(delivery.message)
+            return delivery.message
+        finally:
+            if should_release_for_retry and claimed_briefing is not None:
+                await release_briefing_for_retry(
+                    claimed_briefing["id"],
+                    error=retry_error,
+                    max_retries=settings.distribution_retry_max_attempts,
+                    base_delay_seconds=settings.distribution_retry_base_delay_seconds,
+                    max_delay_seconds=settings.distribution_retry_max_delay_seconds,
+                )
+    finally:
+        if owns_service:
+            await active_service.close()
+        if manage_pool:
+            await close_pool()

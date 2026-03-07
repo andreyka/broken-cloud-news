@@ -28,6 +28,7 @@ from bcn.workflows.automation import (
     job_publish_regular_monthly_newsletter as job_publish_monthly_newsletter,
 )
 from bcn.workflows.automation import job_shadow_regular_briefing
+from bcn.workflows.distribution import execute_distribution
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import run_writer_distributor_handoff
@@ -59,7 +60,12 @@ async def execute_workflow_mode(
     return await run_writer_distributor_handoff(
         mode=mode,
         run_writer=agent_client.call_writer,
-        run_distributor=agent_client.call_distributor,
+        run_distribution=lambda dispatch_mode, briefing_id: execute_distribution(
+            settings,
+            mode=dispatch_mode,
+            briefing_id=briefing_id,
+            manage_pool=True,
+        ),
     )
 
 
@@ -82,8 +88,6 @@ async def run_daemon(
     from bcn.agents.collector.agent import SKILLS as COLL_SKILLS
     from bcn.agents.critic.agent import CriticExecutor
     from bcn.agents.critic.agent import SKILLS as CRIT_SKILLS
-    from bcn.agents.distributor.agent import DistributorExecutor
-    from bcn.agents.distributor.agent import SKILLS as DIST_SKILLS
     from bcn.agents.verifier.agent import SKILLS as VERI_SKILLS
     from bcn.agents.verifier.agent import VerifierExecutor
     from bcn.agents.writer.agent import SKILLS as WRIT_SKILLS
@@ -157,12 +161,6 @@ async def run_daemon(
         f"http://localhost:{settings.writer_port}/",
         WRIT_SKILLS,
     )
-    distributor_card = build_agent_card(
-        "BCN Distributor",
-        "Distributes briefings to Telegram/Discord (daily, ad-hoc) or Email (monthly)",
-        f"http://localhost:{settings.distributor_port}/",
-        DIST_SKILLS,
-    )
     critic_card = build_agent_card(
         "BCN Critic",
         "Critiques briefing quality and provides recommendations",
@@ -179,14 +177,12 @@ async def run_daemon(
     collector_exec = CollectorExecutor(settings)
     analyst_exec = AnalystExecutor(settings)
     writer_exec = WriterExecutor(settings)
-    distributor_exec = DistributorExecutor(settings)
     critic_exec = CriticExecutor(settings)
     verifier_exec = VerifierExecutor(settings)
     executors = [
         collector_exec,
         analyst_exec,
         writer_exec,
-        distributor_exec,
         critic_exec,
         verifier_exec,
     ]
@@ -196,7 +192,6 @@ async def run_daemon(
     _emit(f"  Collector on :{settings.collector_port}")
     _emit(f"  Analyst  on :{settings.analyst_port}")
     _emit(f"  Writer   on :{settings.writer_port}")
-    _emit(f"  Distributor on :{settings.distributor_port}")
     _emit(f"  Critic on :{settings.critic_port}")
     _emit(f"  Verifier on :{settings.verifier_port}")
 
@@ -210,9 +205,6 @@ async def run_daemon(
             ),
             asyncio.create_task(
                 serve_agent(writer_card, writer_exec, settings.writer_port)
-            ),
-            asyncio.create_task(
-                serve_agent(distributor_card, distributor_exec, settings.distributor_port)
             ),
             asyncio.create_task(
                 serve_agent(critic_card, critic_exec, settings.critic_port)
