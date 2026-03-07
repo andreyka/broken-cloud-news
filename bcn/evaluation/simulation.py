@@ -23,6 +23,7 @@ from bcn.agents.writer.service import WriterWorkflowProtocol
 from bcn.common.config import Settings
 from bcn.common.db import get_distributed_briefings
 from bcn.common.db import get_items_by_ids
+from bcn.common.db import update_item_analyzed
 
 logger = logging.getLogger(__name__)
 
@@ -641,7 +642,16 @@ async def simulate_historical_briefings(
                     if db_item.get("source_type") in ("twitter", "reddit") and db_item.get(
                         "raw_data"
                     ):
-                        await analyst.analyze_item_and_save(dict(db_item))
+                        update = await analyst.analyze_item(dict(db_item))
+                        await update_item_analyzed(
+                            item_id=db_item["id"],
+                            summary=update.summary,
+                            relevance_score=update.relevance_score,
+                            ai_tags=update.ai_tags,
+                            full_content=update.full_content,
+                            image_prompt=update.image_prompt,
+                            canonical_url=update.canonical_url,
+                        )
 
                 item_rows = await get_items_by_ids(item_ids)
                 items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)

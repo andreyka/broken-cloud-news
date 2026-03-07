@@ -8,8 +8,8 @@ from typing import Protocol
 
 from bcn.agents.analyst.llm import AnalystLLM
 from bcn.common.config import Settings
-from bcn.common.db import update_item_analyzed
 from bcn.common.llm import LLMClient
+from bcn.common.models import AnalyzedItemUpdate
 from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
@@ -21,12 +21,12 @@ class AnalystWorkflowProtocol(Protocol):
     async def close(self) -> None:
         """Release any resources held by the analyst workflow service."""
 
-    async def analyze_item_and_save(self, item: dict) -> None:
-        """Analyze one item and persist the refreshed DB fields."""
+    async def analyze_item(self, item: dict) -> AnalyzedItemUpdate:
+        """Analyze one item and return the DB-ready update payload."""
 
 
 class AnalystService:
-    """Domain service for analyzing items and persisting results."""
+    """Domain service for item analysis without workflow DB ownership."""
 
     def __init__(
         self,
@@ -45,13 +45,8 @@ class AnalystService:
             min_content_length=settings.scrape_min_content_length,
         )
 
-    async def analyze_item_and_save(
-        self,
-        item: dict,
-        *,
-        update_item_fn=update_item_analyzed,
-    ) -> None:
-        """Analyze one item and persist the updated DB fields."""
+    async def _build_analysis_content(self, item: dict) -> str | None:
+        """Collect the best available content for one item before LLM analysis."""
         title: str = item["title"] or ""
         content: str = item["full_content"] or ""
 
@@ -96,6 +91,12 @@ class AnalystService:
                     exc,
                 )
 
+        return content or None
+
+    async def analyze_item(self, item: dict) -> AnalyzedItemUpdate:
+        """Analyze one item and return the updated DB fields."""
+        title: str = item["title"] or ""
+        content = await self._build_analysis_content(item)
         if not content:
             content = title
 
@@ -104,11 +105,10 @@ class AnalystService:
             content,
             url=item["url"] or "",
         )
-        await update_item_fn(
-            item_id=item["id"],
+        update = AnalyzedItemUpdate(
             summary=result.summary,
             relevance_score=result.relevance_score,
-            ai_tags=result.tags,
+            ai_tags=list(result.tags),
             full_content=(content if content != title else item["full_content"]),
             image_prompt=result.image_prompt,
             canonical_url=result.canonical_url,
@@ -117,8 +117,9 @@ class AnalystService:
             "Analyzed %s [%s] score=%d",
             item["source_id"],
             item["source_type"],
-            result.relevance_score,
+            update.relevance_score,
         )
+        return update
 
     async def close(self) -> None:
         """Release resources owned by this analyst service."""
