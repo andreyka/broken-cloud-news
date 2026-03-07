@@ -124,6 +124,10 @@ bcn critique --file ./draft.md
 bcn simulate --limit 30 --output simulation_report.json  # Backtest vs historical briefings (no publish)
 bcn simulate --limit 0 --with-critic-rewrites            # Full heavy replay with writer->critic rewrites
 bcn simulate --store-db                                   # Persist run/results in DB and compare with previous run
+bcn benchmark-pack --output benchmark_pack.json
+bcn benchmark --cases benchmark_pack.json --candidate-overrides candidate.json
+bcn shadow --candidate-overrides candidate.json --store-db
+bcn evaluation-runs --limit 10
 bcn review --decision accept --issue-tag style            # Store human review labels for latest briefing
 bcn review-queue --only-unreviewed                        # List briefings needing manual review
 bcn finalize-pending-runs --max-age-minutes 180           # Finalize stale trace runs stuck in PENDING
@@ -182,6 +186,10 @@ All settings via environment variables with `BCN_` prefix. See `.env.example` fo
 | `BCN_DISTRIBUTE_HOUR` | `9` | Legacy single digest hour fallback when `BCN_DISTRIBUTE_HOURS` is empty |
 | `BCN_DISTRIBUTE_MINUTE` | `0` | Minute used for digest cron scheduling |
 | `BCN_DISTRIBUTE_TIMEZONE` | `UTC` | IANA timezone for digest cron (e.g. `America/Los_Angeles`) |
+| `BCN_SHADOW_ENABLED` | `false` | Enable scheduled pre-publish shadow runs in daemon mode |
+| `BCN_SHADOW_MINUTES_BEFORE_PUBLISH` | `45` | Minutes before each daily publish slot to execute the shadow lane |
+| `BCN_SHADOW_CANDIDATE_OVERRIDES_PATH` | empty | JSON overrides file for the challenger used by scheduled shadow |
+| `BCN_SHADOW_INCLUDE_TEXT` | `false` | Persist generated text in scheduled shadow reports |
 | `BCN_MONTHLY_NEWSLETTER_ENABLED` | `true` | Enable monthly newsletter scheduler job |
 | `BCN_MONTHLY_NEWSLETTER_DAY` | `1` | Day-of-month for monthly newsletter publish |
 | `BCN_MONTHLY_NEWSLETTER_HOUR` | `9` | Hour for monthly newsletter publish |

@@ -78,3 +78,8 @@ class TestSettings:
         assert Settings(monthly_newsletter_day=1).monthly_newsletter_day == 1
         with pytest.raises(ValidationError):
             Settings(monthly_newsletter_day=31)
+
+    def test_shadow_minutes_before_publish_validation(self):
+        assert Settings(shadow_minutes_before_publish=45).shadow_minutes_before_publish == 45
+        with pytest.raises(ValidationError):
+            Settings(shadow_minutes_before_publish=1440)
