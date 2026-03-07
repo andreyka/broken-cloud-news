@@ -11,6 +11,14 @@ from uuid import UUID
 
 import click
 
+from bcn.agents.service import analyze_items as execute_analysis
+from bcn.agents.service import collect_news
+from bcn.agents.service import critique_briefing
+from bcn.agents.service import distribute_briefing as execute_distribution
+from bcn.agents.service import generate_briefing as execute_briefing_generation
+from bcn.agents.service import verify_briefing
+from bcn.common.agent_client import build_default_agent_client
+from bcn.common.agent_client import build_port_sender_agent_client
 from bcn.common.agent_runtime import extract_text_from_rpc_result as _extract_text_from_rpc_result
 from bcn.common.agent_runtime import run_agent_directly as _run_agent_directly
 from bcn.common.agent_runtime import send_to_agent as _send_to_agent
@@ -33,6 +41,16 @@ logger = logging.getLogger("bcn")
 _build_daily_digest_trigger = build_regular_briefing_trigger
 _build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
+
+
+def _build_cli_agent_client(settings: Settings):
+    """Build the default client used by CLI agent-facing commands."""
+    return build_default_agent_client(
+        settings,
+        direct_runner=_run_agent_directly,
+        a2a_sender=_send_to_agent,
+        timeout_seconds=settings.a2a_request_timeout_seconds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -105,40 +123,15 @@ def db_migrate(dry_run: bool) -> None:
 def collect(source: str) -> None:
     """Run collector for all sources or a specific one."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        from bcn.agents.collector.agent import CollectorExecutor
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-
-        await get_pool(settings)
-        executor = CollectorExecutor(settings)
-        try:
-            if source == "ghsa":
-                count = await executor._collect_ghsa()
-                click.echo(f"GHSA: collected {count} items")
-            elif source == "rss":
-                count = await executor._collect_rss()
-                click.echo(f"RSS: collected {count} items")
-            elif source == "twitter":
-                count = await executor._collect_twitter()
-                click.echo(f"Twitter: collected {count} items")
-            elif source == "reddit":
-                count = await executor._collect_reddit()
-                click.echo(f"Reddit: collected {count} items")
-            else:
-                counts = await executor._collect_all()
-                click.echo(
-                    f"All: GHSA={counts[0]}, RSS={counts[1]}, "
-                    f"Twitter={counts[2]}, Reddit={counts[3]}"
-                )
-        finally:
-            try:
-                await executor.close()
-            except Exception:
-                logger.exception("Failed to close collector executor")
-            finally:
-                await close_pool()
+        result = await collect_news(
+            settings,
+            source=source,
+            agent_client=agent_client,
+        )
+        click.echo(result)
 
     asyncio.run(_run())
 
@@ -147,15 +140,10 @@ def collect(source: str) -> None:
 def analyze() -> None:
     """Score and summarize unprocessed news items via the LLM."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        result = await _run_agent_directly(
-            executor_cls=AnalystExecutor,
-            settings=settings,
-            skill="analyze_new_items",
-        )
+        result = await execute_analysis(settings, agent_client=agent_client)
         click.echo(result)
 
     asyncio.run(_run())
@@ -172,14 +160,13 @@ def analyze() -> None:
 def write(mode: str) -> None:
     """Generate a briefing with cover image from top-scored items."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        from bcn.agents.writer.agent import WriterExecutor
-
-        result = await _run_agent_directly(
-            executor_cls=WriterExecutor,
-            settings=settings,
-            skill=f"generate_briefing::{mode}",
+        result = await execute_briefing_generation(
+            settings,
+            mode=mode,
+            agent_client=agent_client,
         )
         click.echo(result)
 
@@ -193,28 +180,15 @@ def write(mode: str) -> None:
 def critique(latest: bool, file_path: str | None, text_input: str | None) -> None:
     """Run the critic against latest briefing or provided markdown text."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        from bcn.agents.critic.agent import CriticExecutor
-
-        skill: str
-        if text_input:
-            skill = f"critique_markdown::{text_input}"
-        elif file_path:
-            body = Path(file_path).read_text(encoding="utf-8")
-            skill = f"critique_markdown::{body}"
-        else:
-            # Default to latest briefing to make this command useful out-of-the-box.
-            skill = (
-                "critique_latest"
-                if latest or (not file_path and not text_input)
-                else ""
-            )
-
-        result = await _run_agent_directly(
-            executor_cls=CriticExecutor,
+        result = await critique_briefing(
             settings=settings,
-            skill=skill,
+            latest=latest,
+            file_path=file_path,
+            text_input=text_input,
+            agent_client=agent_client,
         )
         click.echo(result)
 
@@ -228,25 +202,15 @@ def critique(latest: bool, file_path: str | None, text_input: str | None) -> Non
 def verify(latest: bool, file_path: str | None, text_input: str | None) -> None:
     """Run factual verifier against latest briefing or provided markdown text."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        from bcn.agents.verifier.agent import VerifierExecutor
-
-        skill: str
-        if text_input:
-            skill = f"verify_markdown::{text_input}"
-        elif file_path:
-            body = Path(file_path).read_text(encoding="utf-8")
-            skill = f"verify_markdown::{body}"
-        else:
-            skill = (
-                "verify_latest" if latest or (not file_path and not text_input) else ""
-            )
-
-        result = await _run_agent_directly(
-            executor_cls=VerifierExecutor,
+        result = await verify_briefing(
             settings=settings,
-            skill=skill,
+            latest=latest,
+            file_path=file_path,
+            text_input=text_input,
+            agent_client=agent_client,
         )
         click.echo(result)
 
@@ -672,11 +636,10 @@ def evaluation_runs(lane: str | None, limit: int) -> None:
 def distribute(briefing_id: str | None, mode: str) -> None:
     """Send the latest briefing to configured distribution channels."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run() -> None:
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        skill = f"distribute_briefing::{mode}"
+        parsed_briefing_id: UUID | None = None
         if briefing_id:
             try:
                 parsed_briefing_id = UUID(briefing_id)
@@ -684,12 +647,12 @@ def distribute(briefing_id: str | None, mode: str) -> None:
                 raise click.ClickException(
                     f"Invalid briefing UUID: {briefing_id}"
                 ) from exc
-            skill = f"distribute_briefing::{parsed_briefing_id}::{mode}"
 
-        result = await _run_agent_directly(
-            executor_cls=DistributorExecutor,
-            settings=settings,
-            skill=skill,
+        result = await execute_distribution(
+            settings,
+            mode=mode,
+            briefing_id=parsed_briefing_id,
+            agent_client=agent_client,
         )
         click.echo(result)
 
@@ -1604,12 +1567,13 @@ def pipeline(mode: str) -> None:
 def workflow_run(mode: str) -> None:
     """Run one workflow mode cycle without daemon scheduler."""
     settings = Settings()
+    agent_client = _build_cli_agent_client(settings)
 
     async def _run() -> None:
         writer_result, distribute_result = await execute_workflow_mode(
             settings,
             mode=mode,
-            run_agent_directly=_run_agent_directly,
+            agent_client=agent_client,
         )
         click.echo(writer_result)
         if not distribute_result:
@@ -1636,9 +1600,13 @@ def run() -> None:
                 timeout_seconds=settings.a2a_request_timeout_seconds,
             )
 
-        await run_daemon(
+        agent_client = build_port_sender_agent_client(
             settings,
             sender=_send_with_runtime_timeout,
+        )
+        await run_daemon(
+            settings,
+            agent_client=agent_client,
             emit=click.echo,
         )
 

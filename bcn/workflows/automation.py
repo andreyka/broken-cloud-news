@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from bcn.common.agent_client import AgentClient
 from bcn.common.config import Settings
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
@@ -52,44 +53,49 @@ __all__ = [
 ]
 
 
-def configure_scheduler_runtime(settings: Settings, sender) -> None:
+def configure_scheduler_runtime(
+    settings: Settings,
+    sender=None,
+    *,
+    agent_client: AgentClient | None = None,
+) -> None:
     """Configure runtime dependencies used by workflow jobs."""
-    configure_runtime(settings=settings, sender=sender)
+    configure_runtime(settings=settings, agent_client=agent_client, sender=sender)
 
 
 async def job_collect_ghsa() -> None:
     """Scheduled job: trigger GHSA collection."""
-    settings, sender = require_runtime()
-    await sender(settings.collector_port, "collect_ghsa")
+    _settings, agent_client = require_runtime()
+    await agent_client.collect_ghsa()
 
 
 async def job_collect_rss() -> None:
     """Scheduled job: trigger RSS collection."""
-    settings, sender = require_runtime()
-    await sender(settings.collector_port, "collect_rss")
+    _settings, agent_client = require_runtime()
+    await agent_client.collect_rss()
 
 
 async def job_collect_twitter() -> None:
     """Scheduled job: trigger Twitter/X collection."""
-    settings, sender = require_runtime()
-    await sender(settings.collector_port, "collect_twitter")
+    _settings, agent_client = require_runtime()
+    await agent_client.collect_twitter()
 
 
 async def job_collect_reddit() -> None:
     """Scheduled job: trigger Reddit collection."""
-    settings, sender = require_runtime()
-    await sender(settings.collector_port, "collect_reddit")
+    _settings, agent_client = require_runtime()
+    await agent_client.collect_reddit()
 
 
 async def job_analyze_items() -> None:
     """Scheduled job: trigger item analysis."""
-    settings, sender = require_runtime()
-    await sender(settings.analyst_port, "analyze_new_items")
+    _settings, agent_client = require_runtime()
+    await agent_client.analyze_new_items()
 
 
 async def job_shadow_regular_briefing() -> None:
     """Scheduled job: run shadow evaluation before the regular briefing slot."""
-    settings, _sender = require_runtime()
+    settings, _agent_client = require_runtime()
     if not bool(settings.shadow_enabled):
         logger.info("Shadow scheduler triggered while disabled; skipping.")
         return

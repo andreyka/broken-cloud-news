@@ -16,6 +16,7 @@ class TestSettings:
         assert s.llm_model_writer == ""
         assert s.ghsa_severities == ["CRITICAL", "HIGH"]
         assert s.collector_port == 9001
+        assert s.agent_url("collector") == "http://localhost:9001"
         assert s.briefing_history_items == 10
         assert s.briefing_novelty_lookback_hours == 24 * 21
         assert s.briefing_novelty_title_similarity_threshold == 0.78
@@ -23,6 +24,7 @@ class TestSettings:
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")
         monkeypatch.setenv("BCN_COLLECTOR_PORT", "5000")
+        monkeypatch.setenv("BCN_COLLECTOR_AGENT_URL", "https://collector.example.com/a2a/")
         monkeypatch.setenv("BCN_LLM_PROVIDER", "gemini")
         monkeypatch.setenv("BCN_LLM_PROVIDER_CRITIC", "openai")
         s = Settings()
@@ -30,6 +32,8 @@ class TestSettings:
         assert s.llm_provider == "gemini"
         assert s.llm_provider_critic == "openai_compat"
         assert s.collector_port == 5000
+        assert s.agent_url("collector") == "https://collector.example.com/a2a"
+        assert s.has_agent_url_overrides() is True
 
     def test_vertex_provider_aliases(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_PROVIDER", "vertex")
@@ -83,3 +87,7 @@ class TestSettings:
         assert Settings(shadow_minutes_before_publish=45).shadow_minutes_before_publish == 45
         with pytest.raises(ValidationError):
             Settings(shadow_minutes_before_publish=1440)
+
+    def test_agent_url_validation(self):
+        with pytest.raises(ValidationError):
+            Settings(writer_agent_url="writer.internal")

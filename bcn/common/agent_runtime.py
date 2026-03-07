@@ -73,12 +73,12 @@ def extract_text_from_rpc_result(result: dict[str, Any]) -> str | None:
 
 
 async def send_to_agent(
-    port: int,
+    target: str | int,
     skill: str,
     *,
     timeout_seconds: int = 180,
 ) -> str:
-    """Send a JSON-RPC message to a local A2A agent and return its reply."""
+    """Send a JSON-RPC message to an A2A agent and return its reply."""
     from a2a.client import A2AClient
     from a2a.types import Message
     from a2a.types import MessageSendParams
@@ -86,7 +86,11 @@ async def send_to_agent(
     from a2a.types import TextPart
 
     async with httpx.AsyncClient(timeout=timeout_seconds) as http_client:
-        client = A2AClient(http_client, url=f"http://localhost:{port}")
+        if isinstance(target, int):
+            url = f"http://localhost:{target}"
+        else:
+            url = str(target or "").strip()
+        client = A2AClient(http_client, url=url)
 
         message = Message(
             role="user",

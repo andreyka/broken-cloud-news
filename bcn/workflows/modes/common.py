@@ -163,9 +163,9 @@ async def run_writer_distributor_handoff(
 
 async def run_generation_and_distribution(mode: str) -> None:
     """Run one writer->distributor handoff cycle for the given workflow mode."""
-    settings, sender = require_runtime()
+    _settings, agent_client = require_runtime()
     await run_writer_distributor_handoff(
         mode=mode,
-        run_writer=lambda skill: sender(settings.writer_port, skill),
-        run_distributor=lambda skill: sender(settings.distributor_port, skill),
+        run_writer=agent_client.call_writer,
+        run_distributor=agent_client.call_distributor,
     )
