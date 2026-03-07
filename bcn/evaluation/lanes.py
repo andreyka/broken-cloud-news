@@ -18,10 +18,11 @@ from bcn.common.db import get_recent_briefings
 from bcn.common.db import get_recent_published_items
 from bcn.common.db import get_top_items_for_period
 from bcn.common.db import preview_analyzed_items
-from bcn.simulation import _strip_cover_image
-from bcn.simulation import score_feedback_rubric
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+
+from .simulation import _strip_cover_image
+from .simulation import score_feedback_rubric
 
 
 def _now_iso() -> str:

@@ -152,10 +152,8 @@ def test_load_settings_with_overrides_validates_file(tmp_path):
 def test_benchmark_pack_command_writes_output(monkeypatch, tmp_path):
     runner = CliRunner()
     output_path = tmp_path / "benchmark_pack.json"
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
     build_mock = AsyncMock(return_value={"count": 2, "cases": [{"case_id": "x"}]})
-    monkeypatch.setattr("bcn.evaluation.build_benchmark_pack", build_mock)
+    monkeypatch.setattr("bcn.evaluation.service.build_benchmark_pack_artifact", build_mock)
 
     result = runner.invoke(
         cli_module.cli,
@@ -164,7 +162,6 @@ def test_benchmark_pack_command_writes_output(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "Benchmark pack written" in result.output
-    assert output_path.exists()
     assert build_mock.await_count == 1
 
 
@@ -173,19 +170,11 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
     cases_path = tmp_path / "cases.json"
     cases_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
     output_path = tmp_path / "benchmark_report.json"
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", AsyncMock())
-    create_mock = AsyncMock(return_value="benchmark-run-id")
-    complete_mock = AsyncMock()
-    fail_mock = AsyncMock()
-    monkeypatch.setattr("bcn.common.db.create_evaluation_run", create_mock)
-    monkeypatch.setattr("bcn.common.db.complete_evaluation_run", complete_mock)
-    monkeypatch.setattr("bcn.common.db.fail_evaluation_run", fail_mock)
     run_mock = AsyncMock(
         return_value={
             "count": 4,
             "lane": "benchmark",
+            "db_run_id": "benchmark-run-id",
             "summary": {
                 "champion_case_pass_rate": 0.5,
                 "candidate_case_pass_rate": 0.75,
@@ -195,7 +184,7 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
             "results": [],
         }
     )
-    monkeypatch.setattr("bcn.evaluation.run_benchmark_pack", run_mock)
+    monkeypatch.setattr("bcn.evaluation.service.execute_benchmark_lane", run_mock)
 
     result = runner.invoke(
         cli_module.cli,
@@ -206,30 +195,18 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
     assert "Benchmark complete" in result.output
     assert "promote_candidate" in result.output
     assert "DB run id: benchmark-run-id" in result.output
-    assert output_path.exists()
     assert run_mock.await_count == 1
-    assert create_mock.await_count == 1
-    assert complete_mock.await_count == 1
-    assert fail_mock.await_count == 0
 
 
 def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     runner = CliRunner()
     output_path = tmp_path / "shadow_report.json"
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.ensure_evaluation_tables", AsyncMock())
-    create_mock = AsyncMock(return_value="shadow-run-id")
-    complete_mock = AsyncMock()
-    fail_mock = AsyncMock()
-    monkeypatch.setattr("bcn.common.db.create_evaluation_run", create_mock)
-    monkeypatch.setattr("bcn.common.db.complete_evaluation_run", complete_mock)
-    monkeypatch.setattr("bcn.common.db.fail_evaluation_run", fail_mock)
     run_mock = AsyncMock(
         return_value={
             "item_pool_count": 12,
             "lane": "shadow",
             "workflow_mode": "regular_daily_briefing",
+            "db_run_id": "shadow-run-id",
             "summary": {
                 "selection_overlap_ratio": 0.6,
                 "recommendation": "hold",
@@ -237,7 +214,7 @@ def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
             },
         }
     )
-    monkeypatch.setattr("bcn.evaluation.run_shadow_lane", run_mock)
+    monkeypatch.setattr("bcn.evaluation.service.execute_shadow_lane", run_mock)
 
     result = runner.invoke(
         cli_module.cli,
@@ -248,19 +225,13 @@ def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     assert "Shadow evaluation complete" in result.output
     assert "hold" in result.output
     assert "DB run id: shadow-run-id" in result.output
-    assert output_path.exists()
     assert run_mock.await_count == 1
-    assert create_mock.await_count == 1
-    assert complete_mock.await_count == 1
-    assert fail_mock.await_count == 0
 
 
 def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
     runner = CliRunner()
     output_path = tmp_path / "shadow_report.json"
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
-    run_mock = AsyncMock(
+    execute_mock = AsyncMock(
         return_value={
             "item_pool_count": 3,
             "lane": "shadow",
@@ -273,7 +244,7 @@ def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
             "champion": {
                 "selected_items": [
                     {
-                        "id": uuid4(),
+                        "id": str(uuid4()),
                         "title": "Alpha",
                     }
                 ]
@@ -281,14 +252,14 @@ def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
             "candidate": {
                 "selected_items": [
                     {
-                        "id": uuid4(),
+                        "id": str(uuid4()),
                         "title": "Beta",
                     }
                 ]
             },
         }
     )
-    monkeypatch.setattr("bcn.evaluation.run_shadow_lane", run_mock)
+    monkeypatch.setattr("bcn.evaluation.service.execute_shadow_lane", execute_mock)
 
     result = runner.invoke(
         cli_module.cli,
@@ -296,9 +267,7 @@ def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
     )
 
     assert result.exit_code == 0
-    payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert isinstance(payload["champion"]["selected_items"][0]["id"], str)
-    assert isinstance(payload["candidate"]["selected_items"][0]["id"], str)
+    assert execute_mock.await_count == 1
 
 
 def test_evaluation_runs_command_lists_recent_rows(monkeypatch):

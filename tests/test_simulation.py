@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from bcn.simulation import _build_decision_summary
-from bcn.simulation import compare_simulation_reports
-from bcn.simulation import score_feedback_rubric
+from bcn.evaluation.simulation import _build_decision_summary
+from bcn.evaluation.simulation import compare_simulation_reports
+from bcn.evaluation.simulation import score_feedback_rubric
 
 
 def test_score_feedback_rubric_penalizes_monoculture_and_thin_content():
