@@ -18,6 +18,10 @@ from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
 from bcn.workflows.automation import extract_briefing_id
 from bcn.workflows.automation import job_analyze_items
+from bcn.workflows.automation import job_collect_ghsa
+from bcn.workflows.automation import job_collect_reddit
+from bcn.workflows.automation import job_collect_rss
+from bcn.workflows.automation import job_collect_twitter
 from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
@@ -261,6 +265,32 @@ async def test_job_analyze_items_uses_control_plane(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job_func", "source"),
+    [
+        (job_collect_ghsa, "ghsa"),
+        (job_collect_rss, "rss"),
+        (job_collect_twitter, "twitter"),
+        (job_collect_reddit, "reddit"),
+    ],
+)
+async def test_collect_jobs_use_control_plane(monkeypatch, job_func, source):
+    settings = Settings()
+    collect_mock = AsyncMock(return_value=f"{source}: ok")
+    monkeypatch.setattr("bcn.workflows.automation.execute_collection", collect_mock)
+    configure_scheduler_runtime(settings, AsyncMock())
+
+    await job_func()
+
+    collect_mock.assert_awaited_once_with(
+        settings,
+        source=source,
+        origin="scheduler",
+        manage_pool=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypatch):
     settings = Settings(writer_port=9003, distributor_port=9004)
     briefing_id = uuid4()
@@ -406,6 +436,20 @@ def test_distribute_command_delegates_to_distribution_service(monkeypatch):
     }
 
 
+def test_collect_command_delegates_to_collection_service(monkeypatch):
+    runner = CliRunner()
+    run_mock = AsyncMock(return_value="GHSA: collected 1 items")
+    monkeypatch.setattr(cli_module, "collect_news", run_mock)
+
+    result = runner.invoke(cli_module.cli, ["collect", "--source", "ghsa"])
+
+    assert result.exit_code == 0
+    assert "GHSA: collected 1 items" in result.output
+    assert run_mock.await_count == 1
+    assert isinstance(run_mock.await_args.args[0], Settings)
+    assert run_mock.await_args.kwargs == {"source": "ghsa"}
+
+
 def test_newsletter_subscribers_list_command(monkeypatch):
     runner = CliRunner()
     now = datetime.now(timezone.utc)
@@ -481,7 +525,7 @@ def test_workflow_run_command_delegates_to_workflow_service(monkeypatch):
     assert "Distributed to:" in result.output
     assert execute_mock.await_count == 1
     assert execute_mock.await_args.kwargs["mode"] == REGULAR_DAILY_BRIEFING_MODE
-    assert execute_mock.await_args.kwargs["agent_client"] is not None
+    assert "agent_client" not in execute_mock.await_args.kwargs
 
 
 def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):

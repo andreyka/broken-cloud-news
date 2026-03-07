@@ -45,16 +45,16 @@ async def collect_news(
     agent_client: AgentClient | None = None,
 ) -> str:
     """Run one collector source or the full collector fan-out."""
-    client = _resolve_agent_client(settings, agent_client)
-    if source == "ghsa":
-        return await client.collect_ghsa()
-    if source == "rss":
-        return await client.collect_rss()
-    if source == "twitter":
-        return await client.collect_twitter()
-    if source == "reddit":
-        return await client.collect_reddit()
-    return await client.collect_all()
+    del agent_client
+
+    from bcn.workflows.collection import execute_collection
+
+    return await execute_collection(
+        settings,
+        source=source,
+        origin="cli",
+        manage_pool=True,
+    )
 
 
 async def analyze_items(

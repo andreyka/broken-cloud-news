@@ -14,6 +14,7 @@ from pathlib import Path
 from bcn.common.agent_client import AgentClient
 from bcn.common.config import Settings
 from bcn.workflows.analysis import execute_analysis
+from bcn.workflows.collection import execute_collection
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
 from bcn.workflows.modes.regular_daily_briefing import (
@@ -66,26 +67,46 @@ def configure_scheduler_runtime(
 
 async def job_collect_ghsa() -> None:
     """Scheduled job: trigger GHSA collection."""
-    _settings, agent_client = require_runtime()
-    await agent_client.collect_ghsa()
+    settings, _agent_client = require_runtime()
+    await execute_collection(
+        settings,
+        source="ghsa",
+        origin="scheduler",
+        manage_pool=False,
+    )
 
 
 async def job_collect_rss() -> None:
     """Scheduled job: trigger RSS collection."""
-    _settings, agent_client = require_runtime()
-    await agent_client.collect_rss()
+    settings, _agent_client = require_runtime()
+    await execute_collection(
+        settings,
+        source="rss",
+        origin="scheduler",
+        manage_pool=False,
+    )
 
 
 async def job_collect_twitter() -> None:
     """Scheduled job: trigger Twitter/X collection."""
-    _settings, agent_client = require_runtime()
-    await agent_client.collect_twitter()
+    settings, _agent_client = require_runtime()
+    await execute_collection(
+        settings,
+        source="twitter",
+        origin="scheduler",
+        manage_pool=False,
+    )
 
 
 async def job_collect_reddit() -> None:
     """Scheduled job: trigger Reddit collection."""
-    _settings, agent_client = require_runtime()
-    await agent_client.collect_reddit()
+    settings, _agent_client = require_runtime()
+    await execute_collection(
+        settings,
+        source="reddit",
+        origin="scheduler",
+        manage_pool=False,
+    )
 
 
 async def job_analyze_items() -> None:

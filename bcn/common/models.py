@@ -53,6 +53,18 @@ class AnalyzedItemUpdate(BaseModel):
     canonical_url: Optional[str] = None
 
 
+class CollectedNewsItem(BaseModel):
+    """Persistable collected item returned by the collector domain service."""
+
+    source_type: str
+    source_id: str
+    url: str
+    title: Optional[str] = None
+    published_at: datetime | str
+    raw_data: dict = Field(default_factory=dict)
+    full_content: Optional[str] = None
+
+
 class Briefing(BaseModel):
     """A generated daily briefing with optional cover image."""
 

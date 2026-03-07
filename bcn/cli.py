@@ -123,14 +123,9 @@ def db_migrate(dry_run: bool) -> None:
 def collect(source: str) -> None:
     """Run collector for all sources or a specific one."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        result = await collect_news(
-            settings,
-            source=source,
-            agent_client=agent_client,
-        )
+        result = await collect_news(settings, source=source)
         click.echo(result)
 
     asyncio.run(_run())
@@ -140,10 +135,9 @@ def collect(source: str) -> None:
 def analyze() -> None:
     """Score and summarize unprocessed news items via the LLM."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        result = await execute_analysis(settings, agent_client=agent_client)
+        result = await execute_analysis(settings)
         click.echo(result)
 
     asyncio.run(_run())
@@ -160,14 +154,9 @@ def analyze() -> None:
 def write(mode: str) -> None:
     """Generate a briefing with cover image from top-scored items."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run():
-        result = await execute_briefing_generation(
-            settings,
-            mode=mode,
-            agent_client=agent_client,
-        )
+        result = await execute_briefing_generation(settings, mode=mode)
         click.echo(result)
 
     asyncio.run(_run())
@@ -1565,13 +1554,11 @@ def pipeline(mode: str) -> None:
 def workflow_run(mode: str) -> None:
     """Run one workflow mode cycle without daemon scheduler."""
     settings = Settings()
-    agent_client = _build_cli_agent_client(settings)
 
     async def _run() -> None:
         writer_result, distribute_result = await execute_workflow_mode(
             settings,
             mode=mode,
-            agent_client=agent_client,
         )
         click.echo(writer_result)
         if not distribute_result:
