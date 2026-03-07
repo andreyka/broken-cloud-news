@@ -62,9 +62,16 @@ async def analyze_items(
     *,
     agent_client: AgentClient | None = None,
 ) -> str:
-    """Analyze newly collected items."""
-    client = _resolve_agent_client(settings, agent_client)
-    return await client.analyze_new_items()
+    """Backward-compatible wrapper for control-plane analysis."""
+    del agent_client
+
+    from bcn.workflows.analysis import execute_analysis
+
+    return await execute_analysis(
+        settings,
+        source="cli",
+        manage_pool=True,
+    )
 
 
 async def generate_briefing(

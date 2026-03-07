@@ -473,56 +473,30 @@ class TestCollectorExecutor:
 
 
 class TestAnalystExecutor:
-    @respx.mock
     @pytest.mark.asyncio
-    async def test_analyze_items(self):
+    async def test_execute_delegates_to_control_plane(self):
         from bcn.agents.analyst.agent import AnalystExecutor
-        from bcn.common.models import AnalysisResult
 
         settings = _make_settings()
         executor = AnalystExecutor(settings)
 
-        fake_items = [
-            {
-                "id": "11111111-1111-1111-1111-111111111111",
-                "title": "K8s escape",
-                "full_content": "A container escape vulnerability...",
-                "url": "https://example.com",
-                "source_type": "ghsa",
-                "source_id": "GHSA-test",
-                "raw_data": {},
-            }
-        ]
-
-        with (
-            patch(
-                "bcn.agents.analyst.agent.get_new_items",
-                new_callable=AsyncMock,
-                return_value=fake_items,
-            ),
-            patch(
-                "bcn.agents.analyst.agent.update_item_analyzed", new_callable=AsyncMock
-            ) as mock_update,
-            patch.object(
-                executor.analyst_llm,
-                "analyze_item",
-                new_callable=AsyncMock,
-                return_value=AnalysisResult(
-                    summary="Container escape in k8s",
-                    relevance_score=9,
-                    tags=["k8s"],
-                    image_prompt="cyberpunk",
-                ),
-            ),
-        ):
+        with patch(
+            "bcn.agents.analyst.agent.execute_analysis",
+            new_callable=AsyncMock,
+            return_value="Analyzed 1/1 items",
+        ) as mock_execute:
             eq = FakeEventQueue()
             ctx = _fake_context("analyze_new_items")
             await executor.execute(ctx, eq)
 
-        mock_update.assert_called_once()
+        mock_execute.assert_awaited_once_with(
+            settings,
+            analyst_service=executor.service,
+            source="analyst_agent",
+            manage_pool=False,
+        )
         assert any("1/1" in str(e) for e in eq.events)
 
-    @respx.mock
     @pytest.mark.asyncio
     async def test_no_items(self):
         from bcn.agents.analyst.agent import AnalystExecutor
@@ -531,9 +505,9 @@ class TestAnalystExecutor:
         executor = AnalystExecutor(settings)
 
         with patch(
-            "bcn.agents.analyst.agent.get_new_items",
+            "bcn.agents.analyst.agent.execute_analysis",
             new_callable=AsyncMock,
-            return_value=[],
+            return_value="No new items to analyze",
         ):
             eq = FakeEventQueue()
             ctx = _fake_context("analyze")
@@ -542,12 +516,32 @@ class TestAnalystExecutor:
         assert any("No new items" in str(e) for e in eq.events)
 
     @pytest.mark.asyncio
-    async def test_analyze_item_and_save_scrapes_reddit_references(self):
+    async def test_no_items_async_event_queue(self):
         from bcn.agents.analyst.agent import AnalystExecutor
-        from bcn.common.models import AnalysisResult
 
         settings = _make_settings()
         executor = AnalystExecutor(settings)
+
+        with patch(
+            "bcn.agents.analyst.agent.execute_analysis",
+            new_callable=AsyncMock,
+            return_value="No new items to analyze",
+        ):
+            eq = FakeAsyncEventQueue()
+            ctx = _fake_context("analyze")
+            await executor.execute(ctx, eq)
+
+        assert any("No new items" in str(e) for e in eq.events)
+
+
+class TestAnalystService:
+    @pytest.mark.asyncio
+    async def test_analyze_item_scrapes_reddit_references(self):
+        from bcn.agents.analyst.service import AnalystService
+        from bcn.common.models import AnalysisResult
+
+        settings = _make_settings()
+        service = AnalystService(settings)
         item = {
             "id": "11111111-1111-1111-1111-111111111111",
             "title": "GitHub Actions exploitation rumor",
@@ -564,152 +558,50 @@ class TestAnalystExecutor:
             },
         }
 
-        with (
-            patch.object(
-                executor.scraper,
-                "scrape",
-                new_callable=AsyncMock,
-                return_value="Deep technical breakdown from StepSecurity.",
-            ) as mock_scrape,
-            patch.object(
-                executor.analyst_llm,
-                "analyze_item",
-                new_callable=AsyncMock,
-                return_value=AnalysisResult(
-                    summary="Pipeline compromise details",
-                    relevance_score=8,
-                    tags=["github-actions"],
-                    image_prompt="cloud security concept art",
-                    canonical_url="https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation",
-                ),
-            ) as mock_analyze,
-            patch(
-                "bcn.agents.analyst.agent.update_item_analyzed", new_callable=AsyncMock
-            ) as mock_update,
-        ):
-            await executor._analyze_item_and_save(item)
+        try:
+            with (
+                patch.object(
+                    service.scraper,
+                    "scrape",
+                    new_callable=AsyncMock,
+                    return_value="Deep technical breakdown from StepSecurity.",
+                ) as mock_scrape,
+                patch.object(
+                    service.analyst_llm,
+                    "analyze_item",
+                    new_callable=AsyncMock,
+                    return_value=AnalysisResult(
+                        summary="Pipeline compromise details",
+                        relevance_score=8,
+                        tags=["github-actions"],
+                        image_prompt="cloud security concept art",
+                        canonical_url="https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation",
+                    ),
+                ) as mock_analyze,
+            ):
+                result = await service.analyze_item(item)
+        finally:
+            await service.close()
 
         mock_scrape.assert_awaited_once_with(
             "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
         )
         analyze_args = mock_analyze.await_args.args
         assert "Deep technical breakdown from StepSecurity." in analyze_args[1]
-        mock_update.assert_awaited_once()
+        assert result.summary == "Pipeline compromise details"
+        assert result.relevance_score == 8
+        assert result.ai_tags == ["github-actions"]
+        assert (
+            result.canonical_url
+            == "https://www.stepsecurity.io/blog/hackerbot-claw-github-actions-exploitation"
+        )
 
     @pytest.mark.asyncio
-    async def test_no_items_async_event_queue(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
+    async def test_analyze_item_raises_on_llm_failure(self):
+        from bcn.agents.analyst.service import AnalystService
 
         settings = _make_settings()
-        executor = AnalystExecutor(settings)
-
-        with patch(
-            "bcn.agents.analyst.agent.get_new_items",
-            new_callable=AsyncMock,
-            return_value=[],
-        ):
-            eq = FakeAsyncEventQueue()
-            ctx = _fake_context("analyze")
-            await executor.execute(ctx, eq)
-
-        assert any("No new items" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_execute_reports_failed_items(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
-        fake_items = [
-            {
-                "id": "a",
-                "title": "one",
-                "full_content": "x",
-                "url": "https://example.com/1",
-                "source_type": "rss",
-                "source_id": "1",
-                "raw_data": {},
-            },
-            {
-                "id": "b",
-                "title": "two",
-                "full_content": "x",
-                "url": "https://example.com/2",
-                "source_type": "rss",
-                "source_id": "2",
-                "raw_data": {},
-            },
-        ]
-
-        with (
-            patch(
-                "bcn.agents.analyst.agent.get_new_items",
-                new_callable=AsyncMock,
-                return_value=fake_items,
-            ),
-            patch.object(
-                executor,
-                "_analyze_item_and_save",
-                new_callable=AsyncMock,
-                side_effect=[None, RuntimeError("boom")],
-            ),
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("analyze_new_items")
-            await executor.execute(ctx, eq)
-
-        assert any("Analyzed 1/2 items (1 failed)" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_execute_releases_analyzing_item_with_original_error(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
-        item = {
-            "id": "11111111-1111-1111-1111-111111111111",
-            "title": "one",
-            "full_content": "x",
-            "url": "https://example.com/1",
-            "source_type": "rss",
-            "source_id": "1",
-            "raw_data": {},
-            "status": "ANALYZING",
-        }
-
-        with (
-            patch(
-                "bcn.agents.analyst.agent.get_new_items",
-                new_callable=AsyncMock,
-                return_value=[item],
-            ),
-            patch.object(
-                executor,
-                "_analyze_item_and_save",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("llm down"),
-            ),
-            patch(
-                "bcn.agents.analyst.agent.release_items_from_analyzing",
-                new_callable=AsyncMock,
-            ) as mock_release,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("analyze_new_items")
-            await executor.execute(ctx, eq)
-
-        mock_release.assert_awaited_once()
-        release_args = mock_release.await_args
-        assert str(release_args.args[0][0]) == item["id"]
-        assert release_args.kwargs["error"] == "RuntimeError: llm down"
-        assert any("Analyzed 0/1 items (1 failed)" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_analyze_item_and_save_raises_on_llm_failure(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
+        service = AnalystService(settings)
         item = {
             "id": "11111111-1111-1111-1111-111111111111",
             "title": "K8s escape",
@@ -720,21 +612,17 @@ class TestAnalystExecutor:
             "raw_data": {},
         }
 
-        with (
-            patch.object(
-                executor.analyst_llm,
+        try:
+            with patch.object(
+                service.analyst_llm,
                 "analyze_item",
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("llm down"),
-            ),
-            patch(
-                "bcn.agents.analyst.agent.update_item_analyzed", new_callable=AsyncMock
-            ) as mock_update,
-        ):
-            with pytest.raises(RuntimeError):
-                await executor._analyze_item_and_save(item)
-
-        mock_update.assert_not_called()
+            ):
+                with pytest.raises(RuntimeError):
+                    await service.analyze_item(item)
+        finally:
+            await service.close()
 
 
 # ── Writer tests ─────────────────────────────────────────────────────────

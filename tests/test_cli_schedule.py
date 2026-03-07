@@ -17,6 +17,7 @@ from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
 from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
 from bcn.workflows.automation import extract_briefing_id
+from bcn.workflows.automation import job_analyze_items
 from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
@@ -241,6 +242,22 @@ def test_build_regular_monthly_newsletter_trigger():
     assert trigger.hour == 17
     assert trigger.minute == 5
     assert str(trigger.timezone) == "America/Los_Angeles"
+
+
+@pytest.mark.asyncio
+async def test_job_analyze_items_uses_control_plane(monkeypatch):
+    settings = Settings(analyst_port=9002)
+    analysis_mock = AsyncMock(return_value="Analyzed 3/3 items")
+    monkeypatch.setattr("bcn.workflows.automation.execute_analysis", analysis_mock)
+    configure_scheduler_runtime(settings, AsyncMock())
+
+    await job_analyze_items()
+
+    analysis_mock.assert_awaited_once_with(
+        settings,
+        source="scheduler",
+        manage_pool=False,
+    )
 
 
 @pytest.mark.asyncio

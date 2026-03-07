@@ -42,6 +42,17 @@ class AnalysisResult(BaseModel):
     )
 
 
+class AnalyzedItemUpdate(BaseModel):
+    """Persistable analyst result returned by the analyst domain service."""
+
+    summary: str
+    relevance_score: int = Field(ge=1, le=10)
+    ai_tags: list[str] = Field(default_factory=list)
+    full_content: Optional[str] = None
+    image_prompt: Optional[str] = None
+    canonical_url: Optional[str] = None
+
+
 class Briefing(BaseModel):
     """A generated daily briefing with optional cover image."""
 

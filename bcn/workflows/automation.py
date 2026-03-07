@@ -13,6 +13,7 @@ from pathlib import Path
 
 from bcn.common.agent_client import AgentClient
 from bcn.common.config import Settings
+from bcn.workflows.analysis import execute_analysis
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
 from bcn.workflows.modes.regular_daily_briefing import (
@@ -89,8 +90,12 @@ async def job_collect_reddit() -> None:
 
 async def job_analyze_items() -> None:
     """Scheduled job: trigger item analysis."""
-    _settings, agent_client = require_runtime()
-    await agent_client.analyze_new_items()
+    settings, _agent_client = require_runtime()
+    await execute_analysis(
+        settings,
+        source="scheduler",
+        manage_pool=False,
+    )
 
 
 async def job_shadow_regular_briefing() -> None:
