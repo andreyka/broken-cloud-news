@@ -70,6 +70,21 @@ services:
     networks:
       - app_internal
 
+  dashboard:
+    build: ./dashboard
+    restart: always
+    environment:
+      - DATABASE_URL=${DASHBOARD_DATABASE_URL:-postgresql://broken_cloud_news_agent_db:cloud_security_agent@postgres:5432/broken_cloud_news}
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+    ports:
+      - "3007:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - app_internal
+
 networks:
   app_internal:
     driver: bridge

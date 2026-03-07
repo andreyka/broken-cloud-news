@@ -492,6 +492,40 @@ async def get_analyzed_items(
     )
 
 
+async def preview_analyzed_items(
+    min_score: int = 7,
+    hours: int = 24,
+    *,
+    limit: int = 250,
+) -> list[asyncpg.Record]:
+    """Read analyzed items for shadow evaluation without claiming them."""
+    await ensure_news_items_indexes()
+    await ensure_briefing_items_table()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT *
+        FROM news_items
+        WHERE status = 'ANALYZED'
+          AND terminal_status IS NULL
+          AND relevance_score >= $1
+          AND published_at > NOW() - make_interval(hours => $2)
+          AND NOT EXISTS (
+              SELECT 1
+              FROM briefing_items bi
+              JOIN briefings b ON b.id = bi.briefing_id
+              WHERE bi.news_item_id = news_items.id
+                AND b.status = 'DISTRIBUTED'
+          )
+        ORDER BY relevance_score DESC, published_at DESC
+        LIMIT $3
+        """,
+        min_score,
+        hours,
+        max(1, int(limit)),
+    )
+
+
 async def release_items_from_writing(ids: list[UUID]) -> None:
     """Release claimed ``WRITING`` items back to ``ANALYZED``."""
     if not ids:
@@ -1328,6 +1362,19 @@ def _coerce_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _coerce_json_dict(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
 async def ensure_simulation_tables() -> None:
     """Ensure schema migrations already created simulation tables."""
     await ensure_schema_ready()
@@ -1497,29 +1544,8 @@ async def get_simulation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
             if isinstance(parsed, dict):
                 results.append(parsed)
 
-    params_raw = run["params"]
-    if isinstance(params_raw, dict):
-        params = params_raw
-    elif isinstance(params_raw, str):
-        try:
-            parsed_params = json.loads(params_raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parsed_params = {}
-        params = parsed_params if isinstance(parsed_params, dict) else {}
-    else:
-        params = {}
-
-    summary_raw = run["summary"]
-    if isinstance(summary_raw, dict):
-        summary = summary_raw
-    elif isinstance(summary_raw, str):
-        try:
-            parsed_summary = json.loads(summary_raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parsed_summary = {}
-        summary = parsed_summary if isinstance(parsed_summary, dict) else {}
-    else:
-        summary = {}
+    params = _coerce_json_dict(run["params"])
+    summary = _coerce_json_dict(run["summary"])
     generated_at = run["generated_at"] or run["created_at"]
 
     report: dict[str, Any] = {
@@ -1553,6 +1579,259 @@ async def get_latest_simulation_report(
     if not run:
         return None
     return await get_simulation_report_by_id(run["id"])
+
+
+# ---------------------------------------------------------------------------
+# Evaluation Runs
+# ---------------------------------------------------------------------------
+
+
+async def ensure_evaluation_tables() -> None:
+    """Ensure schema migrations already created evaluation tables."""
+    await ensure_schema_ready()
+
+
+async def count_evaluation_runs(*, lane: str | None = None) -> int:
+    """Return the number of stored evaluation runs."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    if lane:
+        row = await pool.fetchrow(
+            """
+            SELECT COUNT(*)::int AS count
+            FROM evaluation_runs
+            WHERE lane = $1
+            """,
+            str(lane),
+        )
+    else:
+        row = await pool.fetchrow(
+            """
+            SELECT COUNT(*)::int AS count
+            FROM evaluation_runs
+            """
+        )
+    return int(row["count"]) if row else 0
+
+
+async def insert_evaluation_report(
+    report: dict[str, Any],
+    *,
+    report_path: str | None = None,
+    source: str = "cli",
+    notes: str | None = None,
+) -> UUID:
+    """Persist a benchmark or shadow report."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+
+    lane = str(report.get("lane") or "").strip().lower()
+    if lane not in {"benchmark", "shadow"}:
+        raise ValueError("Evaluation report lane must be 'benchmark' or 'shadow'.")
+
+    summary = report.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    params: dict[str, Any] = {}
+    pack_path = None
+    workflow_mode = None
+    run_count = _coerce_int(report.get("count"), 0)
+    if lane == "benchmark":
+        pack_path = str(report.get("pack_path") or "").strip() or None
+        params["case_count"] = run_count
+    else:
+        workflow_mode = str(report.get("workflow_mode") or "").strip() or None
+        params["item_pool_count"] = _coerce_int(report.get("item_pool_count"), 0)
+        run_count = 1
+
+    candidate_overrides = report.get("candidate_overrides")
+    if not isinstance(candidate_overrides, dict):
+        candidate_overrides = {}
+
+    run = await pool.fetchrow(
+        """
+        INSERT INTO evaluation_runs (
+            generated_at,
+            lane,
+            source,
+            report_path,
+            pack_path,
+            workflow_mode,
+            params,
+            candidate_overrides,
+            summary,
+            report,
+            count,
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11, $12)
+        RETURNING id
+        """,
+        _coerce_iso_datetime(report.get("generated_at")),
+        lane,
+        source,
+        report_path,
+        pack_path,
+        workflow_mode,
+        json.dumps(params),
+        json.dumps(candidate_overrides),
+        json.dumps(summary),
+        json.dumps(report, ensure_ascii=False, default=str),
+        run_count,
+        notes,
+    )
+    return run["id"]
+
+
+async def get_latest_evaluation_run(
+    *,
+    lane: str | None = None,
+    exclude_run_id: UUID | None = None,
+) -> Optional[asyncpg.Record]:
+    """Fetch the latest stored evaluation run metadata."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+
+    conditions: list[str] = []
+    params: list[Any] = []
+    if lane:
+        params.append(str(lane))
+        conditions.append(f"lane = ${len(params)}")
+    if exclude_run_id:
+        params.append(exclude_run_id)
+        conditions.append(f"id <> ${len(params)}")
+
+    where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"""
+        SELECT *
+        FROM evaluation_runs
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT 1
+    """
+    return await pool.fetchrow(query, *params)
+
+
+async def get_evaluation_report_by_id(run_id: UUID) -> dict[str, Any] | None:
+    """Load a full evaluation report object by run id."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    run = await pool.fetchrow(
+        """
+        SELECT
+            id,
+            created_at,
+            generated_at,
+            lane,
+            source,
+            report_path,
+            pack_path,
+            workflow_mode,
+            params,
+            candidate_overrides,
+            summary,
+            report,
+            count,
+            notes
+        FROM evaluation_runs
+        WHERE id = $1
+        """,
+        run_id,
+    )
+    if not run:
+        return None
+
+    report = _coerce_json_dict(run["report"])
+    if not report:
+        report = {
+            "generated_at": (
+                run["generated_at"].isoformat()
+                if isinstance(run["generated_at"], datetime)
+                else None
+            ),
+            "lane": str(run["lane"]),
+            "count": int(run["count"]),
+            "summary": _coerce_json_dict(run["summary"]),
+        }
+    report["db_run_id"] = str(run["id"])
+    report["db_created_at"] = run["created_at"].isoformat()
+    report["db_source"] = str(run["source"])
+    if run["report_path"]:
+        report["report_path"] = str(run["report_path"])
+    if run["pack_path"]:
+        report["pack_path"] = str(run["pack_path"])
+    if run["workflow_mode"]:
+        report["workflow_mode"] = str(run["workflow_mode"])
+    if run["notes"]:
+        report["notes"] = str(run["notes"])
+    return report
+
+
+async def get_latest_evaluation_report(
+    *,
+    lane: str | None = None,
+    exclude_run_id: UUID | None = None,
+) -> dict[str, Any] | None:
+    """Load the latest evaluation report object from DB."""
+    run = await get_latest_evaluation_run(lane=lane, exclude_run_id=exclude_run_id)
+    if not run:
+        return None
+    return await get_evaluation_report_by_id(run["id"])
+
+
+async def list_recent_evaluation_runs(
+    *,
+    lane: str | None = None,
+    limit: int = 20,
+) -> list[asyncpg.Record]:
+    """Return recent evaluation runs for CLI and dashboard summaries."""
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    row_limit = max(1, int(limit))
+    if lane:
+        return await pool.fetch(
+            """
+            SELECT
+                id,
+                created_at,
+                generated_at,
+                lane,
+                source,
+                report_path,
+                pack_path,
+                workflow_mode,
+                candidate_overrides,
+                summary,
+                count
+            FROM evaluation_runs
+            WHERE lane = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            str(lane),
+            row_limit,
+        )
+    return await pool.fetch(
+        """
+        SELECT
+            id,
+            created_at,
+            generated_at,
+            lane,
+            source,
+            report_path,
+            pack_path,
+            workflow_mode,
+            candidate_overrides,
+            summary,
+            count
+        FROM evaluation_runs
+        ORDER BY created_at DESC
+        LIMIT $1
+        """,
+        row_limit,
+    )
 
 
 # ---------------------------------------------------------------------------

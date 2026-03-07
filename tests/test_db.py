@@ -37,6 +37,88 @@ async def test_get_analyzed_items_excludes_only_distributed_briefings():
     assert "b.status = 'DISTRIBUTED'" in sql
 
 
+@pytest.mark.asyncio
+async def test_preview_analyzed_items_is_read_only():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.preview_analyzed_items(min_score=7, hours=24, limit=15)
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert sql.lstrip().startswith("SELECT *")
+    assert "status = 'ANALYZED'" in sql
+    assert "UPDATE news_items" not in sql
+    assert "b.status = 'DISTRIBUTED'" in sql
+
+
+@pytest.mark.asyncio
+async def test_insert_evaluation_report_stores_lane_and_report():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    run_id = uuid4()
+    fake_pool.fetchrow = AsyncMock(return_value={"id": run_id})
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            created = await db.insert_evaluation_report(
+                {
+                    "generated_at": "2026-03-06T12:00:00+00:00",
+                    "lane": "benchmark",
+                    "pack_path": "/tmp/benchmark_pack.json",
+                    "count": 7,
+                    "summary": {"recommendation": "hold"},
+                    "results": [],
+                },
+                report_path="/tmp/benchmark_report.json",
+            )
+    finally:
+        db._schema_ready = original_schema_ready
+
+    assert created == run_id
+    args, _kwargs = fake_pool.fetchrow.await_args
+    sql = args[0]
+    assert "INSERT INTO evaluation_runs" in sql
+    assert args[2] == "benchmark"
+    assert args[5] == "/tmp/benchmark_pack.json"
+    assert args[11] == 7
+
+
+@pytest.mark.asyncio
+async def test_list_recent_evaluation_runs_applies_lane_filter():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.list_recent_evaluation_runs(lane="shadow", limit=5)
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "FROM evaluation_runs" in sql
+    assert "WHERE lane = $1" in sql
+
+
 class _FakeTx:
     async def __aenter__(self):
         return self
