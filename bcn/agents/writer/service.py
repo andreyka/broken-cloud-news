@@ -449,6 +449,7 @@ class WriterService:
                 items=selected_items,
                 feedback=feedback,
                 feedback_context=feedback_context,
+                recent_briefings=history,
                 mode=mode,
                 min_chars=int(evaluation["min_chars"]),
                 target_chars=int(evaluation["target_chars"]),
@@ -775,14 +776,11 @@ class WriterService:
         if not isinstance(dims, dict):
             dims = {}
         actionability = int(dims.get("actionability", 0) or 0)
-        source_diversity = int(dims.get("source_diversity", 0) or 0)
         link_hygiene = int(dims.get("link_hygiene", 0) or 0)
 
         return (
             score >= int(self.settings.briefing_critic_min_score)
             and actionability >= int(self.settings.briefing_critic_min_actionability)
-            and source_diversity
-            >= int(self.settings.briefing_critic_min_source_diversity)
             and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
         )
 
@@ -973,7 +971,7 @@ class WriterService:
         hard_max_chars: int,
     ) -> str:
         """Apply deterministic URL cleanup just before release checks."""
-        cleaned = self.strip_unselected_github_advisory_links(markdown, selected_items)
+        cleaned = self.strip_unselected_markdown_links(markdown, selected_items)
         cleaned = self.normalize_section_headings(
             self.dedupe_markdown_links((cleaned or "").strip())
         )
@@ -995,6 +993,29 @@ class WriterService:
             cleaned = self.clip_markdown(cleaned, hard_max_chars)
 
         return cleaned.strip()
+
+    @staticmethod
+    def strip_unselected_markdown_links(
+        markdown: str,
+        selected_items: list[dict[str, Any]],
+    ) -> str:
+        """Drop markdown-link formatting for any URL outside the selected item set."""
+        selected_keys = {
+            briefing_text.canonical_url_key(str(item.get("url", "")))
+            for item in selected_items
+            if item.get("url")
+        }
+        selected_keys.discard("")
+
+        def _replace(match: re.Match[str]) -> str:
+            label = match.group(1)
+            url = match.group(2)
+            key = briefing_text.canonical_url_key(url)
+            if key and key not in selected_keys:
+                return label
+            return match.group(0)
+
+        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace, markdown or "")
 
     @staticmethod
     def strip_unselected_github_advisory_links(
@@ -1061,7 +1082,6 @@ class WriterService:
         min_thresholds = {
             "score": int(self.settings.briefing_critic_min_score),
             "actionability": int(self.settings.briefing_critic_min_actionability),
-            "source_diversity": int(self.settings.briefing_critic_min_source_diversity),
             "link_hygiene": int(self.settings.briefing_critic_min_link_hygiene),
         }
         failed_critic_thresholds: list[str] = []
@@ -1070,7 +1090,7 @@ class WriterService:
             failed_critic_thresholds.append(
                 f"score {critic_score} < {min_thresholds['score']}"
             )
-        for dimension in ("actionability", "source_diversity", "link_hygiene"):
+        for dimension in ("actionability", "link_hygiene"):
             dim_score = int(critic_dims.get(dimension, 0) or 0)
             if dim_score < min_thresholds[dimension]:
                 failed_critic_thresholds.append(

@@ -172,13 +172,10 @@ class CriticService:
         if not isinstance(dims, dict):
             dims = {}
         actionability = int(dims.get("actionability", 0) or 0)
-        source_diversity = int(dims.get("source_diversity", 0) or 0)
         link_hygiene = int(dims.get("link_hygiene", 0) or 0)
         return (
             score >= int(self.settings.briefing_critic_min_score)
             and actionability >= int(self.settings.briefing_critic_min_actionability)
-            and source_diversity
-            >= int(self.settings.briefing_critic_min_source_diversity)
             and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
         )
 

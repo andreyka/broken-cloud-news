@@ -827,8 +827,63 @@ class TestWriterExecutor:
         selected = executor._select_items_for_briefing(items)
         domains = Counter(urlparse(str(i["url"])).netloc for i in selected)
         assert domains["unit42.paloaltonetworks.com"] <= 2
-        assert any(i["source_type"] == "reddit" for i in selected)
-        assert any(i["source_type"] == "ghsa" for i in selected)
+        assert len(selected) >= 3
+
+    def test_selection_does_not_force_source_mix(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=3,
+            briefing_max_items_per_domain=1,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": "Kubernetes admission bypass in webhook auth flow",
+                "summary": "Cluster privilege escalation with concrete patch guidance.",
+                "relevance_score": 10,
+                "source_type": "rss",
+                "url": "https://first.example.com/one",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Cloudflare tunnel DNS leak under resolver fallback",
+                "summary": "Tenant data exposure through edge resolver caching.",
+                "relevance_score": 9,
+                "source_type": "rss",
+                "url": "https://second.example.com/two",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Terraform state secret exposure in remote backend sync",
+                "summary": "Credential leak during backend migration.",
+                "relevance_score": 8,
+                "source_type": "rss",
+                "url": "https://third.example.com/three",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Lower-ranked reddit thread",
+                "summary": "Background discussion only.",
+                "relevance_score": 7,
+                "source_type": "reddit",
+                "url": "https://www.reddit.com/r/netsec/comments/abc123/thread/",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+
+        selected = executor._select_items_for_briefing(items, recent_published=[])
+
+        assert {item["url"] for item in selected} == {
+            "https://first.example.com/one",
+            "https://second.example.com/two",
+            "https://third.example.com/three",
+        }
 
     def test_min_selected_fallback_preserves_recent_url_dedup(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -906,6 +961,69 @@ class TestWriterExecutor:
         )
 
         assert selected == []
+
+    def test_hard_mix_refill_does_not_readd_recent_duplicate(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            briefing_max_items=3,
+            briefing_min_selected_items=2,
+            briefing_max_rss_items=3,
+            briefing_max_ai_items=3,
+            briefing_max_twitter_items=3,
+            briefing_max_source_share=1.0,
+            briefing_selection_require_reddit=False,
+            briefing_selection_require_csp=False,
+        )
+        executor = WriterExecutor(settings)
+
+        items = [
+            {
+                "id": str(uuid4()),
+                "title": "Fresh Kubernetes admission controller bypass",
+                "summary": "New cluster auth issue.",
+                "relevance_score": 9,
+                "source_type": "rss",
+                "url": "https://example.com/k8s-admission-bypass",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Cloudflare tunnel bug exposes internal DNS responses",
+                "summary": "Distinct resolver leakage issue.",
+                "relevance_score": 8,
+                "source_type": "rss",
+                "url": "https://example.com/cloudflare-dns-leak",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "id": str(uuid4()),
+                "title": "A Race Within A Race: Exploiting CVE-2025-38617 in Linux Packet Sockets https://t.co/abc",
+                "summary": "Fresh tweet linking the same Linux packet sockets exploit write-up.",
+                "relevance_score": 10,
+                "source_type": "twitter",
+                "url": "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve",
+                "published_at": datetime.now(timezone.utc).isoformat(),
+            },
+        ]
+        recent = [
+            {
+                "title": "A Race Within A Race: Exploiting CVE-2025-38617 in Linux Packet Sockets",
+                "summary": "Previously covered exploit write-up.",
+                "url": "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve",
+            }
+        ]
+
+        selected = executor._select_items_for_briefing(
+            items,
+            recent_published=recent,
+        )
+
+        assert len(selected) == 2
+        assert all(
+            item["url"] != "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve"
+            for item in selected
+        )
 
     def test_min_selected_fallback_can_still_fill_with_unique_items(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -1052,6 +1170,30 @@ class TestWriterExecutor:
         )
         assert not any(
             "Missing selected URL" in issue for issue in gate.get("hard_issues", [])
+        )
+
+    def test_quality_gate_blocks_unexpected_urls(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+        items = [{"url": "https://example.com/selected", "title": "selected"}]
+        markdown = (
+            "[Selected](https://example.com/selected)\n\n"
+            "Repeat [Calif](https://blog.calif.io/p/a-race-within-a-race-exploiting-cve)"
+        )
+
+        gate = executor._quality_gate(
+            markdown,
+            items,
+            mode="standard",
+            min_chars=0,
+            hard_max_chars=2000,
+        )
+
+        assert any(
+            "Unexpected URL not present in selected items" in issue
+            for issue in gate.get("hard_issues", [])
         )
 
     def test_dedupe_markdown_links_uses_canonical_url_key(self):
@@ -1300,6 +1442,25 @@ class TestWriterExecutor:
         assert "GHSA-78q6-223p-8x4q" in out
         assert "GHSA-9c6g-9j6q-6w4w" in out
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
+
+    def test_strip_unselected_markdown_links_keeps_only_selected_urls(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        selected = [
+            {"url": "https://example.com/selected"},
+        ]
+        markdown = (
+            "Keep [Selected](https://example.com/selected)\n\n"
+            "Drop [Repeat](https://blog.calif.io/p/a-race-within-a-race-exploiting-cve)"
+        )
+
+        out = executor._strip_unselected_markdown_links(markdown, selected)
+        assert "[Selected](https://example.com/selected)" in out
+        assert "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve" not in out
+        assert "Drop Repeat" in out
 
     def test_quiet_day_mode_detection(self):
         from bcn.agents.writer.agent import WriterExecutor
@@ -1628,6 +1789,62 @@ class TestWriterExecutor:
             for rec in report["recommendations"]
         )
 
+    @pytest.mark.asyncio
+    async def test_verifier_blocks_unselected_url_mentions(self):
+        from bcn.briefing.verifier import BriefingFactVerifier
+
+        settings = _make_settings(
+            briefing_verifier_block_on_llm_hard=False,
+        )
+        verifier = BriefingFactVerifier(settings)
+        try:
+            with (
+                patch.object(
+                    verifier, "_find_dead_urls", new_callable=AsyncMock, return_value=[]
+                ),
+                patch.object(
+                    verifier, "_top_story_is_ctf_or_event", return_value=False
+                ),
+                patch.object(
+                    verifier.verifier_llm,
+                    "verify_briefing_facts",
+                    new_callable=AsyncMock,
+                    return_value={
+                        "passed": True,
+                        "score": 90,
+                        "hard_issues": [],
+                        "soft_issues": [],
+                        "recommendations": [],
+                    },
+                ),
+            ):
+                report = await verifier.evaluate(
+                    markdown=(
+                        "**Threat Radar**\n"
+                        "[Selected](https://example.com/selected)\n"
+                        "Repeat [Calif](https://blog.calif.io/p/a-race-within-a-race-exploiting-cve)"
+                    ),
+                    items=[
+                        {
+                            "url": "https://example.com/selected",
+                            "title": "Selected item",
+                            "summary": "Selected advisory",
+                        }
+                    ],
+                )
+        finally:
+            await verifier.close()
+
+        assert report["passed"] is False
+        assert any(
+            "URLs not present in selected items" in issue
+            for issue in report["blocking_hard_issues"]
+        )
+        assert any(
+            "Remove URLs that are not part of the selected items." in rec
+            for rec in report["recommendations"]
+        )
+
     def test_passes_critic_thresholds_blocks_critical_issue_terms(self):
         from bcn.agents.writer.agent import WriterExecutor
 
@@ -1647,6 +1864,26 @@ class TestWriterExecutor:
         }
 
         assert executor._passes_critic_thresholds(critique) is False
+
+    def test_passes_critic_thresholds_does_not_block_low_source_diversity(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings()
+        executor = WriterExecutor(settings)
+
+        critique = {
+            "passed": True,
+            "score": 96,
+            "dimension_scores": {
+                "actionability": 95,
+                "source_diversity": 10,
+                "link_hygiene": 95,
+            },
+            "issues": [],
+            "recommendations": [],
+        }
+
+        assert executor._passes_critic_thresholds(critique) is True
 
     @pytest.mark.asyncio
     async def test_legacy_writer_agent_surfaces_control_plane_failure_message(self):

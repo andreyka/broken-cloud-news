@@ -222,6 +222,16 @@ class WriterExecutor(AgentExecutor):
             selected_items,
         )
 
+    @staticmethod
+    def _strip_unselected_markdown_links(
+        markdown: str,
+        selected_items: list[dict[str, Any]],
+    ) -> str:
+        return WriterService.strip_unselected_markdown_links(
+            markdown,
+            selected_items,
+        )
+
     @override
     async def cancel(
         self,
