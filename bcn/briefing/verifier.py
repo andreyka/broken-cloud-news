@@ -67,6 +67,16 @@ class BriefingFactVerifier:
             )
             recommendations.append("Replace or remove dead links before publishing.")
 
+        unexpected_urls = self._find_unselected_url_mentions(body, items)
+        if unexpected_urls:
+            deterministic_hard_issues.append(
+                "Briefing links URLs not present in selected items: "
+                + ", ".join(unexpected_urls[:4])
+            )
+            recommendations.append(
+                "Remove URLs that are not part of the selected items."
+            )
+
         top_story_is_ctf_or_event = self._top_story_is_ctf_or_event(body, items)
         if top_story_is_ctf_or_event:
             deterministic_hard_issues.append(
@@ -161,6 +171,28 @@ class BriefingFactVerifier:
                 continue
             seen.add(key)
             mentions.append(url)
+
+        return mentions[:8]
+
+    def _find_unselected_url_mentions(
+        self,
+        markdown: str,
+        items: list[dict[str, Any]],
+    ) -> list[str]:
+        selected_urls = {
+            canonical_url_key(str(item.get("url", "")))
+            for item in items
+            if str(item.get("url", "")).strip()
+        }
+        mentions: list[str] = []
+        seen: set[str] = set()
+
+        for raw_url in self._extract_urls_in_order(markdown):
+            key = canonical_url_key(raw_url)
+            if not key or key in selected_urls or key in seen:
+                continue
+            seen.add(key)
+            mentions.append(key)
 
         return mentions[:8]
 

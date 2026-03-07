@@ -177,6 +177,7 @@ class WriterLLM:
         items: list[dict],
         feedback: list[str],
         feedback_context: dict[str, Any] | None = None,
+        recent_briefings: list[dict] | None = None,
         *,
         mode: str = "standard",
         min_chars: int = 1200,
@@ -196,6 +197,8 @@ class WriterLLM:
         )
         structured = feedback_context or {}
         structured_json = json.dumps(structured, ensure_ascii=False, indent=2)
+        style_memory = self._build_style_memory(recent_briefings or [])
+        topic_memory = self._build_topic_memory(recent_briefings or [])
         if mode == "quiet_day":
             mode_text = "quiet_day: deeper practical guidance with fewer items accepted"
         elif mode == "monthly_newsletter":
@@ -213,6 +216,12 @@ class WriterLLM:
             f"{draft_markdown}\n\n"
             "Story cards:\n\n" + cards_text
         )
+        if style_memory:
+            user_msg += (
+                "\n\nRecent briefing patterns to avoid repeating:\n" + style_memory
+            )
+        if topic_memory:
+            user_msg += "\n\n" + topic_memory
         tool_urls = self._tool_allowlist_urls(items)
         tools = [fetch_page_content] if tool_urls else None
         with allow_tool_urls(tool_urls):

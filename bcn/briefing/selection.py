@@ -120,7 +120,7 @@ class BriefingSelector:
         *,
         quiet_mode: bool = False,
     ) -> list[dict]:
-        """Select a diverse set of actionable items for the daily briefing."""
+        """Select ranked items without forcing any source/topic composition."""
         recent_items = recent_published or []
         ranked = sorted(
             items,
@@ -140,22 +140,14 @@ class BriefingSelector:
             if quiet_mode
             else self.settings.briefing_max_items
         )
-        max_ai = self.settings.briefing_max_ai_items
-        max_twitter = self.settings.briefing_max_twitter_items
-        max_rss = self.settings.briefing_max_rss_items
         max_per_domain = self.settings.briefing_max_items_per_domain
         min_selected = max(1, int(self.settings.briefing_min_selected_items))
-        mix_targets = self.mix_targets(quiet_mode)
 
         selected: list[dict] = []
         selected_ids: set[str] = set()
-        source_counts: Counter[str] = Counter()
         domain_counts: Counter[str] = Counter()
-        bucket_counts: Counter[str] = Counter()
-        ai_count = 0
 
         def can_add(item: dict, *, relax_soft_limits: bool = False) -> bool:
-            nonlocal ai_count
             item_id = str(item.get("id"))
             if item_id in selected_ids:
                 return False
@@ -168,23 +160,12 @@ class BriefingSelector:
 
             if not self.passes_source_floor(item) and not relax_soft_limits:
                 return False
-            source = str(item.get("source_type", "")).lower()
-            if (
-                source == "twitter"
-                and source_counts[source] >= max_twitter
-                and not relax_soft_limits
-            ):
-                return False
-            if source == "rss" and source_counts[source] >= max_rss:
-                return False
             domain = self._extract_domain(str(item.get("url", "")))
             if (
                 domain
                 and max_per_domain > 0
                 and domain_counts[domain] >= max_per_domain
             ):
-                return False
-            if self.is_ai_heavy(item) and ai_count >= max_ai and not relax_soft_limits:
                 return False
             return True
 
@@ -200,48 +181,23 @@ class BriefingSelector:
             if self.is_duplicate_of(item, recent_items):
                 return False
 
+            domain = self._extract_domain(str(item.get("url", "")))
+            if (
+                domain
+                and max_per_domain > 0
+                and domain_counts[domain] >= max_per_domain
+            ):
+                return False
+
             return True
 
         def add(item: dict) -> None:
-            nonlocal ai_count
             item_id = str(item.get("id"))
             selected.append(item)
             selected_ids.add(item_id)
-            source = str(item.get("source_type", "")).lower()
-            source_counts[source] += 1
             domain = self._extract_domain(str(item.get("url", "")))
             if domain:
                 domain_counts[domain] += 1
-            bucket_counts[self.classify_bucket(item)] += 1
-            if self.is_ai_heavy(item):
-                ai_count += 1
-
-        for bucket, target in mix_targets.items():
-            if target <= 0:
-                continue
-            while bucket_counts[bucket] < target and len(selected) < max_items:
-                candidate = None
-                for item in ranked:
-                    if self.classify_bucket(item) != bucket:
-                        continue
-                    if not can_add(item):
-                        continue
-                    candidate = item
-                    break
-                if not candidate:
-                    break
-                add(candidate)
-
-        for source in ("ghsa", "reddit", "rss", "twitter"):
-            for item in ranked:
-                if len(selected) >= max_items:
-                    break
-                if str(item.get("source_type", "")).lower() != source:
-                    continue
-                if not can_add(item):
-                    continue
-                add(item)
-                break
 
         for item in ranked:
             if len(selected) >= max_items:
@@ -272,48 +228,31 @@ class BriefingSelector:
                     continue
                 add(item)
 
-        constrained = self._enforce_hard_mix_constraints(
+        return self._enforce_hard_mix_constraints(
             selected=selected,
             ranked=ranked,
+            recent_published=recent_items,
             max_items=max_items,
             max_per_domain=max_per_domain,
-            quiet_mode=quiet_mode,
         )
-        return constrained
 
     def _enforce_hard_mix_constraints(
         self,
         *,
         selected: list[dict],
         ranked: list[dict],
+        recent_published: list[dict] | None,
         max_items: int,
         max_per_domain: int,
-        quiet_mode: bool,
     ) -> list[dict]:
-        """Apply hard editorial constraints; return [] if unsatisfied."""
+        """Apply only duplicate/domain safety checks to the final selection."""
         if not selected:
             return []
 
-        source_limit = self._source_limit(max_items)
-        min_selected = max(1, int(self.settings.briefing_min_selected_items))
-        enforce_mix_requirements = (
-            (not quiet_mode)
-            and max_items >= 3
-            and min_selected >= 2
-            and len(ranked) >= 2
-        )
-        require_reddit = (
-            bool(self.settings.briefing_selection_require_reddit)
-            and enforce_mix_requirements
-        )
-        require_csp = (
-            bool(self.settings.briefing_selection_require_csp)
-            and enforce_mix_requirements
-        )
+        recent_items = recent_published or []
 
         out = list(selected[:max_items])
         selected_ids = {str(i.get("id")) for i in out}
-        source_counts = Counter(str(i.get("source_type", "")).lower() for i in out)
         domain_counts = Counter(
             self._extract_domain(str(i.get("url", ""))) for i in out
         )
@@ -331,10 +270,11 @@ class BriefingSelector:
             item_id = str(item.get("id"))
             if item_id in selected_ids:
                 return False
-            source = str(item.get("source_type", "")).lower()
-            domain = self._extract_domain(str(item.get("url", "")))
-            if source_counts[source] >= source_limit:
+            if self.is_duplicate_of(item, out):
                 return False
+            if self.is_duplicate_of(item, recent_items):
+                return False
+            domain = self._extract_domain(str(item.get("url", "")))
             if (
                 domain
                 and max_per_domain > 0
@@ -348,8 +288,6 @@ class BriefingSelector:
                 return False
             out.append(item)
             selected_ids.add(str(item.get("id")))
-            source = str(item.get("source_type", "")).lower()
-            source_counts[source] += 1
             domain = self._extract_domain(str(item.get("url", "")))
             if domain:
                 domain_counts[domain] += 1
@@ -358,10 +296,6 @@ class BriefingSelector:
         def remove(item: dict) -> None:
             out.remove(item)
             selected_ids.discard(str(item.get("id")))
-            source = str(item.get("source_type", "")).lower()
-            source_counts[source] -= 1
-            if source_counts[source] <= 0:
-                del source_counts[source]
             domain = self._extract_domain(str(item.get("url", "")))
             if domain:
                 domain_counts[domain] -= 1
@@ -372,12 +306,6 @@ class BriefingSelector:
             if not candidates:
                 return None
             return sorted(candidates, key=item_rank)[0]
-
-        def has_reddit() -> bool:
-            return any(str(i.get("source_type", "")).lower() == "reddit" for i in out)
-
-        def has_csp() -> bool:
-            return any(self.is_csp_side_item(i) for i in out)
 
         # Enforce per-domain cap strictly.
         while True:
@@ -401,119 +329,18 @@ class BriefingSelector:
                 break
             remove(victim)
 
-        # Enforce source-share cap.
-        while True:
-            too_many_source = next(
-                (s for s, n in source_counts.items() if n > source_limit), None
-            )
-            if not too_many_source:
-                break
-            candidates = [
-                i
-                for i in out
-                if str(i.get("source_type", "")).lower() == too_many_source
-            ]
-            victim = weakest(candidates)
-            if not victim:
-                break
-            remove(victim)
-
-        # Add required Reddit item.
-        if require_reddit and not has_reddit():
-            reddit_candidates = [
-                i
-                for i in ranked
-                if str(i.get("source_type", "")).lower() == "reddit"
-                and self.passes_source_floor(i)
-            ]
-            if not reddit_candidates:
-                return []
-
-            if len(out) >= max_items:
-                protected_csp = (
-                    has_csp() and sum(1 for i in out if self.is_csp_side_item(i)) == 1
-                )
-                removable = [
-                    i
-                    for i in out
-                    if str(i.get("source_type", "")).lower() != "reddit"
-                    and (not protected_csp or not self.is_csp_side_item(i))
-                ]
-                victim = weakest(removable)
-                if victim:
-                    remove(victim)
-
-            inserted = False
-            for candidate in reddit_candidates:
-                if add(candidate):
-                    inserted = True
-                    break
-            if not inserted:
-                return []
-
-        # Add required Cloudflare/CSP-side item.
-        if require_csp and not has_csp():
-            csp_candidates = [
-                i
-                for i in ranked
-                if self.is_csp_side_item(i) and self.passes_source_floor(i)
-            ]
-            if not csp_candidates:
-                return []
-
-            if len(out) >= max_items:
-                removable = [i for i in out if not self.is_csp_side_item(i)]
-                if (
-                    require_reddit
-                    and has_reddit()
-                    and sum(
-                        1
-                        for i in out
-                        if str(i.get("source_type", "")).lower() == "reddit"
-                    )
-                    == 1
-                ):
-                    removable = [
-                        i
-                        for i in removable
-                        if str(i.get("source_type", "")).lower() != "reddit"
-                    ]
-                victim = weakest(removable)
-                if victim:
-                    remove(victim)
-
-            inserted = False
-            for candidate in csp_candidates:
-                if add(candidate):
-                    inserted = True
-                    break
-            if not inserted:
-                return []
-
         # Re-fill up to max_items under hard constraints.
         for item in ranked:
             if len(out) >= max_items:
                 break
             add(item)
 
-        # Final hard checks.
-        if require_reddit and not has_reddit():
-            return []
-        if require_csp and not has_csp():
-            return []
-        if any(n > source_limit for n in source_counts.values()):
-            return []
         if any(
             max_per_domain > 0 and n > max_per_domain for n in domain_counts.values()
         ):
             return []
 
         return out
-
-    def _source_limit(self, max_items: int) -> int:
-        share = float(self.settings.briefing_max_source_share)
-        share = min(1.0, max(0.2, share))
-        return max(1, int(math.floor(max_items * share)))
 
     def priority_score(
         self, item: dict, recent_published: list[dict] | None = None
@@ -526,22 +353,6 @@ class BriefingSelector:
         score += self.source_trust_bonus(item)
         score -= self.novelty_penalty(item, recent_published or [])
         return score
-
-    def mix_targets(self, quiet_mode: bool) -> dict[str, int]:
-        """Per-digest category mix targets."""
-        if quiet_mode:
-            return {
-                "urgent_threats": 1,
-                "platform_changes": 1,
-                "tooling_use_case": 0,
-                "regulatory_legal": 0,
-            }
-        return {
-            "urgent_threats": self.settings.briefing_mix_min_urgent,
-            "platform_changes": self.settings.briefing_mix_min_platform,
-            "tooling_use_case": self.settings.briefing_mix_min_tooling,
-            "regulatory_legal": self.settings.briefing_mix_min_regulatory,
-        }
 
     def engagement_bonus(self, item: dict) -> float:
         """Compute capped source-specific social-proof bonus for ranking."""

@@ -108,11 +108,28 @@ class BriefingQualityGate:
                 else:
                     soft_issues.append(issue)
 
+        selected_url_keys = {
+            canonical_url_key(str(item.get("url", "")))
+            for item in selected_items
+            if str(item.get("url", "")).strip()
+        }
+
         url_counts: Counter[str] = Counter()
+        unexpected_urls: list[str] = []
+        seen_unexpected: set[str] = set()
         for raw_url in extract_raw_urls(body):
             key = canonical_url_key(raw_url)
             if key:
                 url_counts[key] += 1
+                if key not in selected_url_keys and key not in seen_unexpected:
+                    seen_unexpected.add(key)
+                    unexpected_urls.append(key)
+
+        if unexpected_urls:
+            hard_issues.append(
+                "Unexpected URL not present in selected items: "
+                + ", ".join(unexpected_urls[:3])
+            )
 
         for item in selected_items:
             expected = canonical_url_key(str(item.get("url", "")))
