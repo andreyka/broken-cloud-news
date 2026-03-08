@@ -15,6 +15,7 @@ def _make_settings(**overrides) -> Settings:
         llm_model="test-model",
         comfyui_url="http://fake-comfy:8188",
         github_token="ghp_fake",
+        source_review_enabled=False,
     )
     defaults.update(overrides)
     return Settings(**defaults)

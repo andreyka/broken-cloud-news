@@ -33,8 +33,11 @@ async def test_get_analyzed_items_excludes_only_distributed_briefings():
 
     assert "FROM briefing_items bi" in sql
     assert "JOIN briefings b ON b.id = bi.briefing_id" in sql
-    assert "bi.news_item_id = news_items.id" in sql
+    assert "JOIN news_items published_item ON published_item.id = bi.news_item_id" in sql
     assert "b.status = 'DISTRIBUTED'" in sql
+    assert "story_issue_key" in sql
+    assert "story_url_key" in sql
+    assert "ROW_NUMBER() OVER" in sql
 
 
 @pytest.mark.asyncio
@@ -55,10 +58,35 @@ async def test_preview_analyzed_items_is_read_only():
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
-    assert sql.lstrip().startswith("SELECT *")
+    assert "WITH ranked AS" in sql
+    assert "story_rank = 1" in sql
     assert "status = 'ANALYZED'" in sql
     assert "UPDATE news_items" not in sql
     assert "b.status = 'DISTRIBUTED'" in sql
+
+
+@pytest.mark.asyncio
+async def test_get_top_items_for_period_dedupes_by_story_identity():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+            mock_get_pool.return_value = fake_pool
+            await db.get_top_items_for_period(days=31, min_score=7, limit=12)
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "WITH ranked AS" in sql
+    assert "story_issue_key" in sql
+    assert "story_url_key" in sql
+    assert "story_rank = 1" in sql
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,8 @@ from uuid import UUID
 
 import asyncpg
 
+from bcn.briefing.story_identity import primary_story_issue_key
+from bcn.briefing.story_identity import story_url_key
 from bcn.common.config import Settings
 from bcn.common.migrations import apply_migrations
 from bcn.common.migrations import get_migration_status
@@ -160,6 +162,71 @@ async def ensure_briefing_items_table() -> None:
     await ensure_schema_ready()
 
 
+async def ensure_collection_source_tables() -> None:
+    """Ensure schema migrations already created collection source tables."""
+    await ensure_schema_ready()
+
+
+def _story_identity_values(
+    *,
+    url: str,
+    title: str | None,
+    summary: str | None,
+) -> tuple[str | None, str | None]:
+    """Compute persisted story identity fields for DB-level dedupe."""
+    url_key = story_url_key(url or "") or None
+    issue_key = primary_story_issue_key(title or "", summary or "") or None
+    return url_key, issue_key
+
+
+async def _backfill_recent_story_identity(
+    *,
+    limit: int = 500,
+    lookback_days: int = 90,
+) -> None:
+    """Populate story identity for recent rows created before the new columns existed."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, url, title, summary
+        FROM news_items
+        WHERE (story_url_key IS NULL OR story_issue_key IS NULL)
+          AND published_at > NOW() - make_interval(days => $1)
+        ORDER BY published_at DESC
+        LIMIT $2
+        """,
+        max(1, int(lookback_days)),
+        max(1, int(limit)),
+    )
+    if not rows:
+        return
+
+    updates: list[tuple[str | None, str | None, UUID]] = []
+    for row in rows:
+        story_url, story_issue = _story_identity_values(
+            url=str(row["url"] or ""),
+            title=str(row["title"] or ""),
+            summary=str(row["summary"] or ""),
+        )
+        if story_url is None and story_issue is None:
+            continue
+        updates.append((story_url, story_issue, row["id"]))
+
+    if not updates:
+        return
+
+    await pool.executemany(
+        """
+        UPDATE news_items
+        SET story_url_key = COALESCE($1, story_url_key),
+            story_issue_key = COALESCE($2, story_issue_key),
+            updated_at = NOW()
+        WHERE id = $3
+        """,
+        updates,
+    )
+
+
 # ---------------------------------------------------------------------------
 # News Items
 # ---------------------------------------------------------------------------
@@ -229,11 +296,27 @@ async def insert_news_item(
         )
         return None
 
+    story_url, story_issue = _story_identity_values(
+        url=url,
+        title=title,
+        summary=None,
+    )
     pool = await get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO news_items (source_type, source_id, url, title, published_at, raw_data, full_content, status)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'NEW')
+        INSERT INTO news_items (
+            source_type,
+            source_id,
+            url,
+            title,
+            published_at,
+            raw_data,
+            full_content,
+            story_url_key,
+            story_issue_key,
+            status
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'NEW')
         ON CONFLICT (source_type, source_id) DO NOTHING
         RETURNING id
         """,
@@ -244,6 +327,8 @@ async def insert_news_item(
         pub_dt,
         json.dumps(raw_data),
         full_content,
+        story_url,
+        story_issue,
     )
     return row["id"] if row else None
 
@@ -420,15 +505,32 @@ async def update_item_analyzed(
         canonical_url: Optional resolved primary source URL.
     """
     pool = await get_pool()
+    current = await pool.fetchrow(
+        """
+        SELECT url, title
+        FROM news_items
+        WHERE id = $1
+        """,
+        item_id,
+    )
+    resolved_url = str(canonical_url or (current["url"] if current else "") or "")
+    current_title = str(current["title"] if current else "")
+    story_url, story_issue = _story_identity_values(
+        url=resolved_url,
+        title=current_title,
+        summary=summary,
+    )
     await pool.execute(
         """
         UPDATE news_items
         SET summary = $1, relevance_score = $2, ai_tags = $3::jsonb,
             full_content = COALESCE($4, full_content),
             image_prompt = $5, url = COALESCE($6, url), status = 'ANALYZED',
+            story_url_key = COALESCE($7, story_url_key),
+            story_issue_key = COALESCE($8, story_issue_key),
             retry_count = 0, last_error = NULL, next_retry_at = NULL, terminal_status = NULL,
             updated_at = NOW()
-        WHERE id = $7
+        WHERE id = $9
         """,
         summary,
         relevance_score,
@@ -436,6 +538,8 @@ async def update_item_analyzed(
         full_content,
         image_prompt,
         canonical_url,
+        story_url,
+        story_issue,
         item_id,
     )
 
@@ -456,6 +560,7 @@ async def get_analyzed_items(
     retry_limit = max(1, int(max_writing_retries))
     await ensure_news_items_indexes()
     await ensure_briefing_items_table()
+    await _backfill_recent_story_identity(limit=max(250, int(limit) * 4))
     pool = await get_pool()
     return await pool.fetch(
         """
@@ -472,29 +577,55 @@ async def get_analyzed_items(
               AND terminal_status IS NULL
             RETURNING id
         ),
-        candidate AS (
-            SELECT id
-            FROM news_items
+        eligible AS (
+            SELECT
+                n.id,
+                n.relevance_score,
+                n.published_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(NULLIF(n.story_issue_key, ''), NULLIF(n.story_url_key, ''), n.id::text)
+                    ORDER BY n.relevance_score DESC, n.published_at DESC
+                ) AS story_rank
+            FROM news_items AS n
             WHERE (
-                    status = 'ANALYZED'
+                    n.status = 'ANALYZED'
                     OR (
-                        status = 'WRITING'
-                        AND updated_at < NOW() - make_interval(mins => $3)
-                        AND COALESCE(retry_count, 0) < $4
+                        n.status = 'WRITING'
+                        AND n.updated_at < NOW() - make_interval(mins => $3)
+                        AND COALESCE(n.retry_count, 0) < $4
                     )
                   )
-              AND terminal_status IS NULL
-              AND (next_retry_at IS NULL OR next_retry_at <= NOW())
-              AND relevance_score >= $1
-              AND published_at > NOW() - make_interval(hours => $2)
+              AND n.terminal_status IS NULL
+              AND (n.next_retry_at IS NULL OR n.next_retry_at <= NOW())
+              AND n.relevance_score >= $1
+              AND n.published_at > NOW() - make_interval(hours => $2)
               AND NOT EXISTS (
                   SELECT 1
                   FROM briefing_items bi
                   JOIN briefings b ON b.id = bi.briefing_id
-                  WHERE bi.news_item_id = news_items.id
-                    AND b.status = 'DISTRIBUTED'
+                  JOIN news_items published_item ON published_item.id = bi.news_item_id
+                  WHERE b.status = 'DISTRIBUTED'
+                    AND (
+                        published_item.id = n.id
+                        OR (
+                            n.story_issue_key IS NOT NULL
+                            AND n.story_issue_key <> ''
+                            AND published_item.story_issue_key = n.story_issue_key
+                        )
+                        OR (
+                            n.story_url_key IS NOT NULL
+                            AND n.story_url_key <> ''
+                            AND published_item.story_url_key = n.story_url_key
+                        )
+                    )
               )
-            ORDER BY relevance_score DESC, published_at DESC
+        ),
+        candidate AS (
+            SELECT n.id
+            FROM news_items AS n
+            JOIN eligible ON eligible.id = n.id
+            WHERE eligible.story_rank = 1
+            ORDER BY eligible.relevance_score DESC, eligible.published_at DESC
             FOR UPDATE SKIP LOCKED
             LIMIT $6
         ),
@@ -537,22 +668,46 @@ async def preview_analyzed_items(
     """Read analyzed items for shadow evaluation without claiming them."""
     await ensure_news_items_indexes()
     await ensure_briefing_items_table()
+    await _backfill_recent_story_identity(limit=max(250, int(limit) * 4))
     pool = await get_pool()
     return await pool.fetch(
         """
+        WITH ranked AS (
+            SELECT
+                n.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(NULLIF(n.story_issue_key, ''), NULLIF(n.story_url_key, ''), n.id::text)
+                    ORDER BY n.relevance_score DESC, n.published_at DESC
+                ) AS story_rank
+            FROM news_items AS n
+            WHERE n.status = 'ANALYZED'
+              AND n.terminal_status IS NULL
+              AND n.relevance_score >= $1
+              AND n.published_at > NOW() - make_interval(hours => $2)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM briefing_items bi
+                  JOIN briefings b ON b.id = bi.briefing_id
+                  JOIN news_items published_item ON published_item.id = bi.news_item_id
+                  WHERE b.status = 'DISTRIBUTED'
+                    AND (
+                        published_item.id = n.id
+                        OR (
+                            n.story_issue_key IS NOT NULL
+                            AND n.story_issue_key <> ''
+                            AND published_item.story_issue_key = n.story_issue_key
+                        )
+                        OR (
+                            n.story_url_key IS NOT NULL
+                            AND n.story_url_key <> ''
+                            AND published_item.story_url_key = n.story_url_key
+                        )
+                    )
+              )
+        )
         SELECT *
-        FROM news_items
-        WHERE status = 'ANALYZED'
-          AND terminal_status IS NULL
-          AND relevance_score >= $1
-          AND published_at > NOW() - make_interval(hours => $2)
-          AND NOT EXISTS (
-              SELECT 1
-              FROM briefing_items bi
-              JOIN briefings b ON b.id = bi.briefing_id
-              WHERE bi.news_item_id = news_items.id
-                AND b.status = 'DISTRIBUTED'
-          )
+        FROM ranked
+        WHERE story_rank = 1
         ORDER BY relevance_score DESC, published_at DESC
         LIMIT $3
         """,
@@ -595,15 +750,26 @@ async def get_top_items_for_period(
     items of the full period.
     """
     await ensure_news_items_indexes()
+    await _backfill_recent_story_identity(limit=max(250, int(limit) * 4))
     pool = await get_pool()
     return await pool.fetch(
         """
+        WITH ranked AS (
+            SELECT
+                n.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(NULLIF(n.story_issue_key, ''), NULLIF(n.story_url_key, ''), n.id::text)
+                    ORDER BY n.relevance_score DESC, n.published_at DESC
+                ) AS story_rank
+            FROM news_items AS n
+            WHERE n.status = ANY($1::text[])
+              AND n.relevance_score >= $2
+              AND n.summary IS NOT NULL
+              AND n.published_at > NOW() - make_interval(days => $3)
+        )
         SELECT *
-        FROM news_items
-        WHERE status = ANY($1::text[])
-          AND relevance_score >= $2
-          AND summary IS NOT NULL
-          AND published_at > NOW() - make_interval(days => $3)
+        FROM ranked
+        WHERE story_rank = 1
         ORDER BY relevance_score DESC, published_at DESC
         LIMIT $4
         """,
@@ -643,19 +809,223 @@ async def get_recent_published_items(
         Published item records ordered by ``published_at`` descending.
     """
     await ensure_news_items_indexes()
+    await _backfill_recent_story_identity(limit=max(250, int(limit) * 2))
     pool = await get_pool()
     return await pool.fetch(
         """
+        WITH ranked AS (
+            SELECT
+                id,
+                source_type,
+                url,
+                title,
+                summary,
+                ai_tags,
+                relevance_score,
+                published_at,
+                raw_data,
+                ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(NULLIF(story_issue_key, ''), NULLIF(story_url_key, ''), id::text)
+                    ORDER BY published_at DESC
+                ) AS story_rank
+            FROM news_items
+            WHERE status = 'PUBLISHED'
+              AND published_at > NOW() - make_interval(hours => $1)
+        )
         SELECT id, source_type, url, title, summary, ai_tags, relevance_score, published_at, raw_data
-        FROM news_items
-        WHERE status = 'PUBLISHED'
-          AND published_at > NOW() - make_interval(hours => $1)
+        FROM ranked
+        WHERE story_rank = 1
         ORDER BY published_at DESC
         LIMIT $2
         """,
         hours,
         limit,
     )
+
+
+async def get_collection_source(source_key: str) -> asyncpg.Record | None:
+    """Fetch one persisted collection source registry row."""
+    await ensure_collection_source_tables()
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        SELECT *
+        FROM collection_sources
+        WHERE source_key = $1
+        LIMIT 1
+        """,
+        source_key,
+    )
+
+
+async def upsert_collection_source(
+    *,
+    source_key: str,
+    source_type: str,
+    display_name: str,
+    state: str,
+    raw_config: dict[str, Any] | None = None,
+    review_reason: str | None = None,
+    review_payload: dict[str, Any] | None = None,
+) -> None:
+    """Create or update one collection source registry row."""
+    await ensure_collection_source_tables()
+    pool = await get_pool()
+    payload = json.dumps(review_payload or {}, ensure_ascii=False, default=str)
+    config = json.dumps(raw_config or {}, ensure_ascii=False, default=str)
+    await pool.execute(
+        """
+        INSERT INTO collection_sources (
+            source_key,
+            source_type,
+            display_name,
+            state,
+            raw_config,
+            review_reason,
+            review_payload,
+            first_active_at,
+            last_seen_at,
+            updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
+            CASE WHEN $4 = 'ACTIVE' THEN NOW() ELSE NULL END,
+            NOW(),
+            NOW()
+        )
+        ON CONFLICT (source_key) DO UPDATE
+        SET
+            source_type = EXCLUDED.source_type,
+            display_name = EXCLUDED.display_name,
+            state = EXCLUDED.state,
+            raw_config = EXCLUDED.raw_config,
+            review_reason = COALESCE(EXCLUDED.review_reason, collection_sources.review_reason),
+            review_payload = CASE
+                WHEN EXCLUDED.review_payload <> '{}'::jsonb
+                    THEN EXCLUDED.review_payload
+                ELSE collection_sources.review_payload
+            END,
+            first_active_at = CASE
+                WHEN collection_sources.first_active_at IS NOT NULL THEN collection_sources.first_active_at
+                WHEN EXCLUDED.state = 'ACTIVE' THEN NOW()
+                ELSE NULL
+            END,
+            last_seen_at = NOW(),
+            updated_at = NOW()
+        """,
+        source_key,
+        source_type,
+        display_name,
+        state,
+        config,
+        review_reason,
+        payload,
+    )
+
+
+async def record_collection_source_review(
+    *,
+    source_key: str,
+    decision: str,
+    confidence: str,
+    rationale: str,
+    review_payload: dict[str, Any] | None = None,
+) -> None:
+    """Persist one source promotion/quarantine review artifact."""
+    await ensure_collection_source_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO collection_source_reviews (
+            source_key,
+            decision,
+            confidence,
+            rationale,
+            review_payload
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        """,
+        source_key,
+        decision,
+        confidence,
+        rationale,
+        json.dumps(review_payload or {}, ensure_ascii=False, default=str),
+    )
+
+
+async def collection_source_has_historical_items(
+    *,
+    source_type: str,
+    raw_config: dict[str, Any],
+) -> bool:
+    """Return whether a source already existed before registry enforcement."""
+    await ensure_collection_source_tables()
+    pool = await get_pool()
+
+    if source_type == "rss":
+        feed_url = str(raw_config.get("feed_url") or "").strip()
+        if not feed_url:
+            return False
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT 1
+                FROM news_items
+                WHERE source_type = 'rss'
+                  AND raw_data->>'feed_url' = $1
+                LIMIT 1
+                """,
+                feed_url,
+            )
+        )
+
+    if source_type == "reddit":
+        subreddit = str(raw_config.get("subreddit") or "").strip().lower()
+        if not subreddit:
+            return False
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT 1
+                FROM news_items
+                WHERE source_type = 'reddit'
+                  AND lower(COALESCE(raw_data->>'subreddit', '')) = $1
+                LIMIT 1
+                """,
+                subreddit,
+            )
+        )
+
+    if source_type == "twitter":
+        username = str(raw_config.get("username") or "").strip().lower()
+        if not username:
+            return False
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT 1
+                FROM news_items
+                WHERE source_type = 'twitter'
+                  AND lower(COALESCE(raw_data->>'username', '')) = $1
+                LIMIT 1
+                """,
+                username,
+            )
+        )
+
+    if source_type == "ghsa":
+        return bool(
+            await pool.fetchval(
+                """
+                SELECT 1
+                FROM news_items
+                WHERE source_type = 'ghsa'
+                LIMIT 1
+                """
+            )
+        )
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1151,6 +1521,11 @@ async def _upsert_history_url_item(
         "content_hash": content_hash,
         "url": url,
     }
+    story_url, story_issue = _story_identity_values(
+        url=url,
+        title=title,
+        summary=None,
+    )
 
     exists = await conn.fetchval(
         """
@@ -1172,16 +1547,20 @@ async def _upsert_history_url_item(
             title,
             published_at,
             raw_data,
+            story_url_key,
+            story_issue_key,
             status
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'PUBLISHED')
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, 'PUBLISHED')
         ON CONFLICT (source_type, source_id) DO UPDATE
         SET
             status = 'PUBLISHED',
             published_at = LEAST(news_items.published_at, EXCLUDED.published_at),
             updated_at = NOW(),
             title = COALESCE(news_items.title, EXCLUDED.title),
-            raw_data = COALESCE(news_items.raw_data, '{}'::jsonb) || EXCLUDED.raw_data
+            raw_data = COALESCE(news_items.raw_data, '{}'::jsonb) || EXCLUDED.raw_data,
+            story_url_key = COALESCE(news_items.story_url_key, EXCLUDED.story_url_key),
+            story_issue_key = COALESCE(news_items.story_issue_key, EXCLUDED.story_issue_key)
         RETURNING id
         """,
         source_type,
@@ -1190,6 +1569,8 @@ async def _upsert_history_url_item(
         title,
         posted_at,
         json.dumps(payload, ensure_ascii=False, default=str),
+        story_url,
+        story_issue,
     )
     return row["id"], not bool(exists)
 

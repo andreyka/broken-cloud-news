@@ -325,6 +325,8 @@ class Settings(BaseSettings):
         "redis",
         "load balancer",
     ]
+    source_review_enabled: bool = True
+    source_review_sample_size: int = 4
 
     # RSS feeds
     rss_feeds: list[str] = [
