@@ -222,6 +222,45 @@ class TestCollectorService:
 
         assert items == []
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_collect_ghsa_drops_items_without_parseable_timestamp(self):
+        from bcn.agents.collector.service import CollectorService
+
+        settings = _make_settings()
+        service = CollectorService(settings)
+
+        respx.post("https://api.github.com/graphql").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "securityAdvisories": {
+                            "nodes": [
+                                {
+                                    "ghsaId": "GHSA-test-0002",
+                                    "summary": "Critical kubernetes vuln",
+                                    "description": "A container escape in kubernetes allows...",
+                                    "permalink": "https://github.com/advisories/GHSA-test-0002",
+                                    "severity": "CRITICAL",
+                                    "publishedAt": "",
+                                    "references": [],
+                                    "identifiers": [],
+                                },
+                            ]
+                        }
+                    }
+                },
+            )
+        )
+
+        try:
+            items = await service.collect_ghsa_items()
+        finally:
+            await service.close()
+
+        assert items == []
+
     @pytest.mark.asyncio
     async def test_collect_rss_uses_feed_publish_timestamp(self):
         from bcn.agents.collector.service import CollectorService
@@ -297,6 +336,69 @@ class TestCollectorService:
         assert items[0].raw_data["published"] == "2026-03-07T17:30:00+00:00"
         assert items[0].raw_data["published_field"] == "updated_parsed"
         assert items[0].raw_data["published_raw"] is None
+
+    @pytest.mark.asyncio
+    async def test_collect_rss_drops_items_without_parseable_timestamp(self):
+        from bcn.agents.collector.service import CollectorService
+
+        settings = _make_settings(
+            rss_feeds=["https://example.com/security.rss"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        service = CollectorService(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Kubernetes CVE write-up</title>
+            <link>https://example.com/advisory</link>
+            <guid>rss-1</guid>
+            <description>Cloud-native exploit chain details</description>
+          </item>
+        </channel></rss>
+        """
+
+        service.scraper.fetch_text_or_raise = AsyncMock(return_value=rss_body)
+        service.scraper.scrape = AsyncMock(return_value="Detailed advisory text")
+
+        try:
+            items = await service.collect_rss_items()
+        finally:
+            await service.close()
+
+        assert items == []
+
+    @pytest.mark.asyncio
+    async def test_collect_rss_drops_future_dated_items(self):
+        from bcn.agents.collector.service import CollectorService
+
+        settings = _make_settings(
+            rss_feeds=["https://example.com/security.rss"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        service = CollectorService(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Kubernetes CVE write-up</title>
+            <link>https://example.com/advisory</link>
+            <guid>rss-1</guid>
+            <pubDate>Fri, 06 Mar 2099 13:00:01 GMT</pubDate>
+            <description>Cloud-native exploit chain details</description>
+          </item>
+        </channel></rss>
+        """
+
+        service.scraper.fetch_text_or_raise = AsyncMock(return_value=rss_body)
+        service.scraper.scrape = AsyncMock(return_value="Detailed advisory text")
+
+        try:
+            items = await service.collect_rss_items()
+        finally:
+            await service.close()
+
+        assert items == []
 
     @pytest.mark.asyncio
     async def test_collect_reddit(self):
