@@ -824,43 +824,48 @@ async def get_recent_published_items(
     hours: int = 24 * 14,
     limit: int = 250,
 ) -> list[asyncpg.Record]:
-    """Fetch recently published items for novelty checks.
+    """Fetch recently distributed items for novelty checks.
 
     Args:
         hours: Lookback window in hours.
         limit: Maximum number of items to return.
 
     Returns:
-        Published item records ordered by ``published_at`` descending.
+        Distributed item records ordered by briefing distribution time descending.
     """
     await ensure_news_items_indexes()
+    await ensure_briefing_items_table()
     await _backfill_recent_story_identity(limit=max(250, int(limit) * 2))
     pool = await get_pool()
     return await pool.fetch(
         """
         WITH ranked AS (
             SELECT
-                id,
-                source_type,
-                url,
-                title,
-                summary,
-                ai_tags,
-                relevance_score,
-                published_at,
-                raw_data,
+                n.id,
+                n.source_type,
+                n.url,
+                n.title,
+                n.summary,
+                n.ai_tags,
+                n.relevance_score,
+                n.published_at,
+                n.raw_data,
+                b.distributed_at,
                 ROW_NUMBER() OVER (
-                    PARTITION BY COALESCE(NULLIF(story_issue_key, ''), NULLIF(story_url_key, ''), id::text)
-                    ORDER BY published_at DESC
+                    PARTITION BY COALESCE(NULLIF(n.story_issue_key, ''), NULLIF(n.story_url_key, ''), n.id::text)
+                    ORDER BY b.distributed_at DESC, n.published_at DESC
                 ) AS story_rank
-            FROM news_items
-            WHERE status = 'PUBLISHED'
-              AND published_at > NOW() - make_interval(hours => $1)
+            FROM briefing_items bi
+            JOIN briefings b ON b.id = bi.briefing_id
+            JOIN news_items n ON n.id = bi.news_item_id
+            WHERE b.status = 'DISTRIBUTED'
+              AND b.distributed_at IS NOT NULL
+              AND b.distributed_at > NOW() - make_interval(hours => $1)
         )
         SELECT id, source_type, url, title, summary, ai_tags, relevance_score, published_at, raw_data
         FROM ranked
         WHERE story_rank = 1
-        ORDER BY published_at DESC
+        ORDER BY distributed_at DESC, published_at DESC
         LIMIT $2
         """,
         hours,

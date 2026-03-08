@@ -91,6 +91,38 @@ async def test_get_top_items_for_period_dedupes_by_story_identity():
 
 
 @pytest.mark.asyncio
+async def test_get_recent_published_items_uses_distribution_time_for_novelty():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(return_value=[])
+
+    original_schema_ready = db._schema_ready
+    db._schema_ready = True
+    try:
+        with (
+            patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool,
+            patch(
+                "bcn.common.db._backfill_recent_story_identity",
+                new_callable=AsyncMock,
+            ),
+        ):
+            mock_get_pool.return_value = fake_pool
+            await db.get_recent_published_items(hours=48, limit=9)
+    finally:
+        db._schema_ready = original_schema_ready
+
+    args, _kwargs = fake_pool.fetch.await_args
+    sql = args[0]
+    assert "FROM briefing_items bi" in sql
+    assert "JOIN briefings b ON b.id = bi.briefing_id" in sql
+    assert "JOIN news_items n ON n.id = bi.news_item_id" in sql
+    assert "b.status = 'DISTRIBUTED'" in sql
+    assert "b.distributed_at > NOW()" in sql
+    assert "ORDER BY b.distributed_at DESC" in sql
+
+
+@pytest.mark.asyncio
 async def test_backfill_recent_story_identity_does_not_touch_updated_at():
     import bcn.common.db as db
 

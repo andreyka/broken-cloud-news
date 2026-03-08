@@ -1422,6 +1422,27 @@ class TestWriterExecutor:
         assert executor.selector.is_duplicate_of(item, others) is True
         assert executor.selector.novelty_penalty(item, others) >= 3.0
 
+    def test_duplicate_detection_ignores_generic_topic_overlap_without_issue_ids(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
+        executor = WriterExecutor(settings)
+        item = {
+            "url": "https://example.com/flowise-cache-bug",
+            "title": "Flowise endpoint middleware cache bug leaks prompts",
+            "summary": "Flowise endpoint middleware leak in cache path.",
+        }
+        others = [
+            {
+                "url": "https://example.com/flowise-logging-flaw",
+                "title": "Flowise endpoint middleware logging flaw exposes tokens",
+                "summary": "Flowise endpoint middleware bug in logging path.",
+            }
+        ]
+
+        assert executor.selector.is_duplicate_of(item, others) is False
+        assert executor.selector.novelty_penalty(item, others) == 0.0
+
     def test_quality_gate_uses_canonical_url_key_for_selected_urls(self):
         from bcn.agents.writer.agent import WriterExecutor
 

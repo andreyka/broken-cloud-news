@@ -10,8 +10,8 @@ import math
 import re
 from urllib.parse import urlparse
 
+from bcn.briefing.story_identity import explicit_story_issue_keys
 from bcn.briefing.story_identity import normalize_story_title
-from bcn.briefing.story_identity import story_issue_keys
 from bcn.briefing.story_identity import story_url_key
 from bcn.briefing.text import to_dict
 from bcn.common.config import Settings
@@ -374,7 +374,7 @@ class BriefingSelector:
 
         cur_url = story_url_key(str(item.get("url", "")))
         cur_title = normalize_story_title(str(item.get("title", "")))
-        cur_issue_keys = story_issue_keys(item)
+        cur_issue_keys = explicit_story_issue_keys(item)
         threshold = float(self.settings.briefing_novelty_title_similarity_threshold)
 
         for other in others:
@@ -389,7 +389,7 @@ class BriefingSelector:
                     return True
 
             if cur_issue_keys:
-                other_issue_keys = story_issue_keys(other)
+                other_issue_keys = explicit_story_issue_keys(other)
                 if other_issue_keys and len(cur_issue_keys & other_issue_keys) > 0:
                     return True
 
@@ -402,7 +402,7 @@ class BriefingSelector:
 
         cur_url = story_url_key(str(item.get("url", "")))
         cur_title = normalize_story_title(str(item.get("title", "")))
-        cur_issue_keys = story_issue_keys(item)
+        cur_issue_keys = explicit_story_issue_keys(item)
         best_title_similarity = 0.0
         best_issue_overlap = 0.0
         same_url_seen = False
@@ -415,7 +415,7 @@ class BriefingSelector:
                 break
 
             if cur_issue_keys:
-                prev_issue_keys = story_issue_keys(prev)
+                prev_issue_keys = explicit_story_issue_keys(prev)
                 if prev_issue_keys:
                     overlap = len(cur_issue_keys & prev_issue_keys)
                     if overlap > 0:

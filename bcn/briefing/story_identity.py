@@ -95,6 +95,14 @@ def topic_signature(normalized_text: str) -> str:
     return "topic:" + "+".join(top_tokens)
 
 
+def explicit_story_issue_keys_from_text(text: str) -> set[str]:
+    """Extract only explicit advisory identifiers from text."""
+    normalized = normalize_story_title(text)
+    if not normalized:
+        return set()
+    return {m.group(0).lower() for m in _ISSUE_ID_RE.finditer(normalized)}
+
+
 def story_issue_keys_from_text(text: str) -> set[str]:
     """Extract structured issue keys from normalized title/summary text."""
     normalized = normalize_story_title(text)
@@ -106,6 +114,14 @@ def story_issue_keys_from_text(text: str) -> set[str]:
     if signature:
         keys.add(signature)
     return keys
+
+
+def explicit_story_issue_keys(item: dict[str, Any] | None) -> set[str]:
+    """Extract only explicit advisory identifiers from an item-like mapping."""
+    payload = item or {}
+    return explicit_story_issue_keys_from_text(
+        f"{payload.get('title', '')} {payload.get('summary', '')}"
+    )
 
 
 def story_issue_keys(item: dict[str, Any] | None) -> set[str]:
@@ -123,11 +139,8 @@ def story_url_key(url: str) -> str:
 
 def primary_story_issue_key(title: str, summary: str) -> str:
     """Choose one strong issue key for DB-level grouping."""
-    keys = story_issue_keys_from_text(f"{title} {summary}")
+    keys = explicit_story_issue_keys_from_text(f"{title} {summary}")
     if not keys:
         return ""
 
-    explicit_ids = sorted(
-        key for key in keys if key.startswith("cve-") or key.startswith("ghsa-")
-    )
-    return explicit_ids[0] if explicit_ids else ""
+    return sorted(keys)[0]
