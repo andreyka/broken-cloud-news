@@ -333,6 +333,7 @@ class Settings(BaseSettings):
         "https://blog.cloudflare.com/tag/security/rss/",
         "https://unit42.paloaltonetworks.com/feed/",
         "https://research.checkpoint.com/feed/",
+        "https://www.wiz.io/feed/rss.xml",
     ]
 
     # Reddit (RSS)
