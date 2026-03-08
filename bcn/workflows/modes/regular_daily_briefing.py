@@ -5,6 +5,7 @@ from __future__ import annotations
 from bcn.common.config import Settings
 from bcn.workflows.modes._schedule import schedule_start_time
 from bcn.workflows.modes.common import run_generation_and_distribution
+from bcn.workflows.runtime import WorkflowRuntime
 
 MODE = "regular_daily_briefing"
 
@@ -63,6 +64,6 @@ def build_shadow_trigger(settings: Settings):
     )
 
 
-async def run() -> None:
+async def run(runtime: WorkflowRuntime) -> None:
     """Execute one regular daily briefing publication cycle."""
-    await run_generation_and_distribution(mode=MODE)
+    await run_generation_and_distribution(runtime=runtime, mode=MODE)

@@ -331,9 +331,9 @@ async def test_job_analyze_items_uses_control_plane(monkeypatch):
     settings = Settings(analyst_port=9002)
     analysis_mock = AsyncMock(return_value="Analyzed 3/3 items")
     monkeypatch.setattr("bcn.workflows.automation.execute_analysis", analysis_mock)
-    configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings, AsyncMock())
 
-    await job_analyze_items()
+    await job_analyze_items(runtime)
 
     analysis_mock.assert_awaited_once_with(
         settings,
@@ -356,9 +356,9 @@ async def test_collect_jobs_use_control_plane(monkeypatch, job_func, source):
     settings = Settings()
     collect_mock = AsyncMock(return_value=f"{source}: ok")
     monkeypatch.setattr("bcn.workflows.automation.execute_collection", collect_mock)
-    configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings, AsyncMock())
 
-    await job_func()
+    await job_func(runtime)
 
     collect_mock.assert_awaited_once_with(
         settings,
@@ -381,11 +381,14 @@ async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypa
         )
     )
     distribute_mock = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
-    monkeypatch.setattr("bcn.workflows.generation.execute_generation", generation_mock)
+    monkeypatch.setattr(
+        "bcn.workflows.generation.execute_generation_result",
+        generation_mock,
+    )
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings, AsyncMock())
 
-    await job_publish_regular_briefing()
+    await job_publish_regular_briefing(runtime)
 
     generation_mock.assert_awaited_once_with(
         settings,
@@ -411,10 +414,10 @@ async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips
             item_count=0,
         )
     )
-    with patch("bcn.workflows.generation.execute_generation", generation_mock):
-        configure_scheduler_runtime(settings, AsyncMock())
+    with patch("bcn.workflows.generation.execute_generation_result", generation_mock):
+        runtime = configure_scheduler_runtime(settings, AsyncMock())
 
-        await job_publish_regular_briefing()
+        await job_publish_regular_briefing(runtime)
 
     generation_mock.assert_awaited_once_with(
         settings,
@@ -437,11 +440,14 @@ async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode(monkeypa
         )
     )
     distribute_mock = AsyncMock(return_value="Distributed to: {'email': 'ok'}")
-    monkeypatch.setattr("bcn.workflows.generation.execute_generation", generation_mock)
+    monkeypatch.setattr(
+        "bcn.workflows.generation.execute_generation_result",
+        generation_mock,
+    )
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings, AsyncMock())
 
-    await job_publish_regular_monthly_newsletter()
+    await job_publish_regular_monthly_newsletter(runtime)
 
     generation_mock.assert_awaited_once_with(
         settings,
@@ -466,7 +472,7 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
         shadow_candidate_overrides_path=str(overrides_path),
         shadow_include_text=True,
     )
-    configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings, AsyncMock())
 
     run_mock = AsyncMock(
         return_value={
@@ -478,7 +484,7 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
     )
     monkeypatch.setattr("bcn.evaluation.service.execute_shadow_lane", run_mock)
 
-    await job_shadow_regular_briefing()
+    await job_shadow_regular_briefing(runtime)
 
     run_mock.assert_awaited_once_with(
         settings,

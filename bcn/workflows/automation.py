@@ -32,8 +32,8 @@ from bcn.workflows.modes.regular_monthly_newsletter import (
 from bcn.workflows.modes.regular_monthly_newsletter import (
     run as job_publish_regular_monthly_newsletter,
 )
-from bcn.workflows.runtime import configure_runtime
-from bcn.workflows.runtime import require_runtime
+from bcn.workflows.runtime import build_workflow_runtime
+from bcn.workflows.runtime import WorkflowRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -60,68 +60,67 @@ def configure_scheduler_runtime(
     sender=None,
     *,
     agent_client: AgentClient | None = None,
-) -> None:
+) -> WorkflowRuntime:
     """Configure runtime dependencies used by workflow jobs."""
-    configure_runtime(settings=settings, agent_client=agent_client, sender=sender)
+    return build_workflow_runtime(
+        settings=settings,
+        agent_client=agent_client,
+        sender=sender,
+    )
 
 
-async def job_collect_ghsa() -> None:
+async def job_collect_ghsa(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger GHSA collection."""
-    settings, _agent_client = require_runtime()
     await execute_collection(
-        settings,
+        runtime.settings,
         source="ghsa",
         origin="scheduler",
         manage_pool=False,
     )
 
 
-async def job_collect_rss() -> None:
+async def job_collect_rss(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger RSS collection."""
-    settings, _agent_client = require_runtime()
     await execute_collection(
-        settings,
+        runtime.settings,
         source="rss",
         origin="scheduler",
         manage_pool=False,
     )
 
 
-async def job_collect_twitter() -> None:
+async def job_collect_twitter(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Twitter/X collection."""
-    settings, _agent_client = require_runtime()
     await execute_collection(
-        settings,
+        runtime.settings,
         source="twitter",
         origin="scheduler",
         manage_pool=False,
     )
 
 
-async def job_collect_reddit() -> None:
+async def job_collect_reddit(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Reddit collection."""
-    settings, _agent_client = require_runtime()
     await execute_collection(
-        settings,
+        runtime.settings,
         source="reddit",
         origin="scheduler",
         manage_pool=False,
     )
 
 
-async def job_analyze_items() -> None:
+async def job_analyze_items(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger item analysis."""
-    settings, _agent_client = require_runtime()
     await execute_analysis(
-        settings,
+        runtime.settings,
         source="scheduler",
         manage_pool=False,
     )
 
 
-async def job_shadow_regular_briefing() -> None:
+async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
     """Scheduled job: run shadow evaluation before the regular briefing slot."""
-    settings, _agent_client = require_runtime()
+    settings = runtime.settings
     if not bool(settings.shadow_enabled):
         logger.info("Shadow scheduler triggered while disabled; skipping.")
         return
