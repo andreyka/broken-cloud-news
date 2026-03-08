@@ -674,6 +674,7 @@ async def simulate_historical_briefings(
                 apply_critic_rewrites=apply_critic_rewrites,
             )
             actual_body = _strip_cover_image(str(briefing.get("content_markdown") or ""))
+            simulated_items = list(meta.get("selected_items") or items)
 
             mode = str(meta["mode"])
             min_chars = int(meta["min_chars"])
@@ -688,7 +689,7 @@ async def simulate_historical_briefings(
             )
             simulated_gate = writer.quality_gate(
                 markdown=simulated_body,
-                selected_items=items,
+                selected_items=simulated_items,
                 mode=mode,
                 min_chars=min_chars,
                 hard_max_chars=hard_max_chars,
@@ -703,7 +704,7 @@ async def simulate_historical_briefings(
             )
             simulated_eval = score_feedback_rubric(
                 simulated_body,
-                items,
+                simulated_items,
                 simulated_gate,
                 min_chars=min_chars,
                 hard_max_chars=hard_max_chars,
@@ -717,7 +718,7 @@ async def simulate_historical_briefings(
             )
             simulated_critic_eval = await writer.critique_markdown(
                 simulated_body,
-                items,
+                simulated_items,
                 mode=mode,
                 recent_briefings=history,
             )
@@ -747,6 +748,7 @@ async def simulate_historical_briefings(
                 "briefing_id": str(briefing["id"]),
                 "created_at": briefing["created_at"].isoformat(),
                 "item_count": len(items),
+                "simulated_item_count": len(simulated_items),
                 "mode": mode,
                 "simulated_rewrites": int(meta["rewrites"]),
                 "actual_score": int(actual_eval["score"]),

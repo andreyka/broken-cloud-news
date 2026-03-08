@@ -571,23 +571,26 @@ class WriterService:
             mode,
             selected_count=len(items),
         )
+        active_items = list(items)
 
         briefing_body = await self.writer_llm.generate_briefing(
-            items,
+            active_items,
             recent_briefings=recent_briefings,
             mode=mode,
         )
-        briefing_body = await self.postprocess_briefing(
+        postprocessed = await self.postprocess_briefing(
             briefing_body=briefing_body,
-            selected_items=items,
+            selected_items=active_items,
             mode=mode,
             min_chars=min_chars,
             target_chars=target_chars,
             hard_max_chars=hard_max_chars,
         )
+        briefing_body = postprocessed.markdown
+        active_items = postprocessed.selected_items
         min_chars, target_chars, hard_max_chars = self.char_limits(
             mode,
-            selected_count=len(items),
+            selected_count=len(active_items),
         )
 
         rewrites = 0
@@ -596,18 +599,18 @@ class WriterService:
             while True:
                 min_chars, target_chars, hard_max_chars = self.char_limits(
                     mode,
-                    selected_count=len(items),
+                    selected_count=len(active_items),
                 )
                 gate = self.quality_gate(
                     markdown=briefing_body,
-                    selected_items=items,
+                    selected_items=active_items,
                     mode=mode,
                     min_chars=min_chars,
                     hard_max_chars=hard_max_chars,
                 )
                 critique = await self.critique_markdown(
                     briefing_body,
-                    items,
+                    active_items,
                     mode=mode,
                     gate_hard_issues=[
                         str(issue) for issue in gate.get("hard_issues", [])
@@ -630,7 +633,10 @@ class WriterService:
                 feedback.extend(
                     [str(issue) for issue in critique.get("recommendations", [])]
                 )
-                missing_items = self.missing_items_for_markdown(briefing_body, items)
+                missing_items = self.missing_items_for_markdown(
+                    briefing_body,
+                    active_items,
+                )
                 feedback_context = self.build_rewrite_feedback_context(
                     gate=gate,
                     critique=critique,
@@ -641,7 +647,7 @@ class WriterService:
                     hard_max_chars=hard_max_chars,
                     rewrite_attempt=rewrites + 1,
                     max_rewrites=max_rewrites,
-                    selected_items=items,
+                    selected_items=active_items,
                     missing_selected_urls=[
                         str(item.get("url", "")) for item in missing_items if item.get("url")
                     ],
@@ -650,7 +656,7 @@ class WriterService:
                 rewrites += 1
                 briefing_body = await self.writer_llm.revise_briefing(
                     draft_markdown=briefing_body,
-                    items=items,
+                    items=active_items,
                     feedback=feedback,
                     feedback_context=feedback_context,
                     mode=mode,
@@ -658,20 +664,22 @@ class WriterService:
                     target_chars=target_chars,
                     hard_max_chars=hard_max_chars,
                 )
-                briefing_body = await self.postprocess_briefing(
+                postprocessed = await self.postprocess_briefing(
                     briefing_body=briefing_body,
-                    selected_items=items,
+                    selected_items=active_items,
                     mode=mode,
                     min_chars=min_chars,
                     target_chars=target_chars,
                     hard_max_chars=hard_max_chars,
                 )
+                briefing_body = postprocessed.markdown
+                active_items = postprocessed.selected_items
 
         briefing_body = self.normalize_section_headings(briefing_body)
         briefing_body = self.de_template_fields(briefing_body)
         min_chars, target_chars, hard_max_chars = self.char_limits(
             mode,
-            selected_count=len(items),
+            selected_count=len(active_items),
         )
 
         meta = {
@@ -679,6 +687,7 @@ class WriterService:
             "rewrites": rewrites,
             "min_chars": min_chars,
             "hard_max_chars": hard_max_chars,
+            "selected_items": list(active_items),
         }
         return briefing_body, meta
 
