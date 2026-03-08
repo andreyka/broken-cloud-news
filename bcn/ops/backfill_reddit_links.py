@@ -8,7 +8,7 @@ import json
 import logging
 from typing import Any
 
-from bcn.agents.collector.agent import CollectorExecutor
+from bcn.agents.collector.service import CollectorService
 from bcn.common.config import Settings
 from bcn.common.db import close_pool
 from bcn.common.db import get_pool
@@ -74,7 +74,7 @@ async def run_backfill(*, limit: int, dry_run: bool) -> dict[str, Any]:
 
         for row in rows:
             current_url = str(row["url"] or "").strip()
-            if not current_url or not CollectorExecutor._is_internal_reddit_url(current_url):
+            if not current_url or not CollectorService._is_internal_reddit_url(current_url):
                 continue
             stats["candidates"] += 1
 
@@ -93,7 +93,7 @@ async def run_backfill(*, limit: int, dry_run: bool) -> dict[str, Any]:
                 raw = {}
 
             permalink = str(raw.get("permalink") or raw.get("link") or current_url).strip()
-            post_id = CollectorExecutor._extract_reddit_post_id(source_id, permalink)
+            post_id = CollectorService._extract_reddit_post_id(source_id, permalink)
             if not post_id:
                 stats["missing_post_id"] += 1
                 continue
@@ -117,26 +117,26 @@ async def run_backfill(*, limit: int, dry_run: bool) -> dict[str, Any]:
                 ).strip(),
                 "url": str(post_data.get("url") or "").strip(),
             }
-            references = CollectorExecutor._extract_reddit_reference_urls(
+            references = CollectorService._extract_reddit_reference_urls(
                 permalink,
                 metadata,
             )
             title = str(row["title"] or raw.get("title") or "").strip()
             summary = str(raw.get("summary") or "").strip()
-            selected_url = CollectorExecutor._select_reddit_primary_url(
+            selected_url = CollectorService._select_reddit_primary_url(
                 permalink,
                 references,
                 title=title,
                 summary=summary,
             )
-            if not selected_url or CollectorExecutor._is_internal_reddit_url(selected_url):
+            if not selected_url or CollectorService._is_internal_reddit_url(selected_url):
                 stats["no_useful_outbound"] += 1
                 continue
             if selected_url.rstrip("/") == current_url.rstrip("/"):
                 stats["unchanged"] += 1
                 continue
 
-            normalized_permalink = CollectorExecutor._normalize_reddit_permalink(
+            normalized_permalink = CollectorService._normalize_reddit_permalink(
                 str(post_data.get("permalink") or permalink)
             )
             patch = {
@@ -220,4 +220,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

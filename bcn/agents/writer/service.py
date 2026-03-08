@@ -1,4 +1,4 @@
-"""Writer domain service shared by agent execution and evaluation lanes."""
+"""Writer domain service used by generation workflows and evaluation lanes."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from typing import Any
 from typing import Protocol
 from urllib.parse import urlparse
 
-from bcn.agents.critic.llm import CriticLLM
+from bcn.agents.critic.service import CriticService
+from bcn.agents.verifier.service import VerifierService
 from bcn.agents.writer.llm import WriterLLM
-from bcn.briefing import BriefingFactVerifier
 from bcn.briefing import BriefingQualityGate
 from bcn.briefing import BriefingSelector
 from bcn.briefing import text as briefing_text
@@ -21,6 +21,8 @@ from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.db import get_recent_published_items
 from bcn.common.llm import LLMClient
+from bcn.contracts.review import CritiqueRequest
+from bcn.contracts.review import VerificationRequest
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 logger = logging.getLogger(__name__)
@@ -77,12 +79,31 @@ class PostprocessedBriefing:
     selected_items: list[dict[str, Any]]
 
 
+class CriticEvaluator(Protocol):
+    """Critic interface used by the writer regardless of deployment topology."""
+
+    async def evaluate(self, request: CritiqueRequest) -> dict[str, Any]:
+        """Evaluate one critique request."""
+
+    async def close(self) -> None:
+        """Release resources when owned by the writer."""
+
+
+class VerificationEvaluator(Protocol):
+    """Verifier interface used by the writer regardless of deployment topology."""
+
+    async def evaluate(self, request: VerificationRequest) -> dict[str, Any]:
+        """Evaluate one verification request."""
+
+    async def close(self) -> None:
+        """Release resources when owned by the writer."""
+
+
 class WriterWorkflowProtocol(Protocol):
     """Protocol used by evaluation code for non-publishing writer operations."""
 
     settings: Settings
     writer_llm: WriterLLM
-    critic_llm: CriticLLM
 
     async def close(self) -> None:
         """Release any resources held by the writer workflow service."""
@@ -162,15 +183,22 @@ class WriterService:
         settings: Settings,
         *,
         llm_client: LLMClient | None = None,
+        critic_evaluator: CriticEvaluator | None = None,
+        verifier_evaluator: VerificationEvaluator | None = None,
     ) -> None:
         self.settings = settings
         self._owns_llm_client = llm_client is None
+        self._owns_critic_evaluator = critic_evaluator is None
+        self._owns_verifier_evaluator = verifier_evaluator is None
         self.llm_client = llm_client if llm_client is not None else LLMClient.from_settings(settings)
         self.writer_llm = WriterLLM(self.llm_client)
-        self.critic_llm = CriticLLM(self.llm_client)
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
-        self.verifier = BriefingFactVerifier(settings, llm_client=self.llm_client)
+        self.critic_evaluator = critic_evaluator or CriticService(
+            settings,
+            llm_client=self.llm_client,
+        )
+        self.verifier_evaluator = verifier_evaluator or VerifierService(settings)
         self.comfyui = ComfyUIClient(
             base_url=settings.comfyui_url,
             timeout=settings.comfyui_timeout,
@@ -180,7 +208,10 @@ class WriterService:
     async def close(self) -> None:
         """Release resources owned by this writer service."""
         await self.writer_llm.close()
-        await self.verifier.close()
+        if self._owns_critic_evaluator:
+            await self.critic_evaluator.close()
+        if self._owns_verifier_evaluator:
+            await self.verifier_evaluator.close()
         await self.comfyui.close()
         if self._owns_llm_client:
             await self.llm_client.close()
@@ -271,13 +302,16 @@ class WriterService:
         """Run the critic or return a permissive default payload."""
         if not self.settings.briefing_critique_enabled:
             return _default_critique()
-        return await self.critic_llm.critique_briefing(
-            draft_markdown=draft_markdown,
-            items=items,
-            mode=mode,
-            gate_hard_issues=gate_hard_issues or [],
-            gate_soft_issues=gate_soft_issues or [],
-            recent_briefings=recent_briefings or [],
+        return await self.critic_evaluator.evaluate(
+            CritiqueRequest(
+                draft_markdown=draft_markdown,
+                items=tuple(items),
+                mode=mode,
+                source="writer_service",
+                recent_briefings=tuple(recent_briefings or []),
+                gate_hard_issues=tuple(gate_hard_issues or []),
+                gate_soft_issues=tuple(gate_soft_issues or []),
+            )
         )
 
     async def verify_markdown(
@@ -290,7 +324,14 @@ class WriterService:
         """Run factual verification or return a permissive default payload."""
         if not self.settings.briefing_verifier_enabled:
             return _default_verifier()
-        return await self.verifier.evaluate(markdown, selected_items, mode=mode)
+        return await self.verifier_evaluator.evaluate(
+            VerificationRequest(
+                draft_markdown=markdown,
+                items=tuple(selected_items),
+                mode=mode,
+                source="writer_service",
+            )
+        )
 
     async def evaluate_existing_markdown(
         self,

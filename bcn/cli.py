@@ -11,22 +11,18 @@ from uuid import UUID
 
 import click
 
-from bcn.agents.service import analyze_items as execute_analysis
-from bcn.agents.service import collect_news
-from bcn.agents.service import critique_briefing
-from bcn.agents.service import generate_briefing as execute_briefing_generation
-from bcn.agents.service import verify_briefing
-from bcn.common.agent_client import build_port_sender_agent_client
-from bcn.common.agent_runtime import extract_text_from_rpc_result as _extract_text_from_rpc_result
-from bcn.common.agent_runtime import run_agent_directly as _run_agent_directly
-from bcn.common.agent_runtime import send_to_agent as _send_to_agent
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.analysis import execute_analysis
+from bcn.workflows.collection import execute_collection
 from bcn.workflows.distribution import execute_distribution
+from bcn.workflows.generation import execute_generation as execute_briefing_generation
 from bcn.workflows.modes import AD_HOC_MODE
 from bcn.workflows.modes import ALL_MODES
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.workflows.review import execute_critique as critique_briefing
+from bcn.workflows.review import execute_verification as verify_briefing
 from bcn.workflows.service import execute_workflow_mode
 from bcn.workflows.service import run_daemon
 
@@ -113,7 +109,12 @@ def collect(source: str) -> None:
     settings = Settings()
 
     async def _run():
-        result = await collect_news(settings, source=source)
+        result = await execute_collection(
+            settings,
+            source=source,
+            origin="cli",
+            manage_pool=True,
+        )
         click.echo(result)
 
     asyncio.run(_run())
@@ -125,7 +126,11 @@ def analyze() -> None:
     settings = Settings()
 
     async def _run():
-        result = await execute_analysis(settings)
+        result = await execute_analysis(
+            settings,
+            source="cli",
+            manage_pool=True,
+        )
         click.echo(result)
 
     asyncio.run(_run())
@@ -144,7 +149,12 @@ def write(mode: str) -> None:
     settings = Settings()
 
     async def _run():
-        result = await execute_briefing_generation(settings, mode=mode)
+        result = await execute_briefing_generation(
+            settings,
+            mode=mode,
+            source="cli",
+            manage_pool=True,
+        )
         click.echo(result)
 
     asyncio.run(_run())
@@ -1558,24 +1568,12 @@ def workflow_run(mode: str) -> None:
 
 @cli.command()
 def run() -> None:
-    """Start daemon mode with all A2A agents and the scheduler."""
+    """Start daemon mode with the scheduler."""
     settings = Settings()
 
     async def _daemon() -> None:
-        async def _send_with_runtime_timeout(port: int, skill: str) -> str:
-            return await _send_to_agent(
-                port,
-                skill,
-                timeout_seconds=settings.a2a_request_timeout_seconds,
-            )
-
-        agent_client = build_port_sender_agent_client(
-            settings,
-            sender=_send_with_runtime_timeout,
-        )
         await run_daemon(
             settings,
-            agent_client=agent_client,
             emit=click.echo,
         )
 

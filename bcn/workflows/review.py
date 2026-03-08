@@ -6,14 +6,14 @@ import json
 import logging
 
 from bcn.agents.critic.service import CriticService
-from bcn.agents.critic.service import CritiqueRequest
-from bcn.agents.verifier.service import VerificationRequest
 from bcn.agents.verifier.service import VerifierService
 from bcn.common.config import Settings
 from bcn.common.db import close_pool
 from bcn.common.db import get_items_by_ids
 from bcn.common.db import get_latest_any_briefing
 from bcn.common.db import get_pool
+from bcn.contracts.review import CritiqueRequest
+from bcn.contracts.review import VerificationRequest
 
 logger = logging.getLogger(__name__)
 

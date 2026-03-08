@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from bcn.common.agent_client import AgentClient
 from bcn.common.config import Settings
 from bcn.workflows.analysis import execute_analysis
 from bcn.workflows.collection import execute_collection
@@ -57,16 +56,9 @@ __all__ = [
 
 def configure_scheduler_runtime(
     settings: Settings,
-    sender=None,
-    *,
-    agent_client: AgentClient | None = None,
 ) -> WorkflowRuntime:
     """Configure runtime dependencies used by workflow jobs."""
-    return build_workflow_runtime(
-        settings=settings,
-        agent_client=agent_client,
-        sender=sender,
-    )
+    return build_workflow_runtime(settings=settings)
 
 
 async def job_collect_ghsa(runtime: WorkflowRuntime) -> None:

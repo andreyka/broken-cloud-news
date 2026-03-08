@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bcn.agents.distributor.agent import _distribution_redaction_secrets
+from bcn.agents.distributor.service import _distribution_redaction_secrets
 from bcn.common.config import Settings
 from bcn.common.secrets import redact_sensitive_text
 from bcn.common.secrets import redact_sensitive_value

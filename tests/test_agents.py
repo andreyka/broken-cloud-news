@@ -30,112 +30,6 @@ def _make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
-
-
-class FakeEventQueue:
-    """Minimal stand-in for EventQueue that captures messages."""
-
-    def __init__(self):
-        self.events: list = []
-
-    def enqueue_event(self, event):
-        self.events.append(event)
-
-
-class FakeAsyncEventQueue:
-    """Async stand-in for EventQueue implementations that require await."""
-
-    def __init__(self):
-        self.events: list = []
-
-    async def enqueue_event(self, event):
-        self.events.append(event)
-
-
-def _fake_context(text: str = "collect_all"):
-    """Build a minimal RequestContext."""
-    from uuid import uuid4
-
-    from a2a.server.agent_execution import RequestContext
-    from a2a.types import Message
-    from a2a.types import MessageSendParams
-    from a2a.types import TextPart
-
-    msg = Message(role="user", parts=[TextPart(text=text)], message_id=uuid4().hex)
-    return RequestContext(request=MessageSendParams(message=msg))
-
-
-def _event_text(event) -> str:
-    """Extract human-readable text from one queued agent event."""
-    texts: list[str] = []
-    for part in getattr(event, "parts", []) or []:
-        text = getattr(part, "text", None)
-        if isinstance(text, str) and text.strip():
-            texts.append(text.strip())
-            continue
-        root = getattr(part, "root", None)
-        root_text = getattr(root, "text", None) if root is not None else None
-        if isinstance(root_text, str) and root_text.strip():
-            texts.append(root_text.strip())
-    return "\n".join(texts)
-
-
-class TestCliHelpers:
-    @pytest.mark.asyncio
-    async def test_run_agent_directly_closes_pool_when_close_fails(self):
-        from bcn.cli import _run_agent_directly
-
-        class _Executor:
-            def __init__(self, settings):
-                self.settings = settings
-
-            async def execute(self, context, event_queue):
-                return None
-
-            async def close(self):
-                raise RuntimeError("close failed")
-
-        settings = _make_settings()
-        with (
-            patch("bcn.common.db.get_pool", new_callable=AsyncMock),
-            patch(
-                "bcn.common.db.close_pool", new_callable=AsyncMock
-            ) as mock_close_pool,
-        ):
-            result = await _run_agent_directly(_Executor, settings, "noop")
-
-        assert result == "Done"
-        mock_close_pool.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_run_agent_directly_captures_agent_text_message(self):
-        from a2a.utils import new_agent_text_message
-
-        from bcn.cli import _run_agent_directly
-
-        class _Executor:
-            def __init__(self, settings):
-                self.settings = settings
-
-            async def execute(self, context, event_queue):
-                event_queue.enqueue_event(
-                    new_agent_text_message("Briefing created: id=abc items=1")
-                )
-
-            async def close(self):
-                return None
-
-        settings = _make_settings()
-        with (
-            patch("bcn.common.db.get_pool", new_callable=AsyncMock),
-            patch("bcn.common.db.close_pool", new_callable=AsyncMock),
-        ):
-            result = await _run_agent_directly(_Executor, settings, "noop")
-
-        assert result == "Briefing created: id=abc items=1"
-
-
 # ── Collector tests ──────────────────────────────────────────────────────
 
 
@@ -542,7 +436,7 @@ class TestCollectorService:
         assert raw["references"] == [{"url": "https://www.youtube.com/watch?v=abc123"}]
 
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
         tweet = {
             "entities": {
@@ -563,7 +457,7 @@ class TestCollectorService:
             }
         }
 
-        refs = CollectorExecutor._extract_tweet_reference_urls(tweet)
+        refs = CollectorService._extract_tweet_reference_urls(tweet)
         assert "https://x.com/someone/status/123" not in refs
         assert (
             "https://github.com/org/repo/security/advisories/GHSA-ab12-cd34-ef56"
@@ -572,9 +466,9 @@ class TestCollectorService:
         assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in refs
 
     def test_build_tweet_full_content_appends_reference_links(self):
-        from bcn.agents.collector.agent import CollectorExecutor
+        from bcn.agents.collector.service import CollectorService
 
-        content = CollectorExecutor._build_tweet_full_content(
+        content = CollectorService._build_tweet_full_content(
             "Cloud vuln write-up",
             [
                 "https://github.com/org/repo",
@@ -588,155 +482,7 @@ class TestCollectorService:
         assert "- https://www.youtube.com/watch?v=abc123" in content
 
 
-class TestCollectorExecutor:
-    @pytest.mark.asyncio
-    async def test_execute_delegates_to_control_plane(self):
-        from bcn.agents.collector.agent import CollectorExecutor
-
-        settings = _make_settings()
-        executor = CollectorExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.collector.agent.execute_collection",
-                new_callable=AsyncMock,
-                return_value="GHSA: collected 1 items",
-            ) as mock_execute:
-                eq = FakeEventQueue()
-                ctx = _fake_context("collect ghsa")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        mock_execute.assert_awaited_once_with(
-            settings,
-            source="ghsa",
-            collector_service=executor.service,
-            origin="collector_agent",
-            manage_pool=False,
-        )
-        assert any("GHSA: collected 1 items" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_execute_supports_async_event_queue(self):
-        from bcn.agents.collector.agent import CollectorExecutor
-
-        settings = _make_settings()
-        executor = CollectorExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.collector.agent.execute_collection",
-                new_callable=AsyncMock,
-                return_value="All: GHSA=1, RSS=2, Twitter=3, Reddit=4",
-            ):
-                eq = FakeAsyncEventQueue()
-                ctx = _fake_context("collect")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        assert any(
-            "All: GHSA=1, RSS=2, Twitter=3, Reddit=4" in str(e) for e in eq.events
-        )
-
-    @pytest.mark.asyncio
-    async def test_execute_does_not_close_resources_per_request(self):
-        from bcn.agents.collector.agent import CollectorExecutor
-
-        settings = _make_settings()
-        executor = CollectorExecutor(settings)
-
-        with (
-            patch(
-                "bcn.agents.collector.agent.execute_collection",
-                new_callable=AsyncMock,
-                return_value="All: GHSA=0, RSS=0, Twitter=0, Reddit=0",
-            ),
-            patch.object(
-                executor.service, "close", new_callable=AsyncMock
-            ) as mock_service_close,
-            patch.object(
-                executor.scraper, "close", new_callable=AsyncMock
-            ) as mock_scraper_close,
-            patch.object(
-                executor._http, "aclose", new_callable=AsyncMock
-            ) as mock_http_close,
-        ):
-            eq = FakeAsyncEventQueue()
-            ctx = _fake_context("collect")
-            await executor.execute(ctx, eq)
-            mock_service_close.assert_not_awaited()
-            mock_scraper_close.assert_not_called()
-            mock_http_close.assert_not_called()
-            await executor.close()
-            mock_service_close.assert_awaited_once()
-
-
-
 # ── Analyst tests ────────────────────────────────────────────────────────
-
-
-class TestAnalystExecutor:
-    @pytest.mark.asyncio
-    async def test_execute_delegates_to_control_plane(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
-
-        with patch(
-            "bcn.agents.analyst.agent.execute_analysis",
-            new_callable=AsyncMock,
-            return_value="Analyzed 1/1 items",
-        ) as mock_execute:
-            eq = FakeEventQueue()
-            ctx = _fake_context("analyze_new_items")
-            await executor.execute(ctx, eq)
-
-        mock_execute.assert_awaited_once_with(
-            settings,
-            analyst_service=executor.service,
-            source="analyst_agent",
-            manage_pool=False,
-        )
-        assert any("1/1" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_no_items(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
-
-        with patch(
-            "bcn.agents.analyst.agent.execute_analysis",
-            new_callable=AsyncMock,
-            return_value="No new items to analyze",
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("analyze")
-            await executor.execute(ctx, eq)
-
-        assert any("No new items" in str(e) for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_no_items_async_event_queue(self):
-        from bcn.agents.analyst.agent import AnalystExecutor
-
-        settings = _make_settings()
-        executor = AnalystExecutor(settings)
-
-        with patch(
-            "bcn.agents.analyst.agent.execute_analysis",
-            new_callable=AsyncMock,
-            return_value="No new items to analyze",
-        ):
-            eq = FakeAsyncEventQueue()
-            ctx = _fake_context("analyze")
-            await executor.execute(ctx, eq)
-
-        assert any("No new items" in str(e) for e in eq.events)
 
 
 class TestAnalystService:
@@ -833,136 +579,9 @@ class TestAnalystService:
 # ── Writer tests ─────────────────────────────────────────────────────────
 
 
-class TestWriterExecutor:
-    def test_resolve_workflow_mode(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        assert (
-            WriterExecutor._resolve_workflow_mode(
-                "generate_briefing::regular_monthly_newsletter"
-            )
-            == "regular_monthly_newsletter"
-        )
-        assert (
-            WriterExecutor._resolve_workflow_mode("generate_briefing")
-            == "regular_daily_briefing"
-        )
-
-    @pytest.mark.asyncio
-    async def test_execute_delegates_to_generation_control_plane(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        settings = _make_settings()
-        executor = WriterExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.writer.agent.execute_generation",
-                new_callable=AsyncMock,
-                return_value=(
-                    'writer_handoff::{"mode":"regular_monthly_newsletter",'
-                    '"decision":"skip","item_count":0}\n'
-                    "Monthly newsletter skipped"
-                ),
-            ) as mock_execute:
-                eq = FakeEventQueue()
-                ctx = _fake_context("generate_briefing::regular_monthly_newsletter")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        mock_execute.assert_awaited_once_with(
-            settings,
-            mode="regular_monthly_newsletter",
-            writer_service=executor.service,
-            source="writer_agent",
-            manage_pool=False,
-        )
-        assert any("monthly newsletter skipped" in str(e).lower() for e in eq.events)
-
-    @respx.mock
-    @pytest.mark.asyncio
-    async def test_no_items(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        settings = _make_settings()
-        executor = WriterExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.writer.agent.execute_generation",
-                new_callable=AsyncMock,
-                return_value=(
-                    'writer_handoff::{"mode":"regular_daily_briefing",'
-                    '"decision":"skip","item_count":0}\n'
-                    "Quiet day — no items scored >= 7 in the last 24h. Skipping briefing."
-                ),
-            ) as mock_execute:
-                eq = FakeEventQueue()
-                ctx = _fake_context("generate_briefing")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        mock_execute.assert_awaited_once()
-        assert any("no items" in str(e).lower() for e in eq.events)
-
-    @pytest.mark.asyncio
-    async def test_execute_does_not_close_resources_per_request(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        settings = _make_settings()
-        executor = WriterExecutor(settings)
-
-        with (
-            patch(
-                "bcn.agents.writer.agent.execute_generation",
-                new_callable=AsyncMock,
-                return_value="writer_handoff::{}",
-            ),
-            patch.object(
-                executor.service, "close", new_callable=AsyncMock
-            ) as mock_service_close,
-            patch.object(
-                executor.llm_client, "close", new_callable=AsyncMock
-            ) as mock_llm_close,
-            patch.object(
-                executor.comfyui, "close", new_callable=AsyncMock
-            ) as mock_comfy_close,
-        ):
-            eq = FakeEventQueue()
-            ctx = _fake_context("generate_briefing")
-            await executor.execute(ctx, eq)
-            mock_service_close.assert_not_awaited()
-            await executor.close()
-            mock_service_close.assert_awaited_once()
-
-        mock_llm_close.assert_not_called()
-        mock_comfy_close.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_execute_supports_async_event_queue(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        settings = _make_settings()
-        executor = WriterExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.writer.agent.execute_generation",
-                new_callable=AsyncMock,
-                return_value="writer_handoff::{}\nBriefing created",
-            ):
-                eq = FakeAsyncEventQueue()
-                ctx = _fake_context("generate_briefing")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        assert any("Briefing created" in str(e) for e in eq.events)
-
+class TestWriterService:
     def test_selection_limits_single_domain(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=5,
@@ -971,7 +590,7 @@ class TestWriterExecutor:
             briefing_max_ai_items=5,
             briefing_max_twitter_items=5,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1008,19 +627,19 @@ class TestWriterExecutor:
             ]
         )
 
-        selected = executor._select_items_for_briefing(items)
+        selected = service.select_items_for_briefing(items)
         domains = Counter(urlparse(str(i["url"])).netloc for i in selected)
         assert domains["unit42.paloaltonetworks.com"] <= 2
         assert len(selected) >= 3
 
     def test_selection_does_not_force_source_mix(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
             briefing_max_items_per_domain=1,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1061,7 +680,7 @@ class TestWriterExecutor:
             },
         ]
 
-        selected = executor._select_items_for_briefing(items, recent_published=[])
+        selected = service.select_items_for_briefing(items, recent_published=[])
 
         assert {item["url"] for item in selected} == {
             "https://first.example.com/one",
@@ -1070,14 +689,14 @@ class TestWriterExecutor:
         }
 
     def test_monthly_selection_dedupes_same_canonical_url(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             monthly_newsletter_min_items=1,
             monthly_newsletter_max_items=3,
             monthly_newsletter_max_items_per_domain=3,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         primary = {
             "id": str(uuid4()),
@@ -1107,14 +726,14 @@ class TestWriterExecutor:
             "published_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        selected = executor._select_items_for_monthly_newsletter(
+        selected = service.select_items_for_monthly_newsletter(
             [primary, duplicate, distinct]
         )
 
         assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
 
     def test_monthly_selection_dedupes_same_issue_across_urls(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             monthly_newsletter_min_items=1,
@@ -1122,7 +741,7 @@ class TestWriterExecutor:
             monthly_newsletter_max_items_per_domain=3,
             briefing_novelty_title_similarity_threshold=0.99,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         primary = {
             "id": str(uuid4()),
@@ -1152,14 +771,14 @@ class TestWriterExecutor:
             "published_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        selected = executor._select_items_for_monthly_newsletter(
+        selected = service.select_items_for_monthly_newsletter(
             [primary, duplicate, distinct]
         )
 
         assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
 
     def test_min_selected_fallback_preserves_recent_url_dedup(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -1168,7 +787,7 @@ class TestWriterExecutor:
             briefing_max_ai_items=3,
             briefing_max_twitter_items=3,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1189,7 +808,7 @@ class TestWriterExecutor:
             }
         ]
 
-        selected = executor._select_items_for_briefing(
+        selected = service.select_items_for_briefing(
             items,
             recent_published=recent,
         )
@@ -1197,7 +816,7 @@ class TestWriterExecutor:
         assert selected == []
 
     def test_min_selected_fallback_preserves_recent_topic_dedup(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -1207,7 +826,7 @@ class TestWriterExecutor:
             briefing_max_twitter_items=3,
             briefing_novelty_title_similarity_threshold=0.99,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1228,7 +847,7 @@ class TestWriterExecutor:
             }
         ]
 
-        selected = executor._select_items_for_briefing(
+        selected = service.select_items_for_briefing(
             items,
             recent_published=recent,
         )
@@ -1236,7 +855,7 @@ class TestWriterExecutor:
         assert selected == []
 
     def test_hard_mix_refill_does_not_readd_recent_duplicate(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -1248,7 +867,7 @@ class TestWriterExecutor:
             briefing_selection_require_reddit=False,
             briefing_selection_require_csp=False,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1287,7 +906,7 @@ class TestWriterExecutor:
             }
         ]
 
-        selected = executor._select_items_for_briefing(
+        selected = service.select_items_for_briefing(
             items,
             recent_published=recent,
         )
@@ -1299,7 +918,7 @@ class TestWriterExecutor:
         )
 
     def test_min_selected_fallback_can_still_fill_with_unique_items(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=2,
@@ -1309,7 +928,7 @@ class TestWriterExecutor:
             briefing_max_twitter_items=2,
             briefing_max_source_share=1.0,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         items = [
             {
@@ -1332,30 +951,30 @@ class TestWriterExecutor:
             },
         ]
 
-        selected = executor._select_items_for_briefing(items, recent_published=[])
+        selected = service.select_items_for_briefing(items, recent_published=[])
 
         assert len(selected) == 2
 
     def test_detects_missing_urls_in_generated_markdown(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         items = [
             {"url": "https://example.com/one", "title": "one"},
             {"url": "https://example.com/two", "title": "two"},
         ]
         markdown = "[One](https://example.com/one)\n\nText only."
 
-        missing = executor._missing_items_for_markdown(markdown, items)
+        missing = service.missing_items_for_markdown(markdown, items)
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/two"
 
     def test_missing_urls_uses_canonical_url_key(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         items = [
             {"url": "https://example.com/path?b=1", "title": "primary"},
             {"url": "https://example.com/other", "title": "other"},
@@ -1366,15 +985,15 @@ class TestWriterExecutor:
             "Text only."
         )
 
-        missing = executor._missing_items_for_markdown(markdown, items)
+        missing = service.missing_items_for_markdown(markdown, items)
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/other"
 
     def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         item = {
             "id": str(uuid4()),
             "title": "Vertex AI notebook chain enables privilege escalation",
@@ -1398,16 +1017,16 @@ class TestWriterExecutor:
             }
         ]
 
-        overlap_penalty = executor.selector.novelty_penalty(item, recent_same_issue)
-        other_penalty = executor.selector.novelty_penalty(item, recent_other_issue)
+        overlap_penalty = service.selector.novelty_penalty(item, recent_same_issue)
+        other_penalty = service.selector.novelty_penalty(item, recent_other_issue)
         assert overlap_penalty > 0.0
         assert overlap_penalty > other_penalty
 
     def test_duplicate_detection_uses_canonical_url_key(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         item = {
             "url": "https://example.com/path?b=1",
             "title": "Cloud exploit chain",
@@ -1419,14 +1038,14 @@ class TestWriterExecutor:
             }
         ]
 
-        assert executor.selector.is_duplicate_of(item, others) is True
-        assert executor.selector.novelty_penalty(item, others) >= 3.0
+        assert service.selector.is_duplicate_of(item, others) is True
+        assert service.selector.novelty_penalty(item, others) >= 3.0
 
     def test_duplicate_detection_ignores_generic_topic_overlap_without_issue_ids(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         item = {
             "url": "https://example.com/flowise-cache-bug",
             "title": "Flowise endpoint middleware cache bug leaks prompts",
@@ -1440,14 +1059,14 @@ class TestWriterExecutor:
             }
         ]
 
-        assert executor.selector.is_duplicate_of(item, others) is False
-        assert executor.selector.novelty_penalty(item, others) == 0.0
+        assert service.selector.is_duplicate_of(item, others) is False
+        assert service.selector.novelty_penalty(item, others) == 0.0
 
     def test_quality_gate_uses_canonical_url_key_for_selected_urls(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         items = [{"url": "https://example.com/path?b=1", "title": "primary"}]
         markdown = (
             "[Primary]"
@@ -1455,7 +1074,7 @@ class TestWriterExecutor:
             "Body."
         )
 
-        gate = executor.quality.evaluate(
+        gate = service.quality.evaluate(
             markdown,
             items,
             mode="standard",
@@ -1467,17 +1086,17 @@ class TestWriterExecutor:
         )
 
     def test_quality_gate_blocks_unexpected_urls(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         items = [{"url": "https://example.com/selected", "title": "selected"}]
         markdown = (
             "[Selected](https://example.com/selected)\n\n"
             "Repeat [Calif](https://blog.calif.io/p/a-race-within-a-race-exploiting-cve)"
         )
 
-        gate = executor._quality_gate(
+        gate = service.quality_gate(
             markdown,
             items,
             mode="standard",
@@ -1491,17 +1110,17 @@ class TestWriterExecutor:
         )
 
     def test_dedupe_markdown_links_uses_canonical_url_key(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         markdown = (
             "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)\n"
             "[Duplicate](https://example.com/path?b=1)\n"
             "[Other](https://example.com/path?b=2)"
         )
 
-        deduped = executor._dedupe_markdown_links(markdown)
+        deduped = service.dedupe_markdown_links(markdown)
         assert (
             "[Primary](https://www.example.com/path/?b=1&utm_source=digest&fbclid=abc)"
             in deduped
@@ -1511,13 +1130,13 @@ class TestWriterExecutor:
         assert "[Other](https://example.com/path?b=2)" in deduped
 
     def test_social_proof_bonus_prioritizes_high_engagement_tweet(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_social_proof_weight=0.35,
             briefing_social_proof_max_bonus=2.5,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         low_reddit = {
             "id": str(uuid4()),
@@ -1547,19 +1166,19 @@ class TestWriterExecutor:
             },
         }
 
-        assert executor._priority_score(high_tweet) > executor._priority_score(
+        assert service.priority_score(high_tweet) > service.priority_score(
             low_reddit
         )
 
     def test_source_floor_filters_low_social_noise(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_min_reddit_engagement_score=40,
             briefing_min_twitter_engagement_score=400,
             briefing_social_floor_exempt_relevance=9,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         low_reddit = {
             "id": str(uuid4()),
@@ -1596,15 +1215,15 @@ class TestWriterExecutor:
             "raw_data": {"engagement": {"upvotes": 1, "comments": 0}},
         }
 
-        assert executor._passes_source_floor(low_reddit) is False
-        assert executor._passes_source_floor(high_tweet) is True
-        assert executor._passes_source_floor(exempt_high_relevance) is True
+        assert service.passes_source_floor(low_reddit) is False
+        assert service.passes_source_floor(high_tweet) is True
+        assert service.passes_source_floor(exempt_high_relevance) is True
 
     def test_quality_gate_flags_missing_urls_and_structure(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [
             {"url": "https://example.com/one", "source_type": "ghsa"},
             {"url": "https://example.com/two", "source_type": "rss"},
@@ -1616,7 +1235,7 @@ class TestWriterExecutor:
             "- Patch now"
         )
 
-        gate = executor._quality_gate(
+        gate = service.quality_gate(
             markdown=markdown,
             selected_items=selected,
             mode="standard",
@@ -1628,14 +1247,14 @@ class TestWriterExecutor:
         assert "Missing selected URL" in issue_text
 
     def test_quality_gate_balanced_mode_keeps_structure_as_soft_feedback(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(briefing_gate_mode="balanced")
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [{"url": "https://example.com/one", "source_type": "rss"}]
         markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
 
-        gate = executor._quality_gate(
+        gate = service.quality_gate(
             markdown=markdown,
             selected_items=selected,
             mode="standard",
@@ -1648,17 +1267,17 @@ class TestWriterExecutor:
         assert "Too few sections" not in soft_text
 
     def test_quality_gate_strict_mode_blocks_missing_sections(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(briefing_gate_mode="strict")
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [
             {"url": "https://example.com/one", "source_type": "rss"},
             {"url": "https://example.com/two", "source_type": "ghsa"},
         ]
         markdown = "**Quick Signal**\n[One](https://example.com/one) patch now."
 
-        gate = executor._quality_gate(
+        gate = service.quality_gate(
             markdown=markdown,
             selected_items=selected,
             mode="standard",
@@ -1671,27 +1290,27 @@ class TestWriterExecutor:
         assert "Too few sections" in hard_text
 
     def test_detemplate_rewrites_detection_and_source_fields(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         markdown = (
             "**Detection: AI Security at the Edge**\n"
             "Cloudflare blocks unsafe prompts early.\n"
             "*Source: [Cloudflare Blog](https://blog.cloudflare.com/block-unsafe-llm-prompts-with-firewall-for-ai/)*"
         )
 
-        rewritten = executor._de_template_fields(markdown)
+        rewritten = service.de_template_fields(markdown)
         assert "**AI Security at the Edge**" in rewritten
         assert "Detection:" not in rewritten
         assert "Source:" not in rewritten
         assert "reference: [Cloudflare Blog]" in rewritten
 
     def test_missing_items_fallback_is_readable_without_fixed_heading(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         markdown = "Core digest body."
         missing = [
             {
@@ -1706,17 +1325,17 @@ class TestWriterExecutor:
             },
         ]
 
-        out = executor._append_missing_items_section(markdown, missing)
+        out = service.append_missing_items_section(markdown, missing)
         assert "Additional High-Signal Items" not in out
         assert "[First extra](https://example.com/one)" in out
         assert "[Second extra](https://example.com/two)" in out
         assert "• [Second extra](https://example.com/two)" in out
 
     def test_strip_unselected_github_advisory_links_keeps_selected_only(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         selected = [
             {"url": "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4"},
@@ -1727,7 +1346,7 @@ class TestWriterExecutor:
             "Good ref [GHSA-w6x6-9fp7-fqm4](https://github.com/advisories/GHSA-w6x6-9fp7-fqm4)"
         )
 
-        out = executor._strip_unselected_github_advisory_links(markdown, selected)
+        out = service.strip_unselected_github_advisory_links(markdown, selected)
         assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
         assert (
             "https://github.com/craftcms/cms/security/advisories/GHSA-9c6g-9j6q-6w4w"
@@ -1738,10 +1357,10 @@ class TestWriterExecutor:
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
 
     def test_strip_unselected_markdown_links_keeps_only_selected_urls(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         selected = [
             {"url": "https://example.com/selected"},
@@ -1751,20 +1370,20 @@ class TestWriterExecutor:
             "Drop [Repeat](https://blog.calif.io/p/a-race-within-a-race-exploiting-cve)"
         )
 
-        out = executor._strip_unselected_markdown_links(markdown, selected)
+        out = service.strip_unselected_markdown_links(markdown, selected)
         assert "[Selected](https://example.com/selected)" in out
         assert "https://blog.calif.io/p/a-race-within-a-race-exploiting-cve" not in out
         assert "Drop Repeat" in out
 
     def test_quiet_day_mode_detection(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_quiet_day_enabled=True,
             briefing_quiet_day_high_signal_threshold=8,
             briefing_quiet_day_min_high_signal_items=3,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         low_signal_items = [
             {
@@ -1801,11 +1420,11 @@ class TestWriterExecutor:
             },
         ]
 
-        assert executor._is_quiet_day(low_signal_items) is True
-        assert executor._is_quiet_day(high_signal_items) is False
+        assert service.is_quiet_day(low_signal_items) is True
+        assert service.is_quiet_day(high_signal_items) is False
 
     def test_single_item_char_limits_are_relaxed(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_min_chars=1200,
@@ -1815,9 +1434,9 @@ class TestWriterExecutor:
             briefing_single_item_target_chars=760,
             briefing_single_item_hard_max_chars=1200,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
-        min_chars, target_chars, hard_max_chars = executor._char_limits(
+        min_chars, target_chars, hard_max_chars = service.char_limits(
             "standard",
             selected_count=1,
         )
@@ -1827,13 +1446,13 @@ class TestWriterExecutor:
 
     @pytest.mark.asyncio
     async def test_postprocess_drop_recomputes_missing_urls_before_enrich(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=1,
             briefing_min_items_after_coverage_drop=1,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [
             {
                 "id": "one",
@@ -1856,18 +1475,18 @@ class TestWriterExecutor:
 
         with (
             patch.object(
-                executor.writer_llm,
+                service.writer_llm,
                 "enrich_briefing",
                 new_callable=AsyncMock,
                 return_value=draft,
             ) as mock_enrich,
             patch.object(
-                executor,
-                "_priority_score",
+                service,
+                "priority_score",
                 side_effect=lambda item: 0 if item["id"] == "two" else 1,
             ),
         ):
-            out = await executor._postprocess_briefing(
+            out = await service.postprocess_briefing(
                 briefing_body=draft,
                 selected_items=selected,
                 mode="standard",
@@ -1886,12 +1505,12 @@ class TestWriterExecutor:
     async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(
         self,
     ):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=0,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [
             {
                 "id": "one",
@@ -1913,12 +1532,12 @@ class TestWriterExecutor:
         draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
 
         with patch.object(
-            executor.writer_llm,
+            service.writer_llm,
             "enrich_briefing",
             new_callable=AsyncMock,
             return_value=draft,
         ) as mock_enrich:
-            out = await executor._postprocess_briefing(
+            out = await service.postprocess_briefing(
                 briefing_body=draft,
                 selected_items=selected,
                 mode="standard",
@@ -1936,12 +1555,12 @@ class TestWriterExecutor:
     async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(
         self,
     ):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=0,
         )
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
         selected = [
             {
                 "id": "one",
@@ -1967,12 +1586,12 @@ class TestWriterExecutor:
         )
 
         with patch.object(
-            executor.writer_llm,
+            service.writer_llm,
             "enrich_briefing",
             new_callable=AsyncMock,
             return_value=draft,
         ):
-            out = await executor._postprocess_briefing(
+            out = await service.postprocess_briefing(
                 briefing_body=draft,
                 selected_items=selected,
                 mode="standard",
@@ -2204,10 +1823,10 @@ class TestWriterExecutor:
         )
 
     def test_passes_critic_thresholds_blocks_critical_issue_terms(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         critique = {
             "passed": True,
@@ -2221,13 +1840,13 @@ class TestWriterExecutor:
             "recommendations": [],
         }
 
-        assert executor._passes_critic_thresholds(critique) is False
+        assert service.passes_critic_thresholds(critique) is False
 
     def test_passes_critic_thresholds_does_not_block_low_source_diversity(self):
-        from bcn.agents.writer.agent import WriterExecutor
+        from bcn.agents.writer.service import WriterService
 
         settings = _make_settings()
-        executor = WriterExecutor(settings)
+        service = WriterService(settings)
 
         critique = {
             "passed": True,
@@ -2241,33 +1860,7 @@ class TestWriterExecutor:
             "recommendations": [],
         }
 
-        assert executor._passes_critic_thresholds(critique) is True
-
-    @pytest.mark.asyncio
-    async def test_legacy_writer_agent_surfaces_control_plane_failure_message(self):
-        from bcn.agents.writer.agent import WriterExecutor
-
-        settings = _make_settings()
-        executor = WriterExecutor(settings)
-
-        try:
-            with patch(
-                "bcn.agents.writer.agent.execute_generation",
-                new_callable=AsyncMock,
-                return_value=(
-                    'writer_handoff::{"mode":"regular_daily_briefing",'
-                    '"decision":"blocked","item_count":1}\n'
-                    "Blocking publish: internal writer error during generation."
-                ),
-            ):
-                eq = FakeEventQueue()
-                ctx = _fake_context("generate_briefing")
-                await executor.execute(ctx, eq)
-        finally:
-            await executor.close()
-
-        assert any("internal writer error" in str(e).lower() for e in eq.events)
-
+        assert service.passes_critic_thresholds(critique) is True
 
 # ── Distributor tests ────────────────────────────────────────────────────
 
@@ -2462,87 +2055,3 @@ class TestDistributorService:
         assert result.results == {"telegram": "ok", "slack": "ok"}
         assert result.all_ok is True
         assert [attempt.channel for attempt in result.attempts] == ["slack"]
-
-
-class TestDistributorExecutor:
-    def test_extract_requested_mode(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        mode = DistributorExecutor._extract_requested_mode(
-            "distribute_briefing::123e4567-e89b-12d3-a456-426614174000::regular_monthly_newsletter"
-        )
-        assert mode == "regular_monthly_newsletter"
-
-    @pytest.mark.asyncio
-    async def test_legacy_request_returns_boundary_message(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-
-        settings = _make_settings()
-        executor = DistributorExecutor(settings)
-        eq = FakeEventQueue()
-
-        await executor.execute(_fake_context("distribute_briefing"), eq)
-
-        assert any(
-            "explicit delivery payload" in _event_text(event).lower()
-            for event in eq.events
-        )
-
-    @pytest.mark.asyncio
-    async def test_explicit_delivery_request_emits_structured_result(self):
-        from bcn.agents.distributor.agent import DistributorExecutor
-        from bcn.agents.distributor.service import ChannelDeliveryResult
-        from bcn.agents.distributor.service import DeliveryRequest
-        from bcn.agents.distributor.service import DeliveryResult
-        from bcn.agents.distributor.service import parse_delivery_result_payload
-        from bcn.agents.distributor.service import render_delivery_request_payload
-
-        settings = _make_settings()
-        executor = DistributorExecutor(settings)
-        briefing_id = uuid4()
-        expected = DeliveryResult(
-            mode="regular_daily_briefing",
-            results={"telegram": "ok"},
-            attempts=(
-                ChannelDeliveryResult(
-                    channel="telegram",
-                    status="ok",
-                    external_message_id="42",
-                    metadata={"primary_message_id": "42"},
-                ),
-            ),
-            all_ok=True,
-            message="Distributed to: {'telegram': 'ok'} (mode=regular_daily_briefing)",
-        )
-
-        with patch.object(
-            executor._service,
-            "deliver",
-            new_callable=AsyncMock,
-            return_value=expected,
-        ):
-            eq = FakeEventQueue()
-            await executor.execute(
-                _fake_context(
-                    render_delivery_request_payload(
-                        DeliveryRequest(
-                            briefing={
-                                "id": briefing_id,
-                                "created_at": datetime.now(timezone.utc),
-                                "content_markdown": "**Draft**",
-                                "content_html": "<p>Draft</p>",
-                                "cover_image_url": "",
-                                "item_ids": [],
-                            },
-                            mode="regular_daily_briefing",
-                        )
-                    )
-                ),
-                eq,
-            )
-
-        assert len(eq.events) == 1
-        text = _event_text(eq.events[0])
-        payload = parse_delivery_result_payload(text)
-        assert payload == expected
-        assert expected.message in text

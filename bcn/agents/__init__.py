@@ -1,1 +1,1 @@
-"""BCN agent executors (Collector, Analyst, Writer, Distributor, Critic, Verifier)."""
+"""BCN service modules for collection, analysis, writing, critique, verification, and distribution."""
