@@ -5,15 +5,22 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+from typing import Any
 from typing import Awaitable
 from typing import Callable
 from typing import Literal
 
+from bcn.agents.collector.review import SourceReviewLLM
 from bcn.agents.collector.service import CollectorService
 from bcn.common.config import Settings
 from bcn.common.db import close_pool
+from bcn.common.db import collection_source_has_historical_items
 from bcn.common.db import get_pool
+from bcn.common.db import get_collection_source
 from bcn.common.db import insert_news_item
+from bcn.common.db import record_collection_source_review
+from bcn.common.db import upsert_collection_source
+from bcn.common.llm import LLMClient
 from bcn.common.models import CollectedNewsItem
 
 logger = logging.getLogger(__name__)
@@ -55,15 +62,209 @@ class CollectionRunResult:
         return message
 
 
+@dataclass(frozen=True)
+class _CollectionSourceDescriptor:
+    source_key: str
+    source_type: str
+    display_name: str
+    raw_config: dict[str, Any]
+
+
+def _describe_source(item: CollectedNewsItem) -> _CollectionSourceDescriptor:
+    """Resolve a stable registry identity for one collected item."""
+    raw = item.raw_data if isinstance(item.raw_data, dict) else {}
+    source_type = str(item.source_type or "").strip().lower()
+
+    if source_type == "rss":
+        feed_url = str(raw.get("feed_url") or "").strip()
+        key = f"rss:{feed_url.lower()}" if feed_url else "rss:unknown"
+        return _CollectionSourceDescriptor(
+            source_key=key,
+            source_type="rss",
+            display_name=feed_url or "unknown rss feed",
+            raw_config={"feed_url": feed_url},
+        )
+
+    if source_type == "reddit":
+        subreddit = str(raw.get("subreddit") or "").strip().lower()
+        label = f"r/{subreddit}" if subreddit else "unknown subreddit"
+        key = f"reddit:{label}" if subreddit else "reddit:unknown"
+        return _CollectionSourceDescriptor(
+            source_key=key,
+            source_type="reddit",
+            display_name=label,
+            raw_config={"subreddit": subreddit},
+        )
+
+    if source_type == "twitter":
+        username = str(raw.get("username") or "").strip().lower()
+        label = f"@{username}" if username else "unknown account"
+        key = f"twitter:{label}" if username else "twitter:unknown"
+        return _CollectionSourceDescriptor(
+            source_key=key,
+            source_type="twitter",
+            display_name=label,
+            raw_config={"username": username},
+        )
+
+    return _CollectionSourceDescriptor(
+        source_key="ghsa:github_security_advisories",
+        source_type="ghsa",
+        display_name="GitHub Security Advisories",
+        raw_config={"source_name": "github_security_advisories"},
+    )
+
+
+def _group_items_by_source(
+    items: list[CollectedNewsItem],
+) -> list[tuple[_CollectionSourceDescriptor, list[CollectedNewsItem]]]:
+    """Group collected items by their source registry identity."""
+    groups: dict[str, tuple[_CollectionSourceDescriptor, list[CollectedNewsItem]]] = {}
+    for item in items:
+        descriptor = _describe_source(item)
+        if descriptor.source_key not in groups:
+            groups[descriptor.source_key] = (descriptor, [])
+        groups[descriptor.source_key][1].append(item)
+    return list(groups.values())
+
+
+async def _source_is_active(
+    descriptor: _CollectionSourceDescriptor,
+    items: list[CollectedNewsItem],
+    *,
+    settings: Settings,
+    reviewer: SourceReviewLLM | None,
+) -> bool:
+    """Return whether a source is allowed to write into production news_items."""
+    if not settings.source_review_enabled:
+        return True
+
+    row = await get_collection_source(descriptor.source_key)
+    if row is not None:
+        state = str(row["state"] or "").upper()
+        if state == "ACTIVE":
+            await upsert_collection_source(
+                source_key=descriptor.source_key,
+                source_type=descriptor.source_type,
+                display_name=descriptor.display_name,
+                state="ACTIVE",
+                raw_config=descriptor.raw_config,
+            )
+            return True
+        if state == "DISABLED":
+            logger.warning("Skipping disabled source %s", descriptor.source_key)
+            return False
+        if state == "QUARANTINED":
+            logger.warning("Skipping quarantined source %s", descriptor.source_key)
+            return False
+
+    if await collection_source_has_historical_items(
+        source_type=descriptor.source_type,
+        raw_config=descriptor.raw_config,
+    ):
+        await upsert_collection_source(
+            source_key=descriptor.source_key,
+            source_type=descriptor.source_type,
+            display_name=descriptor.display_name,
+            state="ACTIVE",
+            raw_config=descriptor.raw_config,
+            review_reason="preexisting_source",
+            review_payload={"decision": "promote", "origin": "historical_items"},
+        )
+        return True
+
+    await upsert_collection_source(
+        source_key=descriptor.source_key,
+        source_type=descriptor.source_type,
+        display_name=descriptor.display_name,
+        state="PENDING_REVIEW",
+        raw_config=descriptor.raw_config,
+        review_reason="awaiting_source_review",
+    )
+    if reviewer is None:
+        await upsert_collection_source(
+            source_key=descriptor.source_key,
+            source_type=descriptor.source_type,
+            display_name=descriptor.display_name,
+            state="ACTIVE",
+            raw_config=descriptor.raw_config,
+            review_reason="source_review_disabled",
+            review_payload={"decision": "promote", "origin": "review_disabled"},
+        )
+        return True
+
+    sample_size = max(1, int(settings.source_review_sample_size))
+    try:
+        review = await reviewer.review_source(
+            source_type=descriptor.source_type,
+            display_name=descriptor.display_name,
+            raw_config=descriptor.raw_config,
+            sample_items=items[:sample_size],
+        )
+    except Exception as exc:
+        await upsert_collection_source(
+            source_key=descriptor.source_key,
+            source_type=descriptor.source_type,
+            display_name=descriptor.display_name,
+            state="QUARANTINED",
+            raw_config=descriptor.raw_config,
+            review_reason=f"source_review_error: {type(exc).__name__}",
+            review_payload={"decision": "quarantine", "error": str(exc)},
+        )
+        logger.warning(
+            "Quarantined new source %s after source review error: %s",
+            descriptor.source_key,
+            exc,
+        )
+        return False
+    review_payload = review.model_dump()
+    await record_collection_source_review(
+        source_key=descriptor.source_key,
+        decision=review.decision,
+        confidence=review.confidence,
+        rationale=review.rationale,
+        review_payload=review_payload,
+    )
+    await upsert_collection_source(
+        source_key=descriptor.source_key,
+        source_type=descriptor.source_type,
+        display_name=descriptor.display_name,
+        state="ACTIVE" if review.decision == "promote" else "QUARANTINED",
+        raw_config=descriptor.raw_config,
+        review_reason=review.rationale or review.decision,
+        review_payload=review_payload,
+    )
+    if review.decision != "promote":
+        logger.warning(
+            "Quarantined new source %s after LLM review: %s",
+            descriptor.source_key,
+            review.rationale or review.decision,
+        )
+        return False
+    return True
+
+
 async def _persist_collected_items(
     items: list[CollectedNewsItem],
     *,
     max_reddit_items_per_subreddit: int | None = None,
+    settings: Settings,
+    reviewer: SourceReviewLLM | None,
 ) -> int:
     """Insert collected items and return how many were newly created."""
     inserted_count = 0
     inserted_reddit_counts: dict[str, int] = {}
-    for item in items:
+    allowed_items: list[CollectedNewsItem] = []
+    for descriptor, group in _group_items_by_source(items):
+        if await _source_is_active(
+            descriptor,
+            group,
+            settings=settings,
+            reviewer=reviewer,
+        ):
+            allowed_items.extend(group)
+
+    for item in allowed_items:
         subreddit = ""
         if (
             max_reddit_items_per_subreddit is not None
@@ -130,11 +331,14 @@ async def _run_single_source(
     *,
     collector_service: CollectorService,
     source: Literal["ghsa", "rss", "twitter", "reddit"],
+    reviewer: SourceReviewLLM | None,
 ) -> CollectionRunResult:
     """Run one collector source and persist its items."""
     items = await _collect_method(collector_service, source)()
     inserted_count = await _persist_collected_items(
         items,
+        settings=settings,
+        reviewer=reviewer,
         max_reddit_items_per_subreddit=(
             settings.reddit_max_items_per_subreddit if source == "reddit" else None
         ),
@@ -150,6 +354,7 @@ async def _run_all_sources(
     settings: Settings,
     *,
     collector_service: CollectorService,
+    reviewer: SourceReviewLLM | None,
 ) -> CollectionRunResult:
     """Run all collector sources concurrently and persist successes."""
     coroutines = [
@@ -169,6 +374,8 @@ async def _run_all_sources(
         try:
             counts[source] = await _persist_collected_items(
                 result,
+                settings=settings,
+                reviewer=reviewer,
                 max_reddit_items_per_subreddit=(
                     settings.reddit_max_items_per_subreddit
                     if source == "reddit"
@@ -187,6 +394,7 @@ async def execute_collection(
     *,
     source: CollectionSource = "all",
     collector_service: CollectorService | None = None,
+    llm_client: LLMClient | None = None,
     origin: str = "workflow_service",
     manage_pool: bool = True,
 ) -> str:
@@ -194,18 +402,27 @@ async def execute_collection(
     await get_pool(settings)
     active_service = collector_service or CollectorService(settings)
     owns_service = collector_service is None
+    active_llm_client: LLMClient | None = None
+    owns_llm_client = False
+    reviewer: SourceReviewLLM | None = None
+    if settings.source_review_enabled:
+        active_llm_client = llm_client or LLMClient.from_settings(settings)
+        owns_llm_client = llm_client is None
+        reviewer = SourceReviewLLM(active_llm_client)
 
     try:
         if source == "all":
             result = await _run_all_sources(
                 settings,
                 collector_service=active_service,
+                reviewer=reviewer,
             )
         else:
             result = await _run_single_source(
                 settings,
                 collector_service=active_service,
                 source=source,
+                reviewer=reviewer,
             )
 
         message = result.render_message()
@@ -214,6 +431,8 @@ async def execute_collection(
     finally:
         if owns_service:
             await active_service.close()
+        if owns_llm_client and active_llm_client is not None:
+            await active_llm_client.close()
         if manage_pool:
             await close_pool()
 

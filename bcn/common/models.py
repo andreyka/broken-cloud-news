@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -63,6 +64,15 @@ class CollectedNewsItem(BaseModel):
     published_at: datetime | str
     raw_data: dict = Field(default_factory=dict)
     full_content: Optional[str] = None
+
+
+class CollectionSourceReview(BaseModel):
+    """LLM review result for onboarding a new collection source."""
+
+    decision: Literal["promote", "quarantine"] = "quarantine"
+    confidence: Literal["low", "medium", "high"] = "medium"
+    rationale: str = ""
+    signals: list[str] = Field(default_factory=list)
 
 
 class Briefing(BaseModel):
