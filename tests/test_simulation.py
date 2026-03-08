@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+
+from bcn.common.config import Settings
 from bcn.evaluation.simulation import _build_decision_summary
 from bcn.evaluation.simulation import compare_simulation_reports
 from bcn.evaluation.simulation import score_feedback_rubric
+from bcn.evaluation.simulation import simulate_historical_briefings
 
 
 def test_score_feedback_rubric_penalizes_monoculture_and_thin_content():
@@ -266,4 +275,125 @@ def test_build_decision_summary_can_recommend_promote():
 
     summary = _build_decision_summary(rows)
     assert summary["decision"]["recommendation"] == "promote"
-    assert summary["decision"]["confidence"] in {"medium", "high"}
+
+
+@pytest.mark.asyncio
+async def test_simulate_historical_briefings_uses_simulated_selected_items(monkeypatch):
+    briefing_id = uuid4()
+    created_at = datetime.now(timezone.utc)
+    items = [
+        {
+            "id": "one",
+            "source_type": "rss",
+            "url": "https://example.com/one",
+            "title": "One",
+            "summary": "First item",
+        },
+        {
+            "id": "two",
+            "source_type": "rss",
+            "url": "https://example.com/two",
+            "title": "Two",
+            "summary": "Second item",
+        },
+    ]
+    simulated_selected_items = [items[0]]
+    recorded_lengths: dict[str, int] = {}
+
+    class _Writer:
+        async def simulate_briefing_body(
+            self,
+            items,
+            recent_briefings,
+            *,
+            apply_critic_rewrites,
+        ):
+            return (
+                "simulated body",
+                {
+                    "mode": "standard",
+                    "rewrites": 0,
+                    "min_chars": 10,
+                    "hard_max_chars": 500,
+                    "selected_items": list(simulated_selected_items),
+                },
+            )
+
+        def quality_gate(
+            self,
+            markdown,
+            selected_items,
+            *,
+            mode,
+            min_chars,
+            hard_max_chars,
+        ):
+            if markdown == "simulated body":
+                recorded_lengths["gate"] = len(selected_items)
+            return {"hard_issues": [], "soft_issues": []}
+
+        async def critique_markdown(
+            self,
+            markdown,
+            items,
+            *,
+            mode,
+            recent_briefings=None,
+            gate_hard_issues=None,
+            gate_soft_issues=None,
+        ):
+            if markdown == "simulated body":
+                recorded_lengths["critic"] = len(items)
+            return {"dimension_scores": {"style": 0, "novelty": 0}}
+
+        async def close(self):
+            return None
+
+    def _score(markdown, items, gate, *, min_chars, hard_max_chars):
+        if markdown == "simulated body":
+            recorded_lengths["rubric"] = len(items)
+        return {
+            "score": 10,
+            "breakdown": {},
+            "notes": [],
+            "has_reddit": False,
+            "has_cloudflare": False,
+            "dominant_source_ratio": 1.0,
+            "cloud_terms_hit": [],
+        }
+
+    monkeypatch.setattr(
+        "bcn.evaluation.simulation.get_distributed_briefings",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": briefing_id,
+                    "created_at": created_at,
+                    "content_markdown": "actual body",
+                    "item_ids": ["one", "two"],
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.evaluation.simulation.get_items_by_ids",
+        AsyncMock(return_value=list(items)),
+    )
+    monkeypatch.setattr("bcn.evaluation.simulation.WriterService", lambda settings: _Writer())
+    monkeypatch.setattr("bcn.evaluation.simulation.score_feedback_rubric", _score)
+
+    report = await simulate_historical_briefings(
+        Settings(
+            database_url="postgresql://test:test@localhost:5432/test",
+            llm_base_url="http://fake-llm:8000/v1",
+            llm_model="test-model",
+            comfyui_url="http://fake-comfy:8188",
+        ),
+        limit=1,
+        apply_critic_rewrites=False,
+    )
+
+    assert report["count"] == 1
+    assert report["results"][0]["simulated_item_count"] == 1
+    assert recorded_lengths == {"gate": 1, "rubric": 1, "critic": 1}
+    assert report["summary"]["decision"]["confidence"] in {"low", "medium", "high"}

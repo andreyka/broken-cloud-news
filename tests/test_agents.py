@@ -14,6 +14,7 @@ import pytest
 import respx
 
 from bcn.common.config import Settings
+from bcn.agents.writer.service import WriterService
 
 
 def _make_settings(**overrides) -> Settings:
@@ -1771,6 +1772,69 @@ class TestWriterExecutor:
         assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out.markdown
         assert "https://curl.se/libcurl/c/CURLOPT_RESOLVE.html" in out.markdown
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out.markdown
+
+    @pytest.mark.asyncio
+    async def test_simulate_briefing_body_returns_string_and_final_selected_items(self):
+        settings = _make_settings(
+            briefing_missing_coverage_max_drops=1,
+            briefing_min_items_after_coverage_drop=1,
+            briefing_critique_enabled=False,
+        )
+        service = WriterService(settings)
+        items = [
+            {
+                "id": "one",
+                "title": "One",
+                "summary": "First item",
+                "source_type": "rss",
+                "url": "https://example.com/one",
+                "relevance_score": 9,
+            },
+            {
+                "id": "two",
+                "title": "Two",
+                "summary": "Second item",
+                "source_type": "rss",
+                "url": "https://example.com/two",
+                "relevance_score": 7,
+            },
+        ]
+        draft = "**Threat Radar**\n[One](https://example.com/one)\n\nAction now."
+
+        try:
+            with (
+                patch.object(
+                    service.writer_llm,
+                    "generate_briefing",
+                    new_callable=AsyncMock,
+                    return_value=draft,
+                ),
+                patch.object(
+                    service.writer_llm,
+                    "enrich_briefing",
+                    new_callable=AsyncMock,
+                    return_value=draft,
+                ),
+                patch.object(
+                    service,
+                    "priority_score",
+                    side_effect=lambda item, recent_published=None: (
+                        0 if item["id"] == "two" else 1
+                    ),
+                ),
+            ):
+                body, meta = await service.simulate_briefing_body(
+                    items,
+                    [],
+                    apply_critic_rewrites=False,
+                )
+        finally:
+            await service.close()
+
+        assert isinstance(body, str)
+        assert "https://example.com/two" not in body
+        assert [item["id"] for item in meta["selected_items"]] == ["one"]
+        assert [item["id"] for item in items] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_verifier_llm_hard_issues_block_when_configured(self):
