@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from dataclasses import dataclass
 import logging
 import re
 import time
@@ -66,6 +67,14 @@ def _default_verifier() -> dict[str, object]:
         "issues": [],
         "recommendations": [],
     }
+
+
+@dataclass(frozen=True)
+class PostprocessedBriefing:
+    """Finalized draft body plus the selected items it actually covers."""
+
+    markdown: str
+    selected_items: list[dict[str, Any]]
 
 
 class WriterWorkflowProtocol(Protocol):
@@ -188,12 +197,17 @@ class WriterService:
                 return {
                     "decision": "skip",
                     "reason": "not_enough_diverse_items_after_monthly_selection",
+                    "message": (
+                        "Monthly newsletter skipped: not enough diverse high-signal "
+                        "items after selection constraints."
+                    ),
                     "mode": "monthly_newsletter",
                     "selected_items": [],
                 }
             return {
                 "decision": "generate",
                 "reason": "monthly_selection_ready",
+                "message": "",
                 "mode": "monthly_newsletter",
                 "selected_items": selected,
             }
@@ -208,6 +222,10 @@ class WriterService:
                     "decision": "skip",
                     "reason": (
                         f"high_signal_below_threshold:{high_signal}<{min_high_signal}"
+                    ),
+                    "message": (
+                        "Quiet day — not enough high-signal items "
+                        f"({high_signal} < {min_high_signal}). Skipping briefing."
                     ),
                     "mode": "standard",
                     "selected_items": [],
@@ -228,12 +246,14 @@ class WriterService:
             return {
                 "decision": "skip",
                 "reason": "no_items_remained_after_selection_constraints",
+                "message": "No items remained after selection constraints. Skipping briefing.",
                 "mode": mode,
                 "selected_items": [],
             }
         return {
             "decision": "generate",
             "reason": "selection_ready",
+            "message": "",
             "mode": mode,
             "selected_items": selected,
         }
@@ -350,14 +370,17 @@ class WriterService:
             recent_briefings=history,
             mode=mode,
         )
-        draft = await self.postprocess_briefing(
+        active_selected_items = list(selected_items)
+        postprocessed = await self.postprocess_briefing(
             briefing_body=draft,
-            selected_items=selected_items,
+            selected_items=active_selected_items,
             mode=mode,
             min_chars=min_chars,
             target_chars=target_chars,
             hard_max_chars=hard_max_chars,
         )
+        draft = postprocessed.markdown
+        active_selected_items = postprocessed.selected_items
 
         rewrites = 0
         max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
@@ -366,12 +389,13 @@ class WriterService:
         while True:
             evaluation = await self.evaluate_existing_markdown(
                 markdown=draft,
-                selected_items=selected_items,
+                selected_items=active_selected_items,
                 history=history,
                 mode=mode,
             )
             round_input = str(evaluation["markdown"] or "")
             evaluation["rewrites"] = rewrites
+            evaluation["selected_items"] = list(active_selected_items)
             if bool(evaluation["release_passed"]):
                 trace_rounds.append(
                     {
@@ -418,7 +442,7 @@ class WriterService:
             feedback.extend(
                 str(issue) for issue in verifier.get("recommendations", [])
             )
-            missing_items = self.missing_items_for_markdown(draft, selected_items)
+            missing_items = self.missing_items_for_markdown(draft, active_selected_items)
             missing_urls = [
                 str(item.get("url", "")) for item in missing_items if item.get("url")
             ]
@@ -439,14 +463,14 @@ class WriterService:
                 hard_max_chars=int(evaluation["hard_max_chars"]),
                 rewrite_attempt=rewrites + 1,
                 max_rewrites=max_rewrites,
-                selected_items=selected_items,
+                selected_items=active_selected_items,
                 missing_selected_urls=missing_urls,
             )
 
             rewrites += 1
             rewritten_output = await self.writer_llm.revise_briefing(
                 draft_markdown=draft,
-                items=selected_items,
+                items=active_selected_items,
                 feedback=feedback,
                 feedback_context=feedback_context,
                 recent_briefings=history,
@@ -455,14 +479,16 @@ class WriterService:
                 target_chars=int(evaluation["target_chars"]),
                 hard_max_chars=int(evaluation["hard_max_chars"]),
             )
-            rewritten_output = await self.postprocess_briefing(
+            postprocessed = await self.postprocess_briefing(
                 briefing_body=rewritten_output,
-                selected_items=selected_items,
+                selected_items=active_selected_items,
                 mode=mode,
                 min_chars=int(evaluation["min_chars"]),
                 target_chars=int(evaluation["target_chars"]),
                 hard_max_chars=int(evaluation["hard_max_chars"]),
             )
+            rewritten_output = postprocessed.markdown
+            active_selected_items = postprocessed.selected_items
             trace_rounds.append(
                 {
                     "round_index": len(trace_rounds),
@@ -810,12 +836,13 @@ class WriterService:
         min_chars: int,
         target_chars: int,
         hard_max_chars: int,
-    ) -> str:
+    ) -> PostprocessedBriefing:
         """Enforce URL coverage and body length constraints on an LLM draft."""
         del min_chars, target_chars, hard_max_chars  # recomputed from current item count
+        active_selected_items = list(selected_items)
         current_min_chars, current_target_chars, current_hard_max_chars = self.char_limits(
             mode,
-            selected_count=len(selected_items),
+            selected_count=len(active_selected_items),
         )
         markdown = self.normalize_section_headings(
             self.dedupe_markdown_links((briefing_body or "").strip())
@@ -823,7 +850,10 @@ class WriterService:
         markdown = self.de_template_fields(markdown)
 
         for _ in range(2):
-            missing_items = self.missing_items_for_markdown(markdown, selected_items)
+            missing_items = self.missing_items_for_markdown(
+                markdown,
+                active_selected_items,
+            )
             too_short = len(markdown) < current_min_chars
             if not missing_items and not too_short:
                 break
@@ -833,7 +863,7 @@ class WriterService:
             ]
             markdown = await self.writer_llm.enrich_briefing(
                 draft_markdown=markdown,
-                items=selected_items,
+                items=active_selected_items,
                 min_chars=current_min_chars,
                 target_chars=current_target_chars,
                 hard_max_chars=current_hard_max_chars,
@@ -845,7 +875,7 @@ class WriterService:
             )
             markdown = self.de_template_fields(markdown)
 
-        missing_items = self.missing_items_for_markdown(markdown, selected_items)
+        missing_items = self.missing_items_for_markdown(markdown, active_selected_items)
         max_drops = max(0, int(self.settings.briefing_missing_coverage_max_drops))
         min_items_after_drop = max(
             1, int(self.settings.briefing_min_items_after_coverage_drop)
@@ -854,20 +884,20 @@ class WriterService:
         while (
             missing_items
             and drops < max_drops
-            and len(selected_items) > min_items_after_drop
+            and len(active_selected_items) > min_items_after_drop
         ):
             weakest = min(
                 missing_items,
                 key=lambda item: self.priority_score(item),
             )
-            selected_items[:] = [
+            active_selected_items = [
                 item
-                for item in selected_items
+                for item in active_selected_items
                 if str(item.get("id")) != str(weakest.get("id"))
             ]
             current_min_chars, current_target_chars, current_hard_max_chars = self.char_limits(
                 mode,
-                selected_count=len(selected_items),
+                selected_count=len(active_selected_items),
             )
             drops += 1
             logger.warning(
@@ -876,13 +906,16 @@ class WriterService:
                 weakest.get("url"),
             )
 
-            missing_items = self.missing_items_for_markdown(markdown, selected_items)
+            missing_items = self.missing_items_for_markdown(
+                markdown,
+                active_selected_items,
+            )
             if not missing_items:
                 break
 
             markdown = await self.writer_llm.enrich_briefing(
                 draft_markdown=markdown,
-                items=selected_items,
+                items=active_selected_items,
                 min_chars=current_min_chars,
                 target_chars=current_target_chars,
                 hard_max_chars=current_hard_max_chars,
@@ -896,7 +929,10 @@ class WriterService:
                 self.dedupe_markdown_links(markdown.strip())
             )
             markdown = self.de_template_fields(markdown)
-            missing_items = self.missing_items_for_markdown(markdown, selected_items)
+            missing_items = self.missing_items_for_markdown(
+                markdown,
+                active_selected_items,
+            )
 
         if missing_items:
             logger.warning(
@@ -925,10 +961,13 @@ class WriterService:
 
         markdown = self.enforce_release_link_hygiene(
             markdown,
-            selected_items,
+            active_selected_items,
             hard_max_chars=current_hard_max_chars,
         )
-        return markdown.strip()
+        return PostprocessedBriefing(
+            markdown=markdown.strip(),
+            selected_items=active_selected_items,
+        )
 
     @staticmethod
     def dedupe_markdown_links(markdown: str) -> str:

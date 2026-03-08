@@ -29,6 +29,8 @@ from bcn.workflows.automation import job_publish_regular_briefing
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import parse_writer_handoff_payload
+from bcn.workflows.modes.common import WriterHandoff
+from bcn.workflows.modes.common import WriterHandoffResult
 from bcn.workflows.modes.common import render_writer_handoff_payload
 from bcn.workflows.modes.common import run_writer_distributor_handoff
 
@@ -224,6 +226,37 @@ async def test_run_writer_distributor_handoff_enforces_requested_mode():
         run_distribution=run_distribution,
     )
 
+    assert "Distributed to:" in str(distributor_result)
+    run_distribution.assert_awaited_once_with(
+        REGULAR_DAILY_BRIEFING_MODE,
+        briefing_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_writer_distributor_handoff_accepts_typed_result():
+    briefing_id = uuid4()
+    run_generation = AsyncMock(
+        return_value=WriterHandoffResult(
+            handoff=WriterHandoff(
+                mode=REGULAR_DAILY_BRIEFING_MODE,
+                decision="publish",
+                briefing_id=briefing_id,
+                item_count=2,
+            ),
+            human_message="Briefing created",
+        )
+    )
+    run_distribution = AsyncMock(return_value="Distributed to: {'telegram': 'ok'}")
+
+    writer_result, distributor_result = await run_writer_distributor_handoff(
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+        run_generation=run_generation,
+        run_distribution=run_distribution,
+    )
+
+    assert "writer_handoff::" in writer_result
+    assert "Briefing created" in writer_result
     assert "Distributed to:" in str(distributor_result)
     run_distribution.assert_awaited_once_with(
         REGULAR_DAILY_BRIEFING_MODE,

@@ -1665,9 +1665,9 @@ class TestWriterExecutor:
 
         # Two enrich attempts from the initial loop only; no extra call with stale dropped URLs.
         assert mock_enrich.await_count == 2
-        assert "https://example.com/two" not in out
-        assert len(selected) == 1
-        assert selected[0]["id"] == "one"
+        assert "https://example.com/two" not in out.markdown
+        assert [item["id"] for item in out.selected_items] == ["one"]
+        assert [item["id"] for item in selected] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(
@@ -1715,8 +1715,9 @@ class TestWriterExecutor:
             )
 
         assert mock_enrich.await_count == 2
-        assert "https://example.com/one" in out
-        assert "https://example.com/two" in out
+        assert "https://example.com/one" in out.markdown
+        assert "https://example.com/two" in out.markdown
+        assert [item["id"] for item in out.selected_items] == ["one", "two"]
 
     @pytest.mark.asyncio
     async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(
@@ -1767,9 +1768,9 @@ class TestWriterExecutor:
                 hard_max_chars=2000,
             )
 
-        assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out
-        assert "https://curl.se/libcurl/c/CURLOPT_RESOLVE.html" in out
-        assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
+        assert "https://github.com/advisories/GHSA-78q6-223p-8x4q" not in out.markdown
+        assert "https://curl.se/libcurl/c/CURLOPT_RESOLVE.html" in out.markdown
+        assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out.markdown
 
     @pytest.mark.asyncio
     async def test_verifier_llm_hard_issues_block_when_configured(self):

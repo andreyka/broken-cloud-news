@@ -34,6 +34,14 @@ class WriterHandoff:
     item_count: int | None = None
 
 
+@dataclass(frozen=True)
+class WriterHandoffResult:
+    """Typed internal handoff result with optional human-readable context."""
+
+    handoff: WriterHandoff
+    human_message: str = ""
+
+
 def extract_briefing_id(text: str) -> UUID | None:
     """Extract a briefing UUID from writer/distributor message text."""
     match = _UUID_PATTERN.search(text or "")
@@ -67,6 +75,22 @@ def render_writer_handoff_payload(
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def render_writer_handoff_message(
+    handoff: WriterHandoff,
+    *,
+    human_message: str = "",
+) -> str:
+    """Render a typed handoff plus optional human-readable text."""
+    payload = render_writer_handoff_payload(
+        mode=handoff.mode,
+        decision=handoff.decision,
+        briefing_id=handoff.briefing_id,
+        item_count=handoff.item_count,
+    )
+    text = str(human_message or "").strip()
+    return payload if not text else f"{payload}\n{text}"
 
 
 def parse_writer_handoff_payload(text: str) -> WriterHandoff | None:
@@ -119,19 +143,27 @@ def parse_writer_handoff_payload(text: str) -> WriterHandoff | None:
 async def run_writer_distributor_handoff(
     *,
     mode: str,
-    run_generation: Callable[[str], Awaitable[str]],
+    run_generation: Callable[[str], Awaitable[WriterHandoffResult | str]],
     run_distribution: Callable[[str, UUID], Awaitable[str]],
 ) -> tuple[str, str | None]:
     """Run writer->distributor handoff from explicit writer payload."""
     writer_result = await run_generation(mode)
-    handoff = parse_writer_handoff_payload(writer_result)
+    if isinstance(writer_result, WriterHandoffResult):
+        handoff = writer_result.handoff
+        rendered_writer_result = render_writer_handoff_message(
+            handoff,
+            human_message=writer_result.human_message,
+        )
+    else:
+        rendered_writer_result = str(writer_result)
+        handoff = parse_writer_handoff_payload(rendered_writer_result)
     if not handoff:
         logger.warning(
             "Writer did not return structured handoff; skipping distribution. mode=%s writer_result=%s",
             mode,
-            writer_result,
+            rendered_writer_result,
         )
-        return writer_result, None
+        return rendered_writer_result, None
 
     if handoff.decision != "publish":
         logger.info(
@@ -139,15 +171,15 @@ async def run_writer_distributor_handoff(
             handoff.decision,
             handoff.mode,
         )
-        return writer_result, None
+        return rendered_writer_result, None
 
     if handoff.briefing_id is None:
         logger.warning(
             "Writer publish decision missing briefing_id; skipping distribution. mode=%s writer_result=%s",
             handoff.mode,
-            writer_result,
+            rendered_writer_result,
         )
-        return writer_result, None
+        return rendered_writer_result, None
 
     dispatch_mode = mode
     if handoff.mode and handoff.mode != mode:
@@ -157,17 +189,17 @@ async def run_writer_distributor_handoff(
             mode,
         )
     distributor_result = await run_distribution(dispatch_mode, handoff.briefing_id)
-    return writer_result, distributor_result
+    return rendered_writer_result, distributor_result
 
 
 async def run_generation_and_distribution(mode: str) -> None:
     """Run one writer->distributor handoff cycle for the given workflow mode."""
-    from bcn.workflows.generation import execute_generation
+    from bcn.workflows.generation import execute_generation_result
 
     settings, agent_client = require_runtime()
     await run_writer_distributor_handoff(
         mode=mode,
-        run_generation=lambda workflow_mode: execute_generation(
+        run_generation=lambda workflow_mode: execute_generation_result(
             settings,
             mode=workflow_mode,
             source="scheduler",

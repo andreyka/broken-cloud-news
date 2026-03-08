@@ -17,12 +17,13 @@ from bcn.common.db import finalize_stale_pending_generation_runs
 from bcn.common.db import get_analyzed_items
 from bcn.common.db import get_pool
 from bcn.common.db import get_recent_briefings
-from bcn.common.db import get_recent_published_items
 from bcn.common.db import get_top_items_for_period
 from bcn.common.db import insert_briefing
 from bcn.common.db import insert_generation_preference_pair
 from bcn.common.db import release_items_from_writing
-from bcn.workflows.modes.common import render_writer_handoff_payload
+from bcn.workflows.modes.common import WriterHandoff
+from bcn.workflows.modes.common import WriterHandoffResult
+from bcn.workflows.modes.common import render_writer_handoff_message
 
 logger = logging.getLogger(__name__)
 
@@ -35,25 +36,6 @@ _SUPPORTED_WORKFLOW_MODES = frozenset(
         REGULAR_MONTHLY_NEWSLETTER_MODE,
     )
 )
-
-
-def _compose_handoff_message(
-    *,
-    workflow_mode: str,
-    decision: str,
-    briefing_id: UUID | None = None,
-    item_count: int | None = None,
-    human_message: str = "",
-) -> str:
-    """Compose one payload containing contract JSON and human-readable text."""
-    payload = render_writer_handoff_payload(
-        mode=workflow_mode,
-        decision=decision,
-        briefing_id=briefing_id,
-        item_count=item_count,
-    )
-    text = str(human_message or "").strip()
-    return payload if not text else f"{payload}\n{text}"
 
 
 def _resolve_workflow_mode(mode: str) -> str:
@@ -171,60 +153,24 @@ def _coerce_uuid(value: object) -> UUID | None:
     return None
 
 
-async def _prepare_selected_items(
-    service: WriterService,
-    settings: Settings,
+def _handoff_result(
     *,
     workflow_mode: str,
-    item_dicts: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]], str | None]:
-    """Return generation mode, selected items, and optional skip message."""
-    if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
-        selected_items = service.select_items_for_monthly_newsletter(item_dicts)
-        if not selected_items:
-            return (
-                "monthly_newsletter",
-                [],
-                (
-                    "Monthly newsletter skipped: not enough diverse high-signal items "
-                    "after selection constraints."
-                ),
-            )
-        return "monthly_newsletter", selected_items, None
-
-    if bool(settings.briefing_skip_if_no_high_signal):
-        high_signal = service.selector.high_signal_count(item_dicts)
-        min_high_signal = max(
-            1, int(settings.briefing_min_high_signal_to_publish)
-        )
-        if high_signal < min_high_signal:
-            return (
-                "standard",
-                [],
-                (
-                    "Quiet day — not enough high-signal items "
-                    f"({high_signal} < {min_high_signal}). Skipping briefing."
-                ),
-            )
-
-    recent_published = await get_recent_published_items(
-        hours=settings.briefing_novelty_lookback_hours,
-        limit=settings.briefing_novelty_max_items,
+    decision: str,
+    briefing_id: UUID | None = None,
+    item_count: int | None = None,
+    human_message: str = "",
+) -> WriterHandoffResult:
+    """Build one typed handoff result for internal workflow orchestration."""
+    return WriterHandoffResult(
+        handoff=WriterHandoff(
+            mode=workflow_mode,
+            decision=decision,
+            briefing_id=briefing_id,
+            item_count=item_count,
+        ),
+        human_message=human_message,
     )
-    quiet_mode = service.is_quiet_day(item_dicts)
-    generation_mode = "quiet_day" if quiet_mode else "standard"
-    selected_items = service.select_items_for_briefing(
-        item_dicts,
-        recent_published=[dict(row) for row in recent_published],
-        quiet_mode=quiet_mode,
-    )
-    if not selected_items:
-        return (
-            generation_mode,
-            [],
-            "No items remained after quality/diversity filtering. Skipping briefing.",
-        )
-    return generation_mode, selected_items, None
 
 
 async def _persist_generation_trace(
@@ -281,15 +227,15 @@ async def _persist_generation_trace(
         )
 
 
-async def execute_generation(
+async def execute_generation_result(
     settings: Settings,
     *,
     mode: str,
     writer_service: WriterService | None = None,
     source: str = "workflow_service",
     manage_pool: bool = True,
-) -> str:
-    """Claim items, generate one briefing candidate, and persist the outcome."""
+) -> WriterHandoffResult:
+    """Claim items, generate one briefing candidate, and return a typed outcome."""
     await get_pool(settings)
     active_service = writer_service or WriterService(settings)
     owns_service = writer_service is None
@@ -354,7 +300,7 @@ async def execute_generation(
                     "Skipping briefing."
                 )
             logger.info(message)
-            return _compose_handoff_message(
+            return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="skip",
                 item_count=0,
@@ -362,18 +308,21 @@ async def execute_generation(
             )
 
         item_dicts = [dict(item) for item in items]
-        generation_mode, selected_items, skip_message = await _prepare_selected_items(
-            active_service,
-            settings,
-            workflow_mode=workflow_mode,
+        selection_plan = await active_service.select_items_for_workflow(
             item_dicts=item_dicts,
+            workflow_mode=workflow_mode,
         )
-        if skip_message:
+        generation_mode = str(selection_plan.get("mode") or "standard")
+        selected_items = list(selection_plan.get("selected_items") or [])
+        if str(selection_plan.get("decision") or "skip").strip().lower() != "generate":
+            skip_message = str(selection_plan.get("message") or "").strip()
+            if not skip_message:
+                skip_message = "Selection plan skipped generation."
             logger.info(skip_message)
-            return _compose_handoff_message(
+            return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="skip",
-                item_count=0,
+                item_count=len(selected_items),
                 human_message=skip_message,
             )
 
@@ -381,23 +330,25 @@ async def execute_generation(
         history_items = [dict(row) for row in history_rows]
         trace_run_id: UUID | None = None
         candidate: dict[str, Any] | None = None
+        final_selected_items = list(selected_items)
         try:
             candidate = await active_service.generate_release_candidate(
                 selected_items=selected_items,
                 history=history_items,
                 mode=generation_mode,
             )
+            final_selected_items = list(candidate.get("selected_items") or selected_items)
             trace_run_id = await create_generation_run(
                 trigger_source=source,
                 mode=generation_mode,
                 selected_item_ids=[
                     item_id
                     for item_id in (
-                        _coerce_uuid(item.get("id")) for item in selected_items
+                        _coerce_uuid(item.get("id")) for item in final_selected_items
                     )
                     if item_id is not None
                 ],
-                selected_items=selected_items,
+                selected_items=final_selected_items,
                 llm_model=active_service.llm_client.model_for_role("writer"),
                 llm_model_version=_model_version(active_service, "writer"),
                 prompts=active_service.writer_llm.prompt_versions(),
@@ -446,21 +397,23 @@ async def execute_generation(
                     final_verifier=verifier,
                     briefing_id=None,
                 )
-                return _compose_handoff_message(
+                return _handoff_result(
                     workflow_mode=workflow_mode,
                     decision="blocked",
-                    item_count=len(selected_items),
+                    item_count=len(final_selected_items),
                     human_message=message,
                 )
 
             artifact = await active_service.build_release_artifact(
                 briefing_body=str(candidate.get("markdown") or ""),
-                selected_items=selected_items,
+                selected_items=final_selected_items,
                 mode=generation_mode,
             )
             item_ids = [
                 item_id
-                for item_id in (_coerce_uuid(item.get("id")) for item in selected_items)
+                for item_id in (
+                    _coerce_uuid(item.get("id")) for item in final_selected_items
+                )
                 if item_id is not None
             ]
             briefing_id = await insert_briefing(
@@ -481,13 +434,13 @@ async def execute_generation(
                 final_verifier=dict(candidate.get("verifier") or {}),
                 briefing_id=briefing_id,
             )
-            message = f"Briefing created: id={briefing_id} items={len(selected_items)}"
+            message = f"Briefing created: id={briefing_id} items={len(final_selected_items)}"
             logger.info(message)
-            return _compose_handoff_message(
+            return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="publish",
                 briefing_id=briefing_id,
-                item_count=len(selected_items),
+                item_count=len(final_selected_items),
                 human_message=message,
             )
         except Exception as exc:
@@ -508,10 +461,10 @@ async def execute_generation(
                     ),
                     briefing_id=None,
                 )
-            return _compose_handoff_message(
+            return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="blocked",
-                item_count=len(selected_items),
+                item_count=len(final_selected_items),
                 human_message="Blocking publish: internal writer error during generation.",
             )
     finally:
@@ -527,3 +480,25 @@ async def execute_generation(
             await active_service.close()
         if manage_pool:
             await close_pool()
+
+
+async def execute_generation(
+    settings: Settings,
+    *,
+    mode: str,
+    writer_service: WriterService | None = None,
+    source: str = "workflow_service",
+    manage_pool: bool = True,
+) -> str:
+    """Claim items, generate one briefing candidate, and persist the outcome."""
+    result = await execute_generation_result(
+        settings,
+        mode=mode,
+        writer_service=writer_service,
+        source=source,
+        manage_pool=manage_pool,
+    )
+    return render_writer_handoff_message(
+        result.handoff,
+        human_message=result.human_message,
+    )

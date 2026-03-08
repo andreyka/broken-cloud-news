@@ -12,7 +12,9 @@ import pytest
 from bcn.agents.writer.service import WriterService
 from bcn.common.config import Settings
 from bcn.workflows.generation import execute_generation
+from bcn.workflows.generation import execute_generation_result
 from bcn.workflows.modes.common import parse_writer_handoff_payload
+from bcn.workflows.modes.common import WriterHandoffResult
 
 
 def _make_settings(**overrides) -> Settings:
@@ -32,6 +34,7 @@ def _make_writer_service(
     selected_items: list[dict],
     candidate: dict,
     artifact: dict | None = None,
+    selection_plan: dict | None = None,
 ):
     service = SimpleNamespace()
     service.selector = SimpleNamespace(high_signal_count=lambda items: 1)
@@ -40,6 +43,16 @@ def _make_writer_service(
         lambda items, recent_published=None, quiet_mode=False: selected_items
     )
     service.select_items_for_monthly_newsletter = lambda items: selected_items
+    service.select_items_for_workflow = AsyncMock(
+        return_value=selection_plan
+        or {
+            "decision": "generate",
+            "reason": "selection_ready",
+            "message": "",
+            "mode": "standard",
+            "selected_items": selected_items,
+        }
+    )
     service.generate_release_candidate = AsyncMock(return_value=candidate)
     service.build_release_artifact = AsyncMock(return_value=artifact or {})
     service.passes_critic_thresholds = lambda critique: bool(
@@ -70,6 +83,7 @@ def test_build_preference_rationale_summarizes_feedback():
 async def test_execute_generation_publishes_and_persists_trace():
     settings = _make_settings()
     item_id = uuid4()
+    dropped_item_id = uuid4()
     briefing_id = uuid4()
     run_id = uuid4()
     selected_items = [
@@ -78,8 +92,15 @@ async def test_execute_generation_publishes_and_persists_trace():
             "title": "Kubernetes issue",
             "summary": "Critical cluster issue",
             "url": "https://example.com/item",
+        },
+        {
+            "id": dropped_item_id,
+            "title": "Secondary issue",
+            "summary": "Lower-priority issue",
+            "url": "https://example.com/dropped",
         }
     ]
+    final_selected_items = [selected_items[0]]
     candidate = {
         "markdown": "Final body",
         "gate": {"passed": True},
@@ -87,6 +108,7 @@ async def test_execute_generation_publishes_and_persists_trace():
         "verifier": {"passed": True, "issues": [], "recommendations": []},
         "release_passed": True,
         "rewrites": 1,
+        "selected_items": final_selected_items,
         "rounds": [
             {
                 "round_index": 0,
@@ -150,13 +172,16 @@ async def test_execute_generation_publishes_and_persists_trace():
                     "summary": "Critical cluster issue",
                     "url": "https://example.com/item",
                     "published_at": datetime.now(timezone.utc),
+                },
+                {
+                    "id": dropped_item_id,
+                    "status": "WRITING",
+                    "title": "Secondary issue",
+                    "summary": "Lower-priority issue",
+                    "url": "https://example.com/dropped",
+                    "published_at": datetime.now(timezone.utc),
                 }
             ],
-        ),
-        patch(
-            "bcn.workflows.generation.get_recent_published_items",
-            new_callable=AsyncMock,
-            return_value=[],
         ),
         patch(
             "bcn.workflows.generation.get_recent_briefings",
@@ -201,19 +226,24 @@ async def test_execute_generation_publishes_and_persists_trace():
     assert handoff is not None
     assert handoff.decision == "publish"
     assert handoff.briefing_id == briefing_id
+    assert handoff.item_count == 1
+    service.select_items_for_workflow.assert_awaited_once()
     service.generate_release_candidate.assert_awaited_once()
     service.build_release_artifact.assert_awaited_once_with(
         briefing_body="Final body",
-        selected_items=selected_items,
+        selected_items=final_selected_items,
         mode="standard",
     )
     mock_create_run.assert_awaited_once()
+    assert mock_create_run.await_args.kwargs["selected_item_ids"] == [item_id]
+    assert mock_create_run.await_args.kwargs["selected_items"] == final_selected_items
     assert mock_append_round.await_count == 2
     mock_insert_pair.assert_awaited_once()
     mock_insert_briefing.assert_awaited_once()
+    assert mock_insert_briefing.await_args.kwargs["item_ids"] == [item_id]
     mock_finalize.assert_awaited_once()
     assert mock_finalize.await_args.kwargs["decision"] == "PUBLISHED"
-    mock_release.assert_awaited_once_with([item_id])
+    mock_release.assert_awaited_once_with([item_id, dropped_item_id])
 
 
 @pytest.mark.asyncio
@@ -261,11 +291,6 @@ async def test_execute_generation_blocks_publish_and_releases_claimed_items():
                     "published_at": datetime.now(timezone.utc),
                 }
             ],
-        ),
-        patch(
-            "bcn.workflows.generation.get_recent_published_items",
-            new_callable=AsyncMock,
-            return_value=[],
         ),
         patch(
             "bcn.workflows.generation.get_recent_briefings",
@@ -370,11 +395,6 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
             ],
         ),
         patch(
-            "bcn.workflows.generation.get_recent_published_items",
-            new_callable=AsyncMock,
-            return_value=[],
-        ),
-        patch(
             "bcn.workflows.generation.get_recent_briefings",
             new_callable=AsyncMock,
             return_value=[],
@@ -421,3 +441,59 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
     assert mock_finalize.await_args.kwargs["run_id"] == run_id
     assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
     mock_release.assert_awaited_once_with([item_id])
+
+
+@pytest.mark.asyncio
+async def test_execute_generation_result_returns_typed_handoff():
+    settings = _make_settings()
+    service = _make_writer_service(
+        selected_items=[],
+        candidate={},
+        selection_plan={
+            "decision": "skip",
+            "reason": "no_items_remained_after_selection_constraints",
+            "message": "No items remained after selection constraints. Skipping briefing.",
+            "mode": "quiet_day",
+            "selected_items": [],
+        },
+    )
+
+    with (
+        patch("bcn.workflows.generation.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.generation.finalize_stale_pending_generation_runs",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "bcn.workflows.generation.get_analyzed_items",
+            new_callable=AsyncMock,
+            return_value=[
+                {
+                    "id": uuid4(),
+                    "status": "WRITING",
+                    "title": "Low-signal issue",
+                    "summary": "Skipped issue",
+                    "url": "https://example.com/skipped",
+                    "published_at": datetime.now(timezone.utc),
+                }
+            ],
+        ),
+        patch(
+            "bcn.workflows.generation.release_items_from_writing",
+            new_callable=AsyncMock,
+        ) as mock_release,
+    ):
+        result = await execute_generation_result(
+            settings,
+            mode="regular_daily_briefing",
+            writer_service=service,
+            manage_pool=False,
+        )
+
+    assert isinstance(result, WriterHandoffResult)
+    assert result.handoff.decision == "skip"
+    assert result.handoff.mode == "regular_daily_briefing"
+    assert result.human_message == "No items remained after selection constraints. Skipping briefing."
+    service.generate_release_candidate.assert_not_awaited()
+    mock_release.assert_awaited_once()
