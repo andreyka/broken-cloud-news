@@ -12,6 +12,7 @@ from a2a.utils import new_agent_text_message
 from typing_extensions import override
 
 from bcn.agents.base import enqueue_event_safe
+from bcn.agents.writer.service import PostprocessedBriefing
 from bcn.agents.writer.service import WriterService
 from bcn.common.config import Settings
 from bcn.workflows.generation import REGULAR_DAILY_BRIEFING_MODE
@@ -162,7 +163,7 @@ class WriterExecutor(AgentExecutor):
         min_chars: int,
         target_chars: int,
         hard_max_chars: int,
-    ) -> str:
+    ) -> PostprocessedBriefing:
         return await self.service.postprocess_briefing(
             briefing_body=briefing_body,
             selected_items=selected_items,

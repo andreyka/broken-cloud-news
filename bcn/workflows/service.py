@@ -28,7 +28,7 @@ from bcn.workflows.automation import (
 )
 from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.distribution import execute_distribution
-from bcn.workflows.generation import execute_generation
+from bcn.workflows.generation import execute_generation_result
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import run_writer_distributor_handoff
@@ -53,7 +53,7 @@ async def execute_workflow_mode(
 
     return await run_writer_distributor_handoff(
         mode=mode,
-        run_generation=lambda workflow_mode: execute_generation(
+        run_generation=lambda workflow_mode: execute_generation_result(
             settings,
             mode=workflow_mode,
             source="workflow_service",
