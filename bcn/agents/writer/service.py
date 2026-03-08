@@ -725,7 +725,7 @@ class WriterService:
         self,
         items: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """Select a broader, diverse set of items for monthly mode."""
+        """Select a broader, story-deduped set of items for monthly mode."""
         min_items = max(1, int(self.settings.monthly_newsletter_min_items))
         max_items = max(min_items, int(self.settings.monthly_newsletter_max_items))
         per_domain_cap = max(
@@ -743,6 +743,8 @@ class WriterService:
         selected: list[dict[str, Any]] = []
         domain_counts: dict[str, int] = {}
         for item in ranked:
+            if self.selector.is_duplicate_of(item, selected):
+                continue
             url = str(item.get("url", "") or "")
             domain = (urlparse(url).netloc or "").strip().lower()
             if domain and domain_counts.get(domain, 0) >= per_domain_cap:
