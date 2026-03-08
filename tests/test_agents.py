@@ -1069,6 +1069,95 @@ class TestWriterExecutor:
             "https://third.example.com/three",
         }
 
+    def test_monthly_selection_dedupes_same_canonical_url(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            monthly_newsletter_min_items=1,
+            monthly_newsletter_max_items=3,
+            monthly_newsletter_max_items_per_domain=3,
+        )
+        executor = WriterExecutor(settings)
+
+        primary = {
+            "id": str(uuid4()),
+            "title": "Cloud metadata bypass in shared build workers",
+            "summary": "Primary write-up with patch guidance.",
+            "relevance_score": 10,
+            "source_type": "rss",
+            "url": "https://example.com/path?b=1",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        duplicate = {
+            "id": str(uuid4()),
+            "title": "Same issue from social link",
+            "summary": "Tweet linking the same article.",
+            "relevance_score": 8,
+            "source_type": "twitter",
+            "url": "https://www.example.com/path/?utm_source=digest&fbclid=abc&b=1",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        distinct = {
+            "id": str(uuid4()),
+            "title": "Kubernetes secret sync bug leaks bootstrap credentials",
+            "summary": "Separate cluster issue.",
+            "relevance_score": 9,
+            "source_type": "rss",
+            "url": "https://other.example.com/secret-sync-leak",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        selected = executor._select_items_for_monthly_newsletter(
+            [primary, duplicate, distinct]
+        )
+
+        assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
+
+    def test_monthly_selection_dedupes_same_issue_across_urls(self):
+        from bcn.agents.writer.agent import WriterExecutor
+
+        settings = _make_settings(
+            monthly_newsletter_min_items=1,
+            monthly_newsletter_max_items=3,
+            monthly_newsletter_max_items_per_domain=3,
+            briefing_novelty_title_similarity_threshold=0.99,
+        )
+        executor = WriterExecutor(settings)
+
+        primary = {
+            "id": str(uuid4()),
+            "title": "Flowise NVIDIA endpoint auth bypass advisory",
+            "summary": "GHSA-5f53-522j-j454 allows unauthenticated access.",
+            "relevance_score": 10,
+            "source_type": "ghsa",
+            "url": "https://github.com/advisories/GHSA-5f53-522j-j454",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        duplicate = {
+            "id": str(uuid4()),
+            "title": "NVIDIA NIM middleware whitelist exposes Flowise endpoints",
+            "summary": "Independent post on GHSA-5f53-522j-j454 in Flowise.",
+            "relevance_score": 9,
+            "source_type": "rss",
+            "url": "https://blog.example.com/flowise-nim-auth-bypass",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+        distinct = {
+            "id": str(uuid4()),
+            "title": "MLflow auth bypass enables artifact overwrite",
+            "summary": "CVE-2025-14297 affects self-hosted deployments.",
+            "relevance_score": 8,
+            "source_type": "rss",
+            "url": "https://tachyon.so/blog/cve-2025-14297-mlflow-authorization-bypass",
+            "published_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        selected = executor._select_items_for_monthly_newsletter(
+            [primary, duplicate, distinct]
+        )
+
+        assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
+
     def test_min_selected_fallback_preserves_recent_url_dedup(self):
         from bcn.agents.writer.agent import WriterExecutor
 
