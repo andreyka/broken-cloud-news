@@ -122,7 +122,7 @@ def story_url_key(url: str) -> str:
 
 
 def primary_story_issue_key(title: str, summary: str) -> str:
-    """Choose one stable issue/topic key for DB-level grouping."""
+    """Choose one strong issue key for DB-level grouping."""
     keys = story_issue_keys_from_text(f"{title} {summary}")
     if not keys:
         return ""
@@ -130,9 +130,4 @@ def primary_story_issue_key(title: str, summary: str) -> str:
     explicit_ids = sorted(
         key for key in keys if key.startswith("cve-") or key.startswith("ghsa-")
     )
-    if explicit_ids:
-        return explicit_ids[0]
-
-    topic_keys = sorted(key for key in keys if key.startswith("topic:"))
-    return topic_keys[0] if topic_keys else sorted(keys)[0]
-
+    return explicit_ids[0] if explicit_ids else ""

@@ -190,7 +190,13 @@ async def _backfill_recent_story_identity(
         """
         SELECT id, url, title, summary
         FROM news_items
-        WHERE (story_url_key IS NULL OR story_issue_key IS NULL)
+        WHERE (
+                story_url_key IS NULL
+                OR (
+                    story_issue_key IS NULL
+                    AND (COALESCE(title, '') || ' ' || COALESCE(summary, '')) ~* '(cve-[0-9]{4}-[0-9]+|ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})'
+                )
+              )
           AND published_at > NOW() - make_interval(days => $1)
         ORDER BY published_at DESC
         LIMIT $2
@@ -219,8 +225,7 @@ async def _backfill_recent_story_identity(
         """
         UPDATE news_items
         SET story_url_key = COALESCE($1, story_url_key),
-            story_issue_key = COALESCE($2, story_issue_key),
-            updated_at = NOW()
+            story_issue_key = COALESCE($2, story_issue_key)
         WHERE id = $3
         """,
         updates,

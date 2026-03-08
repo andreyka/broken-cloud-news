@@ -90,6 +90,37 @@ async def test_get_top_items_for_period_dedupes_by_story_identity():
 
 
 @pytest.mark.asyncio
+async def test_backfill_recent_story_identity_does_not_touch_updated_at():
+    import bcn.common.db as db
+
+    fake_pool = AsyncMock()
+    fake_pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "id": uuid4(),
+                "url": "https://example.com/advisory",
+                "title": "Cloud advisory",
+                "summary": "GHSA-ab12-cd34-ef56 affects kube auth.",
+            }
+        ]
+    )
+    fake_pool.executemany = AsyncMock()
+
+    with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db._backfill_recent_story_identity(limit=10, lookback_days=30)
+
+    fetch_sql = fake_pool.fetch.await_args.args[0]
+    assert "story_url_key IS NULL" in fetch_sql
+    assert "~*" in fetch_sql
+
+    update_sql = fake_pool.executemany.await_args.args[0]
+    assert "story_url_key = COALESCE($1, story_url_key)" in update_sql
+    assert "story_issue_key = COALESCE($2, story_issue_key)" in update_sql
+    assert "updated_at = NOW()" not in update_sql
+
+
+@pytest.mark.asyncio
 async def test_insert_evaluation_report_stores_lane_and_report():
     import bcn.common.db as db
 
