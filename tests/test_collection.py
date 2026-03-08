@@ -114,3 +114,81 @@ async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
     assert inserted_published_at == datetime(
         2026, 3, 6, 13, 0, 1, tzinfo=timezone.utc
     )
+
+
+@pytest.mark.asyncio
+async def test_insert_news_item_skips_invalid_published_at(monkeypatch):
+    from bcn.common.db import insert_news_item
+
+    fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
+
+    class _FakePool:
+        def __init__(self):
+            self.fetchrow = fetchrow_mock
+
+    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+
+    inserted = await insert_news_item(
+        source_type="rss",
+        source_id="rss-invalid",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="definitely-not-a-date",
+        raw_data={"feed_url": "https://example.com/feed.xml"},
+        full_content="Details",
+    )
+
+    assert inserted is None
+    fetchrow_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_insert_news_item_skips_empty_published_at(monkeypatch):
+    from bcn.common.db import insert_news_item
+
+    fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
+
+    class _FakePool:
+        def __init__(self):
+            self.fetchrow = fetchrow_mock
+
+    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+
+    inserted = await insert_news_item(
+        source_type="rss",
+        source_id="rss-empty",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="   ",
+        raw_data={"feed_url": "https://example.com/feed.xml"},
+        full_content="Details",
+    )
+
+    assert inserted is None
+    fetchrow_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_insert_news_item_skips_future_published_at(monkeypatch):
+    from bcn.common.db import insert_news_item
+
+    fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
+
+    class _FakePool:
+        def __init__(self):
+            self.fetchrow = fetchrow_mock
+
+    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+
+    inserted = await insert_news_item(
+        source_type="rss",
+        source_id="rss-future",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="2099-03-06T13:00:01Z",
+        raw_data={"feed_url": "https://example.com/feed.xml"},
+        full_content="Details",
+    )
+
+    assert inserted is None
+    fetchrow_mock.assert_not_awaited()

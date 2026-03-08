@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 import hashlib
@@ -28,6 +29,7 @@ _RETRY_ERROR_MAX_LEN = 512
 _ANALYSIS_TERMINAL_STATUS = "ANALYSIS_FAILED"
 _WRITING_TERMINAL_STATUS = "WRITING_FAILED"
 _DISTRIBUTION_TERMINAL_STATUS = "DISTRIBUTION_FAILED"
+_MAX_FUTURE_PUBLISHED_AT_SKEW = timedelta(hours=6)
 
 
 async def _get_or_create_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
@@ -184,7 +186,8 @@ async def insert_news_item(
         full_content: Scraped or enriched body text.
 
     Returns:
-        The UUID of the newly inserted row, or ``None`` if it already existed.
+        The UUID of the newly inserted row, or ``None`` if it already existed
+        or the timestamp is invalid.
     """
     if isinstance(published_at, str):
         raw = published_at.strip()
@@ -195,9 +198,20 @@ async def insert_news_item(
                 try:
                     pub_dt = parsedate_to_datetime(raw)
                 except (TypeError, ValueError):
-                    pub_dt = datetime.now(timezone.utc)
+                    logger.warning(
+                        "Skipping %s item %s due to invalid published_at: %r",
+                        source_type,
+                        source_id,
+                        published_at,
+                    )
+                    return None
         else:
-            pub_dt = datetime.now(timezone.utc)
+            logger.warning(
+                "Skipping %s item %s due to empty published_at",
+                source_type,
+                source_id,
+            )
+            return None
     else:
         pub_dt = published_at
 
@@ -205,6 +219,15 @@ async def insert_news_item(
         pub_dt = pub_dt.replace(tzinfo=timezone.utc)
     else:
         pub_dt = pub_dt.astimezone(timezone.utc)
+
+    if pub_dt > datetime.now(timezone.utc) + _MAX_FUTURE_PUBLISHED_AT_SKEW:
+        logger.warning(
+            "Skipping %s item %s due to future published_at: %s",
+            source_type,
+            source_id,
+            pub_dt.isoformat(),
+        )
+        return None
 
     pool = await get_pool()
     row = await pool.fetchrow(
