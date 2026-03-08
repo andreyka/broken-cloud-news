@@ -61,11 +61,10 @@ class SourceReviewLLM:
                     if str(signal).strip()
                 ],
             )
-        except Exception:
-            logger.warning("Failed to parse source review JSON, quarantining source")
-            return CollectionSourceReview(
-                decision="quarantine",
-                confidence="low",
-                rationale="LLM source review response was invalid JSON.",
-                signals=[],
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse source review JSON, leaving source pending review"
             )
+            raise ValueError(
+                "LLM source review response was invalid JSON."
+            ) from exc
