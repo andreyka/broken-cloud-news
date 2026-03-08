@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import logging
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -121,7 +122,7 @@ async def run_daemon(
                 sender=_local_sender,
             )
 
-    configure_scheduler_runtime(settings, agent_client=runtime_agent_client)
+    runtime = configure_scheduler_runtime(settings, agent_client=runtime_agent_client)
 
     await get_pool(settings)
     try:
@@ -215,46 +216,46 @@ async def run_daemon(
 
         async with AsyncScheduler() as scheduler:
             await scheduler.add_schedule(
-                job_collect_ghsa,
+                partial(job_collect_ghsa, runtime),
                 IntervalTrigger(hours=settings.ghsa_interval_hours),
                 id="ghsa_collector",
             )
             await scheduler.add_schedule(
-                job_collect_rss,
+                partial(job_collect_rss, runtime),
                 IntervalTrigger(hours=settings.rss_interval_hours),
                 id="rss_collector",
             )
             await scheduler.add_schedule(
-                job_collect_reddit,
+                partial(job_collect_reddit, runtime),
                 IntervalTrigger(hours=settings.reddit_interval_hours),
                 id="reddit_collector",
             )
             await scheduler.add_schedule(
-                job_collect_twitter,
+                partial(job_collect_twitter, runtime),
                 IntervalTrigger(hours=settings.twitter_interval_hours),
                 id="twitter_collector",
             )
             await scheduler.add_schedule(
-                job_analyze_items,
+                partial(job_analyze_items, runtime),
                 IntervalTrigger(minutes=settings.analyst_interval_minutes),
                 id="analyst",
             )
 
             if settings.shadow_enabled:
                 await scheduler.add_schedule(
-                    job_shadow_regular_briefing,
+                    partial(job_shadow_regular_briefing, runtime),
                     build_shadow_regular_briefing_trigger(settings),
                     id=f"{REGULAR_DAILY_BRIEFING_MODE}_shadow",
                 )
 
             await scheduler.add_schedule(
-                job_publish_daily_digest,
+                partial(job_publish_daily_digest, runtime),
                 build_regular_briefing_trigger(settings),
                 id=REGULAR_DAILY_BRIEFING_MODE,
             )
             if settings.monthly_newsletter_enabled:
                 await scheduler.add_schedule(
-                    job_publish_monthly_newsletter,
+                    partial(job_publish_monthly_newsletter, runtime),
                     build_regular_monthly_newsletter_trigger(settings),
                     id=REGULAR_MONTHLY_NEWSLETTER_MODE,
                 )

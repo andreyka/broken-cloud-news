@@ -11,7 +11,7 @@ import re
 from uuid import UUID
 
 from bcn.workflows.distribution import execute_distribution
-from bcn.workflows.runtime import require_runtime
+from bcn.workflows.runtime import WorkflowRuntime
 
 logger = logging.getLogger(__name__)
 _WRITER_HANDOFF_PREFIX = "writer_handoff::"
@@ -192,21 +192,24 @@ async def run_writer_distributor_handoff(
     return rendered_writer_result, distributor_result
 
 
-async def run_generation_and_distribution(mode: str) -> None:
+async def run_generation_and_distribution(
+    *,
+    runtime: WorkflowRuntime,
+    mode: str,
+) -> None:
     """Run one writer->distributor handoff cycle for the given workflow mode."""
     from bcn.workflows.generation import execute_generation_result
 
-    settings, agent_client = require_runtime()
     await run_writer_distributor_handoff(
         mode=mode,
         run_generation=lambda workflow_mode: execute_generation_result(
-            settings,
+            runtime.settings,
             mode=workflow_mode,
             source="scheduler",
             manage_pool=False,
         ),
         run_distribution=lambda dispatch_mode, briefing_id: execute_distribution(
-            settings,
+            runtime.settings,
             mode=dispatch_mode,
             briefing_id=briefing_id,
             manage_pool=False,
