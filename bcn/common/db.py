@@ -609,7 +609,7 @@ async def get_analyzed_items(
                   FROM briefing_items bi
                   JOIN briefings b ON b.id = bi.briefing_id
                   JOIN news_items published_item ON published_item.id = bi.news_item_id
-                  WHERE b.status = 'DISTRIBUTED'
+                  WHERE b.status IN ('DRAFT', 'DISTRIBUTING', 'DISTRIBUTED')
                     AND (
                         published_item.id = n.id
                         OR (
@@ -694,7 +694,7 @@ async def preview_analyzed_items(
                   FROM briefing_items bi
                   JOIN briefings b ON b.id = bi.briefing_id
                   JOIN news_items published_item ON published_item.id = bi.news_item_id
-                  WHERE b.status = 'DISTRIBUTED'
+                  WHERE b.status IN ('DRAFT', 'DISTRIBUTING', 'DISTRIBUTED')
                     AND (
                         published_item.id = n.id
                         OR (
@@ -771,6 +771,26 @@ async def get_top_items_for_period(
               AND n.relevance_score >= $2
               AND n.summary IS NOT NULL
               AND n.published_at > NOW() - make_interval(days => $3)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM briefing_items bi
+                  JOIN briefings b ON b.id = bi.briefing_id
+                  JOIN news_items briefing_item ON briefing_item.id = bi.news_item_id
+                  WHERE b.status IN ('DRAFT', 'DISTRIBUTING')
+                    AND (
+                        briefing_item.id = n.id
+                        OR (
+                            n.story_issue_key IS NOT NULL
+                            AND n.story_issue_key <> ''
+                            AND briefing_item.story_issue_key = n.story_issue_key
+                        )
+                        OR (
+                            n.story_url_key IS NOT NULL
+                            AND n.story_url_key <> ''
+                            AND briefing_item.story_url_key = n.story_url_key
+                        )
+                    )
+              )
         )
         SELECT *
         FROM ranked

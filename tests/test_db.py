@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_get_analyzed_items_excludes_only_distributed_briefings():
+async def test_get_analyzed_items_excludes_items_already_in_live_briefings():
     import bcn.common.db as db
 
     fake_pool = AsyncMock()
@@ -34,7 +34,7 @@ async def test_get_analyzed_items_excludes_only_distributed_briefings():
     assert "FROM briefing_items bi" in sql
     assert "JOIN briefings b ON b.id = bi.briefing_id" in sql
     assert "JOIN news_items published_item ON published_item.id = bi.news_item_id" in sql
-    assert "b.status = 'DISTRIBUTED'" in sql
+    assert "b.status IN ('DRAFT', 'DISTRIBUTING', 'DISTRIBUTED')" in sql
     assert "story_issue_key" in sql
     assert "story_url_key" in sql
     assert "ROW_NUMBER() OVER" in sql
@@ -62,7 +62,7 @@ async def test_preview_analyzed_items_is_read_only():
     assert "story_rank = 1" in sql
     assert "status = 'ANALYZED'" in sql
     assert "UPDATE news_items" not in sql
-    assert "b.status = 'DISTRIBUTED'" in sql
+    assert "b.status IN ('DRAFT', 'DISTRIBUTING', 'DISTRIBUTED')" in sql
 
 
 @pytest.mark.asyncio
@@ -87,6 +87,7 @@ async def test_get_top_items_for_period_dedupes_by_story_identity():
     assert "story_issue_key" in sql
     assert "story_url_key" in sql
     assert "story_rank = 1" in sql
+    assert "b.status IN ('DRAFT', 'DISTRIBUTING')" in sql
 
 
 @pytest.mark.asyncio

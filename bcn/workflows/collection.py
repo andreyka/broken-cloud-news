@@ -206,13 +206,13 @@ async def _source_is_active(
             source_key=descriptor.source_key,
             source_type=descriptor.source_type,
             display_name=descriptor.display_name,
-            state="QUARANTINED",
+            state="PENDING_REVIEW",
             raw_config=descriptor.raw_config,
             review_reason=f"source_review_error: {type(exc).__name__}",
-            review_payload={"decision": "quarantine", "error": str(exc)},
+            review_payload={"error": str(exc), "origin": "source_review_error"},
         )
         logger.warning(
-            "Quarantined new source %s after source review error: %s",
+            "Left new source %s pending review after source review error: %s",
             descriptor.source_key,
             exc,
         )

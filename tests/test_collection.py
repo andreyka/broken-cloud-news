@@ -225,6 +225,68 @@ async def test_execute_collection_quarantines_new_source_when_review_rejects(
 
 
 @pytest.mark.asyncio
+async def test_execute_collection_keeps_new_source_pending_when_review_errors(
+    monkeypatch,
+):
+    settings = _make_settings(source_review_enabled=True)
+    collected_item = CollectedNewsItem(
+        source_type="rss",
+        source_id="rss-1",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="2026-01-01T00:00:00Z",
+        raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
+        full_content="Details",
+    )
+    collector_service = AsyncMock()
+    collector_service.collect_rss_items.return_value = [collected_item]
+
+    insert_mock = AsyncMock(return_value=uuid4())
+    upsert_mock = AsyncMock()
+    review_record_mock = AsyncMock()
+    review_mock = AsyncMock(side_effect=RuntimeError("llm timeout"))
+
+    monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.workflows.collection.insert_news_item", insert_mock)
+    monkeypatch.setattr(
+        "bcn.workflows.collection.get_collection_source",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.collection.collection_source_has_historical_items",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.collection.upsert_collection_source",
+        upsert_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.collection.record_collection_source_review",
+        review_record_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.collection.SourceReviewLLM.review_source",
+        review_mock,
+    )
+
+    result = await execute_collection(
+        settings,
+        source="rss",
+        collector_service=collector_service,
+        origin="test",
+        manage_pool=False,
+    )
+
+    assert result == "RSS: collected 0 items"
+    insert_mock.assert_not_awaited()
+    review_record_mock.assert_not_awaited()
+    assert any(
+        call.kwargs.get("state") == "PENDING_REVIEW"
+        for call in upsert_mock.await_args_list
+    )
+
+
+@pytest.mark.asyncio
 async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
     from bcn.common.db import insert_news_item
 
