@@ -7,11 +7,11 @@ from uuid import uuid4
 
 import pytest
 
-from bcn.agents.critic.service import CritiqueRequest
-from bcn.agents.critic.service import render_critique_request_payload
-from bcn.agents.verifier.service import VerificationRequest
-from bcn.agents.verifier.service import render_verification_request_payload
 from bcn.common.config import Settings
+from bcn.contracts.review import CritiqueRequest
+from bcn.contracts.review import VerificationRequest
+from bcn.contracts.review import render_critique_request_payload
+from bcn.contracts.review import render_verification_request_payload
 from bcn.workflows.review import execute_critique
 from bcn.workflows.review import execute_verification
 
@@ -25,24 +25,6 @@ def _make_settings(**overrides) -> Settings:
     }
     defaults.update(overrides)
     return Settings(**defaults)
-
-
-class _FakeEventQueue:
-    def __init__(self):
-        self.events: list = []
-
-    def enqueue_event(self, event):
-        self.events.append(event)
-
-
-def _fake_context(text: str):
-    from a2a.server.agent_execution import RequestContext
-    from a2a.types import Message
-    from a2a.types import MessageSendParams
-    from a2a.types import TextPart
-
-    msg = Message(role="user", parts=[TextPart(text=text)], message_id=uuid4().hex)
-    return RequestContext(request=MessageSendParams(message=msg))
 
 
 @pytest.mark.asyncio
@@ -133,79 +115,3 @@ async def test_execute_verification_with_explicit_markdown_skips_latest_lookup()
     assert request.source == "cli"
     payload = json.loads(result)
     assert payload["verifier_score"] == 95
-
-
-@pytest.mark.asyncio
-async def test_critic_executor_requires_explicit_payload():
-    from bcn.agents.critic.agent import CriticExecutor
-
-    settings = _make_settings()
-    executor = CriticExecutor(settings)
-
-    try:
-        eq = _FakeEventQueue()
-        await executor.execute(_fake_context("critique_latest"), eq)
-    finally:
-        await executor.close()
-
-    assert any("explicit briefing payload" in str(event).lower() for event in eq.events)
-
-
-@pytest.mark.asyncio
-async def test_critic_executor_evaluates_explicit_payload():
-    from bcn.agents.critic.agent import CriticExecutor
-
-    settings = _make_settings()
-    executor = CriticExecutor(settings)
-    payload = render_critique_request_payload(
-        CritiqueRequest(
-            draft_markdown="**Draft**",
-            items=({"url": "https://example.com/one", "title": "One"},),
-            source="briefing:test",
-        )
-    )
-
-    try:
-        with patch.object(
-            executor._service,
-            "evaluate",
-            new_callable=AsyncMock,
-            return_value={"source": "briefing:test", "critic_score": 88},
-        ) as mock_evaluate:
-            eq = _FakeEventQueue()
-            await executor.execute(_fake_context(payload), eq)
-    finally:
-        await executor.close()
-
-    mock_evaluate.assert_awaited_once()
-    assert any('"critic_score": 88' in str(event) for event in eq.events)
-
-
-@pytest.mark.asyncio
-async def test_verifier_executor_evaluates_explicit_payload():
-    from bcn.agents.verifier.agent import VerifierExecutor
-
-    settings = _make_settings()
-    executor = VerifierExecutor(settings)
-    payload = render_verification_request_payload(
-        VerificationRequest(
-            draft_markdown="**Draft**",
-            items=({"url": "https://example.com/one", "title": "One"},),
-            source="briefing:test",
-        )
-    )
-
-    try:
-        with patch.object(
-            executor._service,
-            "evaluate",
-            new_callable=AsyncMock,
-            return_value={"source": "briefing:test", "verifier_score": 92},
-        ) as mock_evaluate:
-            eq = _FakeEventQueue()
-            await executor.execute(_fake_context(payload), eq)
-    finally:
-        await executor.close()
-
-    mock_evaluate.assert_awaited_once()
-    assert any('"verifier_score": 92' in str(event) for event in eq.events)

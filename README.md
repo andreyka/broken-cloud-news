@@ -9,9 +9,9 @@
 Broken Cloud News is now organized around a control plane plus domain services.
 The workflow and evaluation layers own scheduling, retries, persistence, and DB
 state transitions. Collection, analysis, generation, review, and distribution
-logic live behind simple service boundaries. Optional A2A adapters still exist
-for remote worker compatibility, but they are no longer the source of workflow
-state.
+logic live behind simple service boundaries and typed contracts. Local
+deployments call those services in-process; remote deployments can hang HTTP
+adapters off the same contracts behind a load balancer.
 
 <div align="center">
 
@@ -47,12 +47,12 @@ flowchart TB
         DB[("PostgreSQL")]:::db
     end
 
-    subgraph Adapters["Optional A2A Adapters"]
-        CollectorAdapter["Collector Adapter"]:::adapter
-        AnalystAdapter["Analyst Adapter"]:::adapter
-        WriterAdapter["Writer Adapter"]:::adapter
-        CriticAdapter["Critic Adapter"]:::adapter
-        VerifierAdapter["Verifier Adapter"]:::adapter
+    subgraph Adapters["Optional Transport Adapters"]
+        CollectorAdapter["Collector HTTP Adapter"]:::adapter
+        AnalystAdapter["Analyst HTTP Adapter"]:::adapter
+        WriterAdapter["Writer HTTP Adapter"]:::adapter
+        CriticAdapter["Critic HTTP Adapter"]:::adapter
+        VerifierAdapter["Verifier HTTP Adapter"]:::adapter
     end
 
     subgraph AI["AI Models"]
@@ -107,18 +107,18 @@ flowchart TB
 
 ### Service Boundaries
 
-| Boundary | Current owner | Optional A2A adapter | Role |
-|----------|---------------|----------------------|------|
-| **Collection** | `bcn/workflows/collection.py` + `bcn/agents/collector/service.py` | Yes | Fetch GHSA, RSS, Reddit, Twitter/X and persist items |
-| **Analysis** | `bcn/workflows/analysis.py` + `bcn/agents/analyst/service.py` | Yes | Score relevance, summarize, and persist analyzed updates |
-| **Generation** | `bcn/workflows/generation.py` + `bcn/agents/writer/service.py` | Yes | Build briefings/newsletters, run rewrite loop, persist outcome |
-| **Review** | `bcn/workflows/review.py` + critic/verifier services | Yes | Evaluate explicit draft payloads for quality and verification |
-| **Distribution** | `bcn/workflows/distribution.py` + `bcn/agents/distributor/service.py` | No | Deliver briefing to Telegram, Discord, and email |
+| Boundary | Current owner | Remote-ready contract | Role |
+|----------|---------------|-----------------------|------|
+| **Collection** | `bcn/workflows/collection.py` + `bcn/agents/collector/service.py` | Planned HTTP adapter | Fetch GHSA, RSS, Reddit, Twitter/X and persist items |
+| **Analysis** | `bcn/workflows/analysis.py` + `bcn/agents/analyst/service.py` | Planned HTTP adapter | Score relevance, summarize, and persist analyzed updates |
+| **Generation** | `bcn/workflows/generation.py` + `bcn/agents/writer/service.py` | `bcn/contracts/workflow.py` | Build briefings/newsletters, run rewrite loop, persist outcome |
+| **Review** | `bcn/workflows/review.py` + critic/verifier services | `bcn/contracts/review.py` | Evaluate explicit draft payloads for quality and verification |
+| **Distribution** | `bcn/workflows/distribution.py` + `bcn/agents/distributor/service.py` | Planned HTTP adapter | Deliver briefing to Telegram, Discord, and email |
 
 State ownership is now explicit:
 - the control plane owns DB transitions, retries, and orchestration
 - domain services do the work and return structured results
-- A2A adapters are compatibility and remote-worker transport only
+- cross-service payloads live in `bcn/contracts`
 - distribution is a plain service, not an agent
 
 ### Orchestration Layer
@@ -136,36 +136,34 @@ The CLI is thin now. Main orchestration is not embedded in `cli.py`.
   [`bcn/workflows/distribution.py`](bcn/workflows/distribution.py), and
   [`bcn/workflows/review.py`](bcn/workflows/review.py) own control-plane state
   transitions.
-- [`bcn/common/agent_client.py`](bcn/common/agent_client.py) and
-  [`bcn/common/agent_runtime.py`](bcn/common/agent_runtime.py) provide the
-  transport layer for in-process execution and optional A2A calls.
+- [`bcn/contracts/`](bcn/contracts/) defines the typed request/result payloads
+  shared across workflow and review boundaries.
 
 Important distinction:
 - This orchestration layer is a `service layer in code`, not a separately
-  deployed network service.
-- In the current deployment, `bcn run` still starts the scheduler and the
-  compatibility A2A adapters inside the BCN app/container.
-- The remote-worker boundary exists, but today the default deployment is still
-  `co-deployed`.
+  deployed network service by itself.
+- `bcn run` starts the scheduler/control plane only.
+- Remote deployment is expected to happen through explicit service adapters,
+  not hidden in-process agent servers.
 
 So the current architecture is best described as a `control-plane modular
-monolith with optional A2A worker adapters`, not a fully split microservice
-system.
+system with microservice-ready service contracts`. Workflow state is still
+centralized, but the service seams are now straightforward to expose remotely.
 
 ### Deployment Model
 
 Today there are two different layers to keep in mind:
 
-- `Code architecture`: control-plane services, domain services, optional A2A
-  adapters, DB layer, and channel distributors.
+- `Code architecture`: control-plane services, domain services, typed
+  contracts, DB layer, and channel distributors.
 - `Deployment architecture`: one main BCN daemon/container, one Postgres
   container, one dashboard container, and supporting proxy/bridge containers.
 
 That means:
-- in `daemon mode`, the workflow service owns the pipeline and can call either
-  local services or compatibility A2A adapters
+- in `daemon mode`, the workflow service owns the pipeline and calls local
+  services by default
 - CLI commands run through service boundaries, not directly through stateful
-  agents
+  wrappers
 - all business state still lives in one Postgres database
 - benchmark, shadow, and replay lanes are internal evaluation services, not
   separate deployed apps
@@ -174,19 +172,15 @@ That means:
 
 ### Next Steps
 
-The remaining cleanup is about simplifying transport, not moving more state:
+The remaining work is about adding explicit transport adapters where remote
+deployment is worth the complexity:
 
-1. Make `bcn run` start the scheduler and control plane by default, without
-   automatically serving every A2A adapter.
-2. Replace the current always-on compatibility wrappers with explicit
-   worker-serving commands such as `serve-agent --agent writer` for the small
-   set of workers we actually want to deploy remotely.
-3. Trim [`bcn/common/agent_client.py`](bcn/common/agent_client.py) to the
-   remote-worker surface we still support and remove no-longer-needed legacy
-   methods such as distributor and `*_latest` compatibility helpers.
-4. After that, decide per worker whether it should remain co-deployed or move to
-   a separate machine. The architecture boundary is already clean enough for
-   that decision.
+1. Add HTTP adapters for `writer`, `critic`, and `verifier` first, because they
+   are the most natural candidates for separate scaling and GPU placement.
+2. Keep scheduler and DB-state transitions in the control plane unless there is
+   a strong reason to decentralize them.
+3. Add service discovery / load-balancer URLs only when a remote adapter exists,
+   instead of keeping dead config around speculatively.
 
 ---
 
@@ -241,14 +235,14 @@ bcn workflow-run --mode ad_hoc
 bcn pipeline --mode regular_daily_briefing
 ```
 
-**Daemon mode** (all agents + scheduler):
+**Daemon mode** (scheduler + recurring jobs):
 ```bash
 bcn run
 ```
 
 `bcn run` now delegates to the workflow orchestration service in
-[`bcn/workflows/service.py`](bcn/workflows/service.py), which boots the A2A
-agents, scheduler, and recurring jobs.
+[`bcn/workflows/service.py`](bcn/workflows/service.py), which boots the
+scheduler and recurring jobs.
 
 **Docker (full stack):**
 ```bash
@@ -419,37 +413,15 @@ BCN_COMFYUI_URL=http://<comfyui-host>:8188
 
 ---
 
-## Optional A2A Protocol
+## Typed Service Contracts
 
-Optional remote workers expose a standard Google A2A interface:
-- Agent Card at `GET /.well-known/agent.json`
-- Message handling via JSON-RPC
+Inter-service boundaries are defined in `bcn/contracts/`:
+- `workflow.py` for writer handoff results
+- `review.py` for critic/verifier request payloads
 
-This protocol is no longer the source of orchestration or DB state ownership.
-It is a transport boundary used when BCN wants to run a worker out-of-process.
-
-```python
-from a2a.client import A2AClient
-from a2a.types import Message
-from a2a.types import MessageSendParams
-from a2a.types import SendMessageRequest
-from a2a.types import TextPart
-import httpx
-from uuid import uuid4
-
-async with httpx.AsyncClient(timeout=180) as http:
-    client = A2AClient(http, url="http://localhost:9001")
-    message = Message(
-        role="user",
-        parts=[TextPart(text="collect_rss")],
-        message_id=uuid4().hex,
-    )
-    request = SendMessageRequest(
-        id=uuid4().hex,
-        params=MessageSendParams(message=message),
-    )
-    response = await client.send_message(request)
-```
+Those contracts are deliberately transport-agnostic. A future HTTP or queue
+adapter should serialize these types directly instead of introducing a second
+competing payload format.
 
 ---
 
@@ -465,8 +437,9 @@ bcn/
     comfyui.py        ComfyUI Flux client (cover images)
     scraper.py        Playwright headless Chromium scraper
     url_policy.py     SSRF policy + URL normalization helpers
-    agent_client.py   Typed local/remote worker client interface
-    agent_runtime.py  Reusable A2A transport + direct agent execution helpers
+  contracts/
+    workflow.py       Writer handoff contracts
+    review.py         Critic / verifier request contracts
   evaluation/
     README.md         Replay / benchmark / shadow lane documentation
     lanes.py          Benchmark + shadow lane logic
@@ -478,7 +451,7 @@ bcn/
     generation.py     Generation control plane (claim + finalize)
     distribution.py   Distribution control plane (claim + persist)
     review.py         Critique/verification control plane
-    runtime.py        Shared runtime wiring (settings + sender)
+    runtime.py        Shared runtime wiring (settings only)
     automation.py     Scheduler jobs + mode facade
     service.py        Daemon startup + workflow-mode orchestration
     modes/
@@ -487,26 +460,18 @@ bcn/
       ad_hoc.py
       regular_monthly_newsletter.py
   agents/
-    base.py           A2A agent boilerplate
-    service.py        CLI-facing service wrappers
     collector/
       service.py      Pure collection logic
-      agent.py        Optional A2A wrapper over collection service
     analyst/
       service.py      Pure analysis logic
-      agent.py        Optional A2A wrapper over analysis service
     writer/
       service.py      Pure generation logic
-      agent.py        Optional A2A wrapper over generation control plane
     critic/
       service.py      Pure critique logic
-      agent.py        Optional A2A wrapper over critique service
     verifier/
       service.py      Pure verification logic
-      agent.py        Optional A2A wrapper over verification service
     distributor/
       service.py      Plain multi-channel delivery logic
-      agent.py        Legacy compatibility wrapper only
   briefing/
     selection.py      Ranking + diversity-aware item selection
     quality.py        Deterministic quality gate checks

@@ -1,4 +1,4 @@
-"""Distributor domain service shared by the agent and control plane."""
+"""Distributor domain service shared by the control plane and transport adapters."""
 
 from __future__ import annotations
 

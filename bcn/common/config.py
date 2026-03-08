@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -15,23 +14,6 @@ from pydantic_settings import SettingsConfigDict
 
 class Settings(BaseSettings):
     """BCN configuration backed by ``BCN_``-prefixed environment variables."""
-
-    _AGENT_PORT_FIELDS = {
-        "collector": "collector_port",
-        "analyst": "analyst_port",
-        "writer": "writer_port",
-        "distributor": "distributor_port",
-        "critic": "critic_port",
-        "verifier": "verifier_port",
-    }
-    _AGENT_URL_FIELDS = {
-        "collector": "collector_agent_url",
-        "analyst": "analyst_agent_url",
-        "writer": "writer_agent_url",
-        "distributor": "distributor_agent_url",
-        "critic": "critic_agent_url",
-        "verifier": "verifier_agent_url",
-    }
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -157,26 +139,6 @@ class Settings(BaseSettings):
     def _validate_telegram_overflow_mode(cls, v: str) -> str:
         mode = (v or "").strip().lower()
         return mode if mode in {"smart", "always", "never"} else "smart"
-
-    @field_validator(
-        "collector_agent_url",
-        "analyst_agent_url",
-        "writer_agent_url",
-        "distributor_agent_url",
-        "critic_agent_url",
-        "verifier_agent_url",
-    )
-    @classmethod
-    def _validate_agent_url(cls, v: str) -> str:
-        value = str(v or "").strip()
-        if not value:
-            return ""
-        parsed = urlparse(value)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError(
-                f"Invalid agent URL '{value}'; expected absolute http(s) URL"
-            )
-        return value.rstrip("/")
 
     @field_validator("briefing_gate_mode")
     @classmethod
@@ -393,20 +355,6 @@ class Settings(BaseSettings):
     discord_bot_token: str = ""
     discord_channel_id: str = ""
 
-    # Agent ports
-    collector_port: int = 9001
-    analyst_port: int = 9002
-    writer_port: int = 9003
-    distributor_port: int = 9004
-    critic_port: int = 9005
-    verifier_port: int = 9006
-    collector_agent_url: str = ""
-    analyst_agent_url: str = ""
-    writer_agent_url: str = ""
-    distributor_agent_url: str = ""
-    critic_agent_url: str = ""
-    verifier_agent_url: str = ""
-
     # Scheduling
     ghsa_interval_hours: int = 4
     rss_interval_hours: int = 2
@@ -426,7 +374,6 @@ class Settings(BaseSettings):
     shadow_minutes_before_publish: int = 45
     shadow_candidate_overrides_path: str = ""
     shadow_include_text: bool = False
-    a2a_request_timeout_seconds: int = 180
     generation_run_stale_pending_minutes: int = 180
     analysis_retry_max_attempts: int = 5
     analysis_retry_base_delay_seconds: int = 300
@@ -476,30 +423,6 @@ class Settings(BaseSettings):
     briefing_monthly_hard_max_chars: int = 7800
     briefing_skip_if_no_high_signal: bool = True
 
-    def agent_port(self, agent_name: str) -> int:
-        """Return the configured port for the named local agent service."""
-        port_field = self._AGENT_PORT_FIELDS.get(str(agent_name or "").strip().lower())
-        if port_field is None:
-            raise ValueError(f"Unknown agent name: {agent_name}")
-        return int(getattr(self, port_field))
-
-    def agent_url(self, agent_name: str) -> str:
-        """Return the resolved A2A base URL for the named agent service."""
-        normalized = str(agent_name or "").strip().lower()
-        url_field = self._AGENT_URL_FIELDS.get(normalized)
-        if url_field is None:
-            raise ValueError(f"Unknown agent name: {agent_name}")
-        configured_url = str(getattr(self, url_field) or "").strip().rstrip("/")
-        if configured_url:
-            return configured_url
-        return f"http://localhost:{self.agent_port(normalized)}"
-
-    def has_agent_url_overrides(self) -> bool:
-        """Return True when any agent endpoint is configured explicitly."""
-        return any(
-            bool(str(getattr(self, field_name) or "").strip())
-            for field_name in self._AGENT_URL_FIELDS.values()
-        )
     briefing_min_high_signal_to_publish: int = 1
     briefing_single_item_min_chars: int = 450
     briefing_single_item_target_chars: int = 850

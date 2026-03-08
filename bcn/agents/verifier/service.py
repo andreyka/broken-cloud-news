@@ -1,81 +1,17 @@
-"""Verifier domain service shared by the control plane and legacy agent."""
+"""Verifier domain service shared by the control plane and transport adapters."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import json
 import logging
 from typing import Any
 
 from bcn.briefing.verifier import BriefingFactVerifier
 from bcn.common.config import Settings
+from bcn.contracts.review import VerificationRequest
+from bcn.contracts.review import parse_verification_request_payload
+from bcn.contracts.review import render_verification_request_payload
 
 logger = logging.getLogger(__name__)
-
-_VERIFICATION_REQUEST_PREFIX = "verify_briefing::"
-
-
-@dataclass(frozen=True)
-class VerificationRequest:
-    """Explicit verifier input prepared by the control plane."""
-
-    draft_markdown: str
-    items: tuple[dict[str, Any], ...] = ()
-    mode: str = "standard"
-    source: str = "input"
-
-
-def render_verification_request_payload(request: VerificationRequest) -> str:
-    """Render a structured verification request for agent transport."""
-    payload = {
-        "draft_markdown": request.draft_markdown,
-        "items": list(request.items),
-        "mode": str(request.mode or "standard"),
-        "source": str(request.source or "input"),
-    }
-    return _VERIFICATION_REQUEST_PREFIX + json.dumps(
-        payload,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-        default=str,
-    )
-
-
-def parse_verification_request_payload(text: str) -> VerificationRequest | None:
-    """Parse a structured verification request from agent input text."""
-    raw_text = str(text or "").strip()
-    if not raw_text or raw_text.lower() == "verify_latest":
-        return None
-    if raw_text.startswith("verify_markdown::"):
-        return VerificationRequest(
-            draft_markdown=raw_text.split("::", 1)[1].strip(),
-        )
-    if not raw_text.startswith(_VERIFICATION_REQUEST_PREFIX):
-        return VerificationRequest(draft_markdown=raw_text)
-
-    raw_payload = raw_text[len(_VERIFICATION_REQUEST_PREFIX) :].strip()
-    if not raw_payload:
-        return None
-
-    try:
-        decoded = json.loads(raw_payload)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(decoded, dict):
-        return None
-
-    draft_markdown = str(decoded.get("draft_markdown") or "").strip()
-    if not draft_markdown:
-        return None
-
-    items_raw = decoded.get("items", [])
-    return VerificationRequest(
-        draft_markdown=draft_markdown,
-        items=tuple(item for item in items_raw if isinstance(item, dict)),
-        mode=str(decoded.get("mode") or "standard").strip() or "standard",
-        source=str(decoded.get("source") or "input").strip() or "input",
-    )
 
 
 class VerifierService:

@@ -146,39 +146,6 @@ def test_parse_writer_handoff_payload_publish():
     assert payload.item_count == 3
 
 
-def test_extract_text_from_rpc_result_supports_message_parts():
-    handoff = (
-        'writer_handoff::{"briefing_id":"123e4567-e89b-12d3-a456-426614174000",'
-        '"decision":"publish","item_count":5,"mode":"regular_daily_briefing"}'
-    )
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "abc",
-        "result": {
-            "kind": "message",
-            "messageId": "msg-1",
-            "parts": [{"kind": "text", "text": f"{handoff}\nBriefing created"}],
-            "role": "agent",
-        },
-    }
-
-    assert cli_module._extract_text_from_rpc_result(payload) == (
-        f"{handoff}\nBriefing created"
-    )
-
-
-def test_extract_text_from_rpc_result_keeps_artifact_compatibility():
-    payload = {
-        "jsonrpc": "2.0",
-        "id": "abc",
-        "result": {
-            "artifacts": [{"parts": [{"kind": "text", "text": "artifact-text"}]}],
-        },
-    }
-
-    assert cli_module._extract_text_from_rpc_result(payload) == "artifact-text"
-
-
 @pytest.mark.asyncio
 async def test_run_writer_distributor_handoff_uses_shared_skill_format():
     briefing_id = uuid4()
@@ -328,10 +295,10 @@ def test_build_regular_monthly_newsletter_trigger():
 
 @pytest.mark.asyncio
 async def test_job_analyze_items_uses_control_plane(monkeypatch):
-    settings = Settings(analyst_port=9002)
+    settings = Settings()
     analysis_mock = AsyncMock(return_value="Analyzed 3/3 items")
     monkeypatch.setattr("bcn.workflows.automation.execute_analysis", analysis_mock)
-    runtime = configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings)
 
     await job_analyze_items(runtime)
 
@@ -356,7 +323,7 @@ async def test_collect_jobs_use_control_plane(monkeypatch, job_func, source):
     settings = Settings()
     collect_mock = AsyncMock(return_value=f"{source}: ok")
     monkeypatch.setattr("bcn.workflows.automation.execute_collection", collect_mock)
-    runtime = configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings)
 
     await job_func(runtime)
 
@@ -370,7 +337,7 @@ async def test_collect_jobs_use_control_plane(monkeypatch, job_func, source):
 
 @pytest.mark.asyncio
 async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypatch):
-    settings = Settings(writer_port=9003, distributor_port=9004)
+    settings = Settings()
     briefing_id = uuid4()
     generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
@@ -386,7 +353,7 @@ async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypa
         generation_mock,
     )
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    runtime = configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings)
 
     await job_publish_regular_briefing(runtime)
 
@@ -406,7 +373,7 @@ async def test_job_publish_regular_briefing_distributes_target_briefing(monkeypa
 
 @pytest.mark.asyncio
 async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips():
-    settings = Settings(writer_port=9003, distributor_port=9004)
+    settings = Settings()
     generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
             mode=REGULAR_DAILY_BRIEFING_MODE,
@@ -415,7 +382,7 @@ async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips
         )
     )
     with patch("bcn.workflows.generation.execute_generation_result", generation_mock):
-        runtime = configure_scheduler_runtime(settings, AsyncMock())
+        runtime = configure_scheduler_runtime(settings)
 
         await job_publish_regular_briefing(runtime)
 
@@ -429,7 +396,7 @@ async def test_job_publish_regular_briefing_skips_distribution_when_writer_skips
 
 @pytest.mark.asyncio
 async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode(monkeypatch):
-    settings = Settings(writer_port=9003, distributor_port=9004)
+    settings = Settings()
     briefing_id = uuid4()
     generation_mock = AsyncMock(
         return_value=render_writer_handoff_payload(
@@ -445,7 +412,7 @@ async def test_job_publish_regular_monthly_newsletter_uses_monthly_mode(monkeypa
         generation_mock,
     )
     monkeypatch.setattr("bcn.workflows.modes.common.execute_distribution", distribute_mock)
-    runtime = configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings)
 
     await job_publish_regular_monthly_newsletter(runtime)
 
@@ -472,7 +439,7 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
         shadow_candidate_overrides_path=str(overrides_path),
         shadow_include_text=True,
     )
-    runtime = configure_scheduler_runtime(settings, AsyncMock())
+    runtime = configure_scheduler_runtime(settings)
 
     run_mock = AsyncMock(
         return_value={
@@ -523,7 +490,7 @@ def test_distribute_command_delegates_to_distribution_service(monkeypatch):
 def test_collect_command_delegates_to_collection_service(monkeypatch):
     runner = CliRunner()
     run_mock = AsyncMock(return_value="GHSA: collected 1 items")
-    monkeypatch.setattr(cli_module, "collect_news", run_mock)
+    monkeypatch.setattr(cli_module, "execute_collection", run_mock)
 
     result = runner.invoke(cli_module.cli, ["collect", "--source", "ghsa"])
 
@@ -531,7 +498,11 @@ def test_collect_command_delegates_to_collection_service(monkeypatch):
     assert "GHSA: collected 1 items" in result.output
     assert run_mock.await_count == 1
     assert isinstance(run_mock.await_args.args[0], Settings)
-    assert run_mock.await_args.kwargs == {"source": "ghsa"}
+    assert run_mock.await_args.kwargs == {
+        "source": "ghsa",
+        "origin": "cli",
+        "manage_pool": True,
+    }
 
 
 def test_critique_command_delegates_to_control_plane(monkeypatch):
@@ -654,4 +625,4 @@ def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):
     settings_arg = daemon_mock.await_args.args[0]
     assert isinstance(settings_arg, Settings)
     assert daemon_mock.await_args.kwargs["emit"] is click.echo
-    assert daemon_mock.await_args.kwargs["agent_client"] is not None
+    assert daemon_mock.await_args.kwargs == {"emit": click.echo}

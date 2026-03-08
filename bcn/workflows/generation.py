@@ -21,9 +21,9 @@ from bcn.common.db import get_top_items_for_period
 from bcn.common.db import insert_briefing
 from bcn.common.db import insert_generation_preference_pair
 from bcn.common.db import release_items_from_writing
-from bcn.workflows.modes.common import WriterHandoff
-from bcn.workflows.modes.common import WriterHandoffResult
-from bcn.workflows.modes.common import render_writer_handoff_message
+from bcn.contracts.workflow import WriterHandoff
+from bcn.contracts.workflow import WriterHandoffResult
+from bcn.contracts.workflow import render_writer_handoff_message
 
 logger = logging.getLogger(__name__)
 
