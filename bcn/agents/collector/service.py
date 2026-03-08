@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import datetime
 from datetime import timezone
+from email.utils import parsedate_to_datetime
 import html
 import logging
 import re
@@ -161,6 +163,57 @@ class CollectorService:
         text = html.unescape(text)
         return re.sub(r"\s+", " ", text).strip()
 
+    @staticmethod
+    def _feed_entry_value(entry: Any, field: str) -> Any:
+        """Read one feed field without feedparser's attribute alias fallback."""
+        if hasattr(entry, "get"):
+            return entry.get(field)
+        return getattr(entry, field, None)
+
+    @staticmethod
+    def _coerce_feed_datetime(value: Any) -> datetime | None:
+        """Normalize feed date values into aware UTC datetimes."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                try:
+                    dt = parsedate_to_datetime(raw)
+                except (TypeError, ValueError):
+                    return None
+        elif hasattr(value, "tm_year") and hasattr(value, "tm_mon"):
+            dt = datetime.fromtimestamp(calendar.timegm(value), tz=timezone.utc)
+        else:
+            return None
+
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _extract_feed_published_at(self, entry: Any) -> tuple[datetime, str | None, str]:
+        """Return the best available feed timestamp for one entry."""
+        for field in (
+            "published_parsed",
+            "updated_parsed",
+            "created_parsed",
+            "published",
+            "updated",
+            "created",
+        ):
+            raw_value = self._feed_entry_value(entry, field)
+            published_at = self._coerce_feed_datetime(raw_value)
+            if published_at is not None:
+                raw_text = raw_value if isinstance(raw_value, str) else None
+                return published_at, raw_text, field
+        return datetime.now(timezone.utc), None, "fallback_now"
+
     async def collect_ghsa_items(self) -> list[CollectedNewsItem]:
         """Fetch GitHub Security Advisories matching cloud keywords."""
         if not self.settings.github_token:
@@ -289,10 +342,10 @@ class CollectorService:
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
                 summary = self._clean_summary(getattr(entry, "summary", ""))
-                published = (
-                    getattr(entry, "published", None)
-                    or datetime.now(timezone.utc).isoformat()
+                published_at, published_raw, published_field = (
+                    self._extract_feed_published_at(entry)
                 )
+                published = published_at.isoformat()
 
                 if not self._is_cloud_security_relevant(f"{title} {summary}"):
                     continue
@@ -307,12 +360,14 @@ class CollectorService:
                         source_id=source_id,
                         url=url,
                         title=title,
-                        published_at=published,
+                        published_at=published_at,
                         raw_data={
                             "feed_url": feed_url,
                             "title": title,
                             "link": url,
                             "published": published,
+                            "published_raw": published_raw,
+                            "published_field": published_field,
                             "summary": summary,
                         },
                         full_content=full_content or None,
@@ -424,10 +479,10 @@ class CollectorService:
                 permalink = str(getattr(entry, "link", "") or "").strip()
                 title = getattr(entry, "title", "")
                 summary = self._clean_summary(getattr(entry, "summary", ""))
-                published = (
-                    getattr(entry, "published", None)
-                    or datetime.now(timezone.utc).isoformat()
+                published_at, published_raw, published_field = (
+                    self._extract_feed_published_at(entry)
                 )
+                published = published_at.isoformat()
 
                 text_for_filter = f"{title} {summary} r/{subreddit}"
                 if not self._is_cloud_security_relevant(text_for_filter):
@@ -447,7 +502,7 @@ class CollectorService:
                         source_id=source_id,
                         url=permalink,
                         title=title,
-                        published_at=published,
+                        published_at=published_at,
                         raw_data={
                             "subreddit": subreddit,
                             "feed_url": feed_url,
@@ -455,6 +510,8 @@ class CollectorService:
                             "link": permalink,
                             "permalink": permalink,
                             "published": published,
+                            "published_raw": published_raw,
+                            "published_field": published_field,
                             "summary": summary,
                             "engagement": engagement,
                             "references": [{"url": ref} for ref in references],

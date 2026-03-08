@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from datetime import timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import logging
@@ -178,7 +179,7 @@ async def insert_news_item(
         source_id: Unique identifier within the source.
         url: Canonical URL for the item.
         title: Human-readable title (may be ``None``).
-        published_at: ISO-8601 timestamp or ``datetime`` object.
+        published_at: Timestamp string (ISO-8601 or RFC 822) or ``datetime`` object.
         raw_data: Original payload stored as JSONB.
         full_content: Scraped or enriched body text.
 
@@ -186,12 +187,24 @@ async def insert_news_item(
         The UUID of the newly inserted row, or ``None`` if it already existed.
     """
     if isinstance(published_at, str):
-        try:
-            pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-        except (ValueError, TypeError):
+        raw = published_at.strip()
+        if raw:
+            try:
+                pub_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                try:
+                    pub_dt = parsedate_to_datetime(raw)
+                except (TypeError, ValueError):
+                    pub_dt = datetime.now(timezone.utc)
+        else:
             pub_dt = datetime.now(timezone.utc)
     else:
         pub_dt = published_at
+
+    if pub_dt.tzinfo is None:
+        pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+    else:
+        pub_dt = pub_dt.astimezone(timezone.utc)
 
     pool = await get_pool()
     row = await pool.fetchrow(

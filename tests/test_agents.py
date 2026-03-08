@@ -222,6 +222,82 @@ class TestCollectorService:
         assert items == []
 
     @pytest.mark.asyncio
+    async def test_collect_rss_uses_feed_publish_timestamp(self):
+        from bcn.agents.collector.service import CollectorService
+
+        settings = _make_settings(
+            rss_feeds=["https://example.com/security.rss"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        service = CollectorService(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Kubernetes CVE write-up</title>
+            <link>https://example.com/advisory</link>
+            <guid>rss-1</guid>
+            <pubDate>Fri, 06 Mar 2026 13:00:01 GMT</pubDate>
+            <description>Cloud-native exploit chain details</description>
+          </item>
+        </channel></rss>
+        """
+
+        service.scraper.fetch_text_or_raise = AsyncMock(return_value=rss_body)
+        service.scraper.scrape = AsyncMock(return_value="Detailed advisory text")
+
+        try:
+            items = await service.collect_rss_items()
+        finally:
+            await service.close()
+
+        assert len(items) == 1
+        assert items[0].published_at == datetime(
+            2026, 3, 6, 13, 0, 1, tzinfo=timezone.utc
+        )
+        assert items[0].raw_data["published"] == "2026-03-06T13:00:01+00:00"
+        assert items[0].raw_data["published_field"] == "published_parsed"
+        assert items[0].raw_data["published_raw"] is None
+
+    @pytest.mark.asyncio
+    async def test_collect_rss_uses_updated_when_published_missing(self):
+        from bcn.agents.collector.service import CollectorService
+
+        settings = _make_settings(
+            rss_feeds=["https://example.com/security.atom"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+        )
+        service = CollectorService(settings)
+
+        atom_body = """
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>tag:example.com,2026:entry-1</id>
+            <title>Cloud container issue</title>
+            <updated>2026-03-07T17:30:00Z</updated>
+            <summary>Kubernetes container escape write-up</summary>
+            <link href="https://example.com/atom-advisory" />
+          </entry>
+        </feed>
+        """
+
+        service.scraper.fetch_text_or_raise = AsyncMock(return_value=atom_body)
+        service.scraper.scrape = AsyncMock(return_value="Detailed advisory text")
+
+        try:
+            items = await service.collect_rss_items()
+        finally:
+            await service.close()
+
+        assert len(items) == 1
+        assert items[0].published_at == datetime(
+            2026, 3, 7, 17, 30, 0, tzinfo=timezone.utc
+        )
+        assert items[0].raw_data["published"] == "2026-03-07T17:30:00+00:00"
+        assert items[0].raw_data["published_field"] == "updated_parsed"
+        assert items[0].raw_data["published_raw"] is None
+
+    @pytest.mark.asyncio
     async def test_collect_reddit(self):
         import json
 
@@ -280,7 +356,12 @@ class TestCollectorService:
 
         assert len(items) == 1
         assert items[0].url == "https://reddit.com/r/netsec/comments/abc123/test/"
+        assert items[0].published_at == datetime(
+            2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc
+        )
         raw = items[0].raw_data
+        assert raw["published"] == "2026-01-01T00:00:00+00:00"
+        assert raw["published_field"] == "published_parsed"
         assert raw["engagement"]["upvotes"] == 120
         assert raw["engagement"]["comments"] == 42
         assert raw["permalink"] == "https://reddit.com/r/netsec/comments/abc123/test/"

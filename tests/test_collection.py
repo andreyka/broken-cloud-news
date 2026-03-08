@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 from unittest.mock import AsyncMock
 from unittest.mock import Mock
 from uuid import uuid4
@@ -84,3 +86,31 @@ async def test_execute_collection_closes_owned_resources(monkeypatch):
     collector_ctor.assert_called_once_with(settings)
     collector_service.close.assert_awaited_once()
     close_pool_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
+    from bcn.common.db import insert_news_item
+
+    fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
+
+    class _FakePool:
+        def __init__(self):
+            self.fetchrow = fetchrow_mock
+
+    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+
+    await insert_news_item(
+        source_type="rss",
+        source_id="rss-1",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="Fri, 06 Mar 2026 13:00:01 GMT",
+        raw_data={"feed_url": "https://example.com/feed.xml"},
+        full_content="Details",
+    )
+
+    inserted_published_at = fetchrow_mock.await_args.args[5]
+    assert inserted_published_at == datetime(
+        2026, 3, 6, 13, 0, 1, tzinfo=timezone.utc
+    )
