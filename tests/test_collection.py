@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from bcn.agents.collector.review import SourceReviewLLM
 from bcn.common.config import Settings
 from bcn.common.models import CollectedNewsItem
 from bcn.common.models import CollectionSourceReview
@@ -284,6 +285,73 @@ async def test_execute_collection_keeps_new_source_pending_when_review_errors(
         call.kwargs.get("state") == "PENDING_REVIEW"
         for call in upsert_mock.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_execute_collection_honors_quarantined_source_when_review_disabled(
+    monkeypatch,
+):
+    settings = _make_settings(source_review_enabled=False)
+    collected_item = CollectedNewsItem(
+        source_type="rss",
+        source_id="rss-1",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="2026-01-01T00:00:00Z",
+        raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
+        full_content="Details",
+    )
+    collector_service = AsyncMock()
+    collector_service.collect_rss_items.return_value = [collected_item]
+
+    insert_mock = AsyncMock(return_value=uuid4())
+
+    monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.workflows.collection.insert_news_item", insert_mock)
+    monkeypatch.setattr(
+        "bcn.workflows.collection.get_collection_source",
+        AsyncMock(return_value={"state": "QUARANTINED"}),
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.collection.collection_source_has_historical_items",
+        AsyncMock(return_value=False),
+    )
+
+    result = await execute_collection(
+        settings,
+        source="rss",
+        collector_service=collector_service,
+        origin="test",
+        manage_pool=False,
+    )
+
+    assert result == "RSS: collected 0 items"
+    insert_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_review_llm_raises_when_json_is_invalid():
+    client = Mock()
+    client.chat_for_role = AsyncMock(return_value="not-json")
+    client.parse_json_response = Mock(side_effect=ValueError("bad json"))
+    reviewer = SourceReviewLLM(client)
+    sample_item = CollectedNewsItem(
+        source_type="rss",
+        source_id="rss-1",
+        url="https://example.com/advisory",
+        title="Cloud advisory",
+        published_at="2026-01-01T00:00:00Z",
+        raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
+        full_content="Details",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON"):
+        await reviewer.review_source(
+            source_type="rss",
+            display_name="https://example.com/feed.xml",
+            raw_config={"feed_url": "https://example.com/feed.xml"},
+            sample_items=[sample_item],
+        )
 
 
 @pytest.mark.asyncio

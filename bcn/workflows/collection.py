@@ -136,9 +136,6 @@ async def _source_is_active(
     reviewer: SourceReviewLLM | None,
 ) -> bool:
     """Return whether a source is allowed to write into production news_items."""
-    if not settings.source_review_enabled:
-        return True
-
     row = await get_collection_source(descriptor.source_key)
     if row is not None:
         state = str(row["state"] or "").upper()
@@ -157,6 +154,15 @@ async def _source_is_active(
         if state == "QUARANTINED":
             logger.warning("Skipping quarantined source %s", descriptor.source_key)
             return False
+        if state == "PENDING_REVIEW" and not settings.source_review_enabled:
+            logger.warning(
+                "Skipping pending-review source %s while source review is disabled",
+                descriptor.source_key,
+            )
+            return False
+
+    if not settings.source_review_enabled:
+        return True
 
     if await collection_source_has_historical_items(
         source_type=descriptor.source_type,
