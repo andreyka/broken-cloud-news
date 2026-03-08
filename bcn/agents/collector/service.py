@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 import html
@@ -105,6 +106,7 @@ _REDDIT_TECHNICAL_HINTS = (
     "proof of concept",
     "github actions",
 )
+_MAX_FUTURE_SOURCE_SKEW = timedelta(hours=6)
 
 
 class CollectorService:
@@ -197,7 +199,42 @@ class CollectorService:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
 
-    def _extract_feed_published_at(self, entry: Any) -> tuple[datetime, str | None, str]:
+    @staticmethod
+    def _validate_source_timestamp(
+        published_at: datetime | None,
+        *,
+        source_type: str,
+        source_id: str,
+        title: str,
+        url: str,
+        field: str,
+    ) -> datetime | None:
+        """Drop items with missing or implausible source timestamps."""
+        label = title or url or source_id
+        if published_at is None:
+            logger.warning(
+                "Dropping %s item without parseable timestamp: %s [field=%s]",
+                source_type,
+                label,
+                field,
+            )
+            return None
+        now = datetime.now(timezone.utc)
+        if published_at > now + _MAX_FUTURE_SOURCE_SKEW:
+            logger.warning(
+                "Dropping %s item with future timestamp: %s [field=%s published_at=%s]",
+                source_type,
+                label,
+                field,
+                published_at.isoformat(),
+            )
+            return None
+        return published_at
+
+    def _extract_feed_published_at(
+        self,
+        entry: Any,
+    ) -> tuple[datetime | None, str | None, str]:
         """Return the best available feed timestamp for one entry."""
         for field in (
             "published_parsed",
@@ -212,7 +249,7 @@ class CollectorService:
             if published_at is not None:
                 raw_text = raw_value if isinstance(raw_value, str) else None
                 return published_at, raw_text, field
-        return datetime.now(timezone.utc), None, "fallback_now"
+        return None, None, "missing_or_unparseable"
 
     async def collect_ghsa_items(self) -> list[CollectedNewsItem]:
         """Fetch GitHub Security Advisories matching cloud keywords."""
@@ -259,6 +296,16 @@ class CollectorService:
                 ),
                 item.get("permalink", ""),
             )
+            published_at = self._validate_source_timestamp(
+                self._coerce_feed_datetime(item.get("publishedAt")),
+                source_type="ghsa",
+                source_id=str(item.get("ghsaId") or ""),
+                title=str(item.get("summary") or ""),
+                url=str(url or ""),
+                field="publishedAt",
+            )
+            if published_at is None:
+                continue
             full_content = await self._enrich_ghsa_content(item, references)
             items.append(
                 CollectedNewsItem(
@@ -266,9 +313,7 @@ class CollectorService:
                     source_id=item["ghsaId"],
                     url=url,
                     title=item.get("summary"),
-                    published_at=item.get(
-                        "publishedAt", datetime.now(timezone.utc).isoformat()
-                    ),
+                    published_at=published_at,
                     raw_data=item,
                     full_content=full_content or None,
                 )
@@ -345,6 +390,16 @@ class CollectorService:
                 published_at, published_raw, published_field = (
                     self._extract_feed_published_at(entry)
                 )
+                published_at = self._validate_source_timestamp(
+                    published_at,
+                    source_type="rss",
+                    source_id=str(source_id or ""),
+                    title=str(title or ""),
+                    url=str(url or ""),
+                    field=published_field,
+                )
+                if published_at is None:
+                    continue
                 published = published_at.isoformat()
 
                 if not self._is_cloud_security_relevant(f"{title} {summary}"):
@@ -426,9 +481,16 @@ class CollectorService:
                 title = tweet.get("text", "")
                 if not self._is_cloud_security_relevant(title):
                     continue
-                published = tweet.get(
-                    "created_at", datetime.now(timezone.utc).isoformat()
+                published_at = self._validate_source_timestamp(
+                    self._coerce_feed_datetime(tweet.get("created_at")),
+                    source_type="twitter",
+                    source_id=str(source_id or ""),
+                    title=str(title or ""),
+                    url=str(url or ""),
+                    field="created_at",
                 )
+                if published_at is None:
+                    continue
                 references = self._extract_tweet_reference_urls(tweet)
                 full_content = self._build_tweet_full_content(title, references)
                 items.append(
@@ -437,7 +499,7 @@ class CollectorService:
                         source_id=source_id,
                         url=url,
                         title=title,
-                        published_at=published,
+                        published_at=published_at,
                         raw_data={
                             **tweet,
                             "username": username,
@@ -482,6 +544,16 @@ class CollectorService:
                 published_at, published_raw, published_field = (
                     self._extract_feed_published_at(entry)
                 )
+                published_at = self._validate_source_timestamp(
+                    published_at,
+                    source_type="reddit",
+                    source_id=str(source_id or ""),
+                    title=str(title or ""),
+                    url=str(permalink or ""),
+                    field=published_field,
+                )
+                if published_at is None:
+                    continue
                 published = published_at.isoformat()
 
                 text_for_filter = f"{title} {summary} r/{subreddit}"
