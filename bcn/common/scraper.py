@@ -121,7 +121,13 @@ class Scraper:
                 return
         await route.continue_()
 
-    async def scrape(self, url: str) -> str:
+    async def scrape(
+        self,
+        url: str,
+        *,
+        timeout_ms: int = 60000,
+        settle_ms: int = 2000,
+    ) -> str:
         """Navigate to *url* and return extracted article text.
 
         Tries CSS selectors ``article``, ``.markdown-body``, ``main`` in
@@ -143,8 +149,9 @@ class Scraper:
         context = await self._ensure_browser()
         page = await context.new_page()
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            if settle_ms > 0:
+                await page.wait_for_timeout(settle_ms)
 
             selectors = ["article", ".markdown-body", "main", "body"]
             for selector in selectors:

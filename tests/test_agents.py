@@ -295,6 +295,63 @@ class TestCollectorService:
         assert items == []
 
     @pytest.mark.asyncio
+    async def test_collect_rss_bounds_entry_age_and_full_scrapes_per_feed(self):
+        from bcn.services.collector.service import CollectorService
+
+        settings = _make_settings(
+            rss_feeds=["https://example.com/security.rss"],
+            twitter_required_keywords=["cloud", "kubernetes", "cve"],
+            collector_rss_max_entries_per_feed=10,
+            collector_rss_max_item_age_days=45,
+            collector_rss_full_content_limit_per_feed=1,
+            collector_rss_scrape_timeout_ms=5000,
+        )
+        service = CollectorService(settings)
+
+        rss_body = """
+        <rss version="2.0"><channel>
+          <item>
+            <title>Kubernetes CVE write-up</title>
+            <link>https://example.com/advisory-1</link>
+            <guid>rss-1</guid>
+            <pubDate>Fri, 06 Mar 2026 13:00:01 GMT</pubDate>
+            <description>Cloud-native exploit chain details</description>
+          </item>
+          <item>
+            <title>Cloud container CVE follow-up</title>
+            <link>https://example.com/advisory-2</link>
+            <guid>rss-2</guid>
+            <pubDate>Thu, 05 Mar 2026 12:00:00 GMT</pubDate>
+            <description>Kubernetes advisory details</description>
+          </item>
+          <item>
+            <title>Old kubernetes CVE archive</title>
+            <link>https://example.com/advisory-old</link>
+            <guid>rss-old</guid>
+            <pubDate>Wed, 01 Jan 2025 12:00:00 GMT</pubDate>
+            <description>Cloud archive details</description>
+          </item>
+        </channel></rss>
+        """
+
+        service.scraper.fetch_text_or_raise = AsyncMock(return_value=rss_body)
+        service.scraper.scrape = AsyncMock(return_value="Detailed advisory text")
+
+        try:
+            items = await service.collect_rss_items()
+        finally:
+            await service.close()
+
+        assert len(items) == 2
+        assert items[0].full_content == "Detailed advisory text"
+        assert items[1].full_content is None
+        service.scraper.scrape.assert_awaited_once_with(
+            "https://example.com/advisory-1",
+            timeout_ms=5000,
+            settle_ms=1000,
+        )
+
+    @pytest.mark.asyncio
     async def test_collect_reddit(self):
         import json
 

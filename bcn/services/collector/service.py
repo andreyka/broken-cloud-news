@@ -371,7 +371,22 @@ class CollectorService:
     async def collect_rss_items(self) -> list[CollectedNewsItem]:
         """Fetch items from configured RSS feeds."""
         items: list[CollectedNewsItem] = []
+        max_entries = max(1, int(self.settings.collector_rss_max_entries_per_feed))
+        max_age_days = max(0, int(self.settings.collector_rss_max_item_age_days))
+        max_age = timedelta(days=max_age_days) if max_age_days > 0 else None
+        scrape_budget = max(
+            0, int(self.settings.collector_rss_full_content_limit_per_feed)
+        )
+        scrape_timeout_ms = max(1000, int(self.settings.collector_rss_scrape_timeout_ms))
+        now = datetime.now(timezone.utc)
         for feed_url in self.settings.rss_feeds:
+            feed_total_entries = 0
+            considered_entries = 0
+            relevant_entries = 0
+            kept_entries = 0
+            old_entries = 0
+            scrape_count = 0
+            skipped_scrapes = 0
             try:
                 feed_text = await self.scraper.fetch_text_or_raise(
                     feed_url,
@@ -382,7 +397,9 @@ class CollectorService:
                 logger.warning("Failed to fetch RSS %s: %s", feed_url, exc)
                 continue
 
-            for entry in feed.entries:
+            feed_total_entries = len(feed.entries)
+            for entry in list(feed.entries)[:max_entries]:
+                considered_entries += 1
                 source_id = getattr(entry, "id", None) or getattr(entry, "link", "")
                 url = getattr(entry, "link", "")
                 title = getattr(entry, "title", "")
@@ -400,14 +417,25 @@ class CollectorService:
                 )
                 if published_at is None:
                     continue
+                if max_age is not None and published_at < now - max_age:
+                    old_entries += 1
+                    continue
                 published = published_at.isoformat()
 
                 if not self._is_cloud_security_relevant(f"{title} {summary}"):
                     continue
+                relevant_entries += 1
 
                 full_content = ""
-                if url:
-                    full_content = await self.scraper.scrape(url)
+                if url and scrape_count < scrape_budget:
+                    full_content = await self.scraper.scrape(
+                        url,
+                        timeout_ms=scrape_timeout_ms,
+                        settle_ms=1000,
+                    )
+                    scrape_count += 1
+                elif url:
+                    skipped_scrapes += 1
 
                 items.append(
                     CollectedNewsItem(
@@ -428,6 +456,20 @@ class CollectorService:
                         full_content=full_content or None,
                     )
                 )
+                kept_entries += 1
+
+            logger.info(
+                "RSS feed processed %s: total=%d considered=%d kept=%d relevant=%d "
+                "old_skipped=%d scraped=%d scrape_budget_skipped=%d",
+                feed_url,
+                feed_total_entries,
+                considered_entries,
+                kept_entries,
+                relevant_entries,
+                old_entries,
+                scrape_count,
+                skipped_scrapes,
+            )
 
         return items
 
