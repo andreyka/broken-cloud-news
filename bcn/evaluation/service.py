@@ -11,16 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from bcn.common.config import Settings
-from bcn.common.db import close_pool
-from bcn.common.db import complete_evaluation_run
-from bcn.common.db import count_simulation_runs
-from bcn.common.db import create_evaluation_run
-from bcn.common.db import ensure_evaluation_tables
-from bcn.common.db import ensure_simulation_tables
-from bcn.common.db import fail_evaluation_run
-from bcn.common.db import get_latest_simulation_report
-from bcn.common.db import get_pool
-from bcn.common.db import insert_simulation_report
+from bcn.persistence.evaluation import complete_evaluation_run
+from bcn.persistence.evaluation import count_simulation_runs
+from bcn.persistence.evaluation import create_evaluation_run
+from bcn.persistence.evaluation import ensure_evaluation_tables
+from bcn.persistence.evaluation import ensure_simulation_tables
+from bcn.persistence.evaluation import fail_evaluation_run
+from bcn.persistence.evaluation import get_latest_simulation_report
+from bcn.persistence.evaluation import insert_simulation_report
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
 
 from .lanes import build_benchmark_pack
 from .lanes import run_benchmark_pack

@@ -319,32 +319,23 @@ async def test_simulate_historical_briefings_uses_simulated_selected_items(monke
                 },
             )
 
-        def quality_gate(
+        async def evaluate_existing_markdown(
             self,
+            *,
             markdown,
             selected_items,
-            *,
+            history,
             mode,
-            min_chars,
-            hard_max_chars,
         ):
             if markdown == "simulated body":
                 recorded_lengths["gate"] = len(selected_items)
-            return {"hard_issues": [], "soft_issues": []}
-
-        async def critique_markdown(
-            self,
-            markdown,
-            items,
-            *,
-            mode,
-            recent_briefings=None,
-            gate_hard_issues=None,
-            gate_soft_issues=None,
-        ):
-            if markdown == "simulated body":
-                recorded_lengths["critic"] = len(items)
-            return {"dimension_scores": {"style": 0, "novelty": 0}}
+                recorded_lengths["critic"] = len(selected_items)
+            return {
+                "gate": {"hard_issues": [], "soft_issues": []},
+                "critique": {"dimension_scores": {"style": 0, "novelty": 0}},
+                "min_chars": 10,
+                "hard_max_chars": 500,
+            }
 
         async def close(self):
             return None
@@ -379,7 +370,10 @@ async def test_simulate_historical_briefings_uses_simulated_selected_items(monke
         "bcn.evaluation.simulation.get_items_by_ids",
         AsyncMock(return_value=list(items)),
     )
-    monkeypatch.setattr("bcn.evaluation.simulation.WriterService", lambda settings: _Writer())
+    monkeypatch.setattr(
+        "bcn.evaluation.simulation.build_writer_workflow",
+        lambda settings: _Writer(),
+    )
     monkeypatch.setattr("bcn.evaluation.simulation.score_feedback_rubric", _score)
 
     report = await simulate_historical_briefings(

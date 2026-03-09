@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from bcn.agents.collector.review import SourceReviewLLM
+from bcn.services.collector.review import SourceReviewLLM
 from bcn.common.config import Settings
 from bcn.common.models import CollectedNewsItem
 from bcn.common.models import CollectionSourceReview
@@ -45,6 +45,10 @@ async def test_execute_collection_persists_single_source(monkeypatch):
     insert_mock = AsyncMock(return_value=uuid4())
     monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
     monkeypatch.setattr("bcn.workflows.collection.insert_news_item", insert_mock)
+    monkeypatch.setattr(
+        "bcn.workflows.collection.get_collection_source",
+        AsyncMock(return_value=None),
+    )
 
     result = await execute_collection(
         settings,
@@ -77,6 +81,10 @@ async def test_execute_collection_closes_owned_resources(monkeypatch):
     monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
     monkeypatch.setattr("bcn.workflows.collection.close_pool", close_pool_mock)
     monkeypatch.setattr("bcn.workflows.collection.CollectorService", collector_ctor)
+    monkeypatch.setattr(
+        "bcn.workflows.collection.get_collection_source",
+        AsyncMock(return_value=None),
+    )
 
     result = await execute_collection(
         settings,
@@ -364,7 +372,10 @@ async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
         def __init__(self):
             self.fetchrow = fetchrow_mock
 
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+    monkeypatch.setattr(
+        "bcn.persistence.news_items.get_pool",
+        AsyncMock(return_value=_FakePool()),
+    )
 
     await insert_news_item(
         source_type="rss",
@@ -394,7 +405,10 @@ async def test_insert_news_item_skips_invalid_published_at(monkeypatch):
         def __init__(self):
             self.fetchrow = fetchrow_mock
 
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+    monkeypatch.setattr(
+        "bcn.persistence.news_items.get_pool",
+        AsyncMock(return_value=_FakePool()),
+    )
 
     inserted = await insert_news_item(
         source_type="rss",
@@ -420,7 +434,10 @@ async def test_insert_news_item_skips_empty_published_at(monkeypatch):
         def __init__(self):
             self.fetchrow = fetchrow_mock
 
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+    monkeypatch.setattr(
+        "bcn.persistence.news_items.get_pool",
+        AsyncMock(return_value=_FakePool()),
+    )
 
     inserted = await insert_news_item(
         source_type="rss",
@@ -446,7 +463,10 @@ async def test_insert_news_item_skips_future_published_at(monkeypatch):
         def __init__(self):
             self.fetchrow = fetchrow_mock
 
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock(return_value=_FakePool()))
+    monkeypatch.setattr(
+        "bcn.persistence.news_items.get_pool",
+        AsyncMock(return_value=_FakePool()),
+    )
 
     inserted = await insert_news_item(
         source_type="rss",

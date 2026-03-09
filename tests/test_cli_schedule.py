@@ -515,9 +515,13 @@ def test_critique_command_delegates_to_control_plane(monkeypatch):
     assert result.exit_code == 0
     assert '"critic_score": 88' in result.output
     assert run_mock.await_count == 1
+    assert run_mock.await_args.kwargs == {
+        "settings": run_mock.await_args.kwargs["settings"],
+        "latest": False,
+        "file_path": None,
+        "text_input": "**Draft**",
+    }
     assert isinstance(run_mock.await_args.kwargs["settings"], Settings)
-    assert run_mock.await_args.kwargs["text_input"] == "**Draft**"
-    assert "agent_client" not in run_mock.await_args.kwargs
 
 
 def test_verify_command_delegates_to_control_plane(monkeypatch):
@@ -530,18 +534,22 @@ def test_verify_command_delegates_to_control_plane(monkeypatch):
     assert result.exit_code == 0
     assert '"verifier_score": 92' in result.output
     assert run_mock.await_count == 1
+    assert run_mock.await_args.kwargs == {
+        "settings": run_mock.await_args.kwargs["settings"],
+        "latest": False,
+        "file_path": None,
+        "text_input": "**Draft**",
+    }
     assert isinstance(run_mock.await_args.kwargs["settings"], Settings)
-    assert run_mock.await_args.kwargs["text_input"] == "**Draft**"
-    assert "agent_client" not in run_mock.await_args.kwargs
 
 
 def test_newsletter_subscribers_list_command(monkeypatch):
     runner = CliRunner()
     now = datetime.now(timezone.utc)
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
     monkeypatch.setattr(
-        "bcn.common.db.get_newsletter_subscribers",
+        "bcn.persistence.newsletter.get_newsletter_subscribers",
         AsyncMock(
             return_value=[
                 {
@@ -561,10 +569,10 @@ def test_newsletter_subscribers_list_command(monkeypatch):
 
 def test_newsletter_subscribers_add_command(monkeypatch):
     runner = CliRunner()
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
     add_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr("bcn.common.db.add_newsletter_subscriber", add_mock)
+    monkeypatch.setattr("bcn.persistence.newsletter.add_newsletter_subscriber", add_mock)
 
     result = runner.invoke(
         cli_module.cli,
@@ -578,10 +586,13 @@ def test_newsletter_subscribers_add_command(monkeypatch):
 
 def test_newsletter_subscribers_remove_command(monkeypatch):
     runner = CliRunner()
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
     remove_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr("bcn.common.db.remove_newsletter_subscriber", remove_mock)
+    monkeypatch.setattr(
+        "bcn.persistence.newsletter.remove_newsletter_subscriber",
+        remove_mock,
+    )
 
     result = runner.invoke(
         cli_module.cli,
@@ -609,8 +620,9 @@ def test_workflow_run_command_delegates_to_workflow_service(monkeypatch):
     assert "writer_handoff::" in result.output
     assert "Distributed to:" in result.output
     assert execute_mock.await_count == 1
-    assert execute_mock.await_args.kwargs["mode"] == REGULAR_DAILY_BRIEFING_MODE
-    assert "agent_client" not in execute_mock.await_args.kwargs
+    assert execute_mock.await_args.kwargs == {
+        "mode": REGULAR_DAILY_BRIEFING_MODE,
+    }
 
 
 def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):

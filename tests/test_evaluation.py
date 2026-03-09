@@ -272,8 +272,8 @@ def test_shadow_command_serializes_uuid_report_payload(monkeypatch, tmp_path):
 
 def test_evaluation_runs_command_lists_recent_rows(monkeypatch):
     runner = CliRunner()
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
     created_at = datetime(2026, 3, 6, 12, 0, tzinfo=timezone.utc)
     list_mock = AsyncMock(
         return_value=[
@@ -286,7 +286,7 @@ def test_evaluation_runs_command_lists_recent_rows(monkeypatch):
             }
         ]
     )
-    monkeypatch.setattr("bcn.common.db.list_recent_evaluation_runs", list_mock)
+    monkeypatch.setattr("bcn.persistence.evaluation.list_recent_evaluation_runs", list_mock)
 
     result = runner.invoke(cli_module.cli, ["evaluation-runs", "--limit", "5"])
 

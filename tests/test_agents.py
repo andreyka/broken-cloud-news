@@ -14,7 +14,7 @@ import pytest
 import respx
 
 from bcn.common.config import Settings
-from bcn.agents.writer.service import WriterService
+from bcn.services.writer.service import WriterService
 
 
 def _make_settings(**overrides) -> Settings:
@@ -37,7 +37,7 @@ class TestCollectorService:
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings()
         service = CollectorService(settings)
@@ -80,7 +80,7 @@ class TestCollectorService:
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa_filters_severity(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings()
         service = CollectorService(settings)
@@ -119,7 +119,7 @@ class TestCollectorService:
     @respx.mock
     @pytest.mark.asyncio
     async def test_collect_ghsa_drops_items_without_parseable_timestamp(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings()
         service = CollectorService(settings)
@@ -157,7 +157,7 @@ class TestCollectorService:
 
     @pytest.mark.asyncio
     async def test_collect_rss_uses_feed_publish_timestamp(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             rss_feeds=["https://example.com/security.rss"],
@@ -195,7 +195,7 @@ class TestCollectorService:
 
     @pytest.mark.asyncio
     async def test_collect_rss_uses_updated_when_published_missing(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             rss_feeds=["https://example.com/security.atom"],
@@ -233,7 +233,7 @@ class TestCollectorService:
 
     @pytest.mark.asyncio
     async def test_collect_rss_drops_items_without_parseable_timestamp(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             rss_feeds=["https://example.com/security.rss"],
@@ -264,7 +264,7 @@ class TestCollectorService:
 
     @pytest.mark.asyncio
     async def test_collect_rss_drops_future_dated_items(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             rss_feeds=["https://example.com/security.rss"],
@@ -298,7 +298,7 @@ class TestCollectorService:
     async def test_collect_reddit(self):
         import json
 
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             reddit_subreddits=["netsec"],
@@ -375,7 +375,7 @@ class TestCollectorService:
     async def test_collect_reddit_keeps_permalink_for_low_signal_outbound(self):
         import json
 
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         settings = _make_settings(
             reddit_subreddits=["netsec"],
@@ -436,7 +436,7 @@ class TestCollectorService:
         assert raw["references"] == [{"url": "https://www.youtube.com/watch?v=abc123"}]
 
     def test_extract_tweet_reference_urls_keeps_external_sources(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         tweet = {
             "entities": {
@@ -466,7 +466,7 @@ class TestCollectorService:
         assert "https://www.youtube.com/watch?v=dQw4w9WgXcQ" in refs
 
     def test_build_tweet_full_content_appends_reference_links(self):
-        from bcn.agents.collector.service import CollectorService
+        from bcn.services.collector.service import CollectorService
 
         content = CollectorService._build_tweet_full_content(
             "Cloud vuln write-up",
@@ -488,7 +488,7 @@ class TestCollectorService:
 class TestAnalystService:
     @pytest.mark.asyncio
     async def test_analyze_item_scrapes_reddit_references(self):
-        from bcn.agents.analyst.service import AnalystService
+        from bcn.services.analyst.service import AnalystService
         from bcn.common.models import AnalysisResult
 
         settings = _make_settings()
@@ -549,7 +549,7 @@ class TestAnalystService:
 
     @pytest.mark.asyncio
     async def test_analyze_item_raises_on_llm_failure(self):
-        from bcn.agents.analyst.service import AnalystService
+        from bcn.services.analyst.service import AnalystService
 
         settings = _make_settings()
         service = AnalystService(settings)
@@ -581,7 +581,7 @@ class TestAnalystService:
 
 class TestWriterService:
     def test_selection_limits_single_domain(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=5,
@@ -633,7 +633,7 @@ class TestWriterService:
         assert len(selected) >= 3
 
     def test_selection_does_not_force_source_mix(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -689,7 +689,7 @@ class TestWriterService:
         }
 
     def test_monthly_selection_dedupes_same_canonical_url(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             monthly_newsletter_min_items=1,
@@ -733,7 +733,7 @@ class TestWriterService:
         assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
 
     def test_monthly_selection_dedupes_same_issue_across_urls(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             monthly_newsletter_min_items=1,
@@ -778,7 +778,7 @@ class TestWriterService:
         assert [item["id"] for item in selected] == [primary["id"], distinct["id"]]
 
     def test_min_selected_fallback_preserves_recent_url_dedup(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -816,7 +816,7 @@ class TestWriterService:
         assert selected == []
 
     def test_min_selected_fallback_preserves_recent_topic_dedup(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -855,7 +855,7 @@ class TestWriterService:
         assert selected == []
 
     def test_hard_mix_refill_does_not_readd_recent_duplicate(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=3,
@@ -918,7 +918,7 @@ class TestWriterService:
         )
 
     def test_min_selected_fallback_can_still_fill_with_unique_items(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_max_items=2,
@@ -956,7 +956,7 @@ class TestWriterService:
         assert len(selected) == 2
 
     def test_detects_missing_urls_in_generated_markdown(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -971,7 +971,7 @@ class TestWriterService:
         assert missing[0]["url"] == "https://example.com/two"
 
     def test_missing_urls_uses_canonical_url_key(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -990,7 +990,7 @@ class TestWriterService:
         assert missing[0]["url"] == "https://example.com/other"
 
     def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
         service = WriterService(settings)
@@ -1023,7 +1023,7 @@ class TestWriterService:
         assert overlap_penalty > other_penalty
 
     def test_duplicate_detection_uses_canonical_url_key(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1042,7 +1042,7 @@ class TestWriterService:
         assert service.selector.novelty_penalty(item, others) >= 3.0
 
     def test_duplicate_detection_ignores_generic_topic_overlap_without_issue_ids(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(briefing_novelty_title_similarity_threshold=0.99)
         service = WriterService(settings)
@@ -1063,7 +1063,7 @@ class TestWriterService:
         assert service.selector.novelty_penalty(item, others) == 0.0
 
     def test_quality_gate_uses_canonical_url_key_for_selected_urls(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1086,7 +1086,7 @@ class TestWriterService:
         )
 
     def test_quality_gate_blocks_unexpected_urls(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1110,7 +1110,7 @@ class TestWriterService:
         )
 
     def test_dedupe_markdown_links_uses_canonical_url_key(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1130,7 +1130,7 @@ class TestWriterService:
         assert "[Other](https://example.com/path?b=2)" in deduped
 
     def test_social_proof_bonus_prioritizes_high_engagement_tweet(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_social_proof_weight=0.35,
@@ -1171,7 +1171,7 @@ class TestWriterService:
         )
 
     def test_source_floor_filters_low_social_noise(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_min_reddit_engagement_score=40,
@@ -1220,7 +1220,7 @@ class TestWriterService:
         assert service.passes_source_floor(exempt_high_relevance) is True
 
     def test_quality_gate_flags_missing_urls_and_structure(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1247,7 +1247,7 @@ class TestWriterService:
         assert "Missing selected URL" in issue_text
 
     def test_quality_gate_balanced_mode_keeps_structure_as_soft_feedback(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(briefing_gate_mode="balanced")
         service = WriterService(settings)
@@ -1267,7 +1267,7 @@ class TestWriterService:
         assert "Too few sections" not in soft_text
 
     def test_quality_gate_strict_mode_blocks_missing_sections(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(briefing_gate_mode="strict")
         service = WriterService(settings)
@@ -1290,7 +1290,7 @@ class TestWriterService:
         assert "Too few sections" in hard_text
 
     def test_detemplate_rewrites_detection_and_source_fields(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1307,7 +1307,7 @@ class TestWriterService:
         assert "reference: [Cloudflare Blog]" in rewritten
 
     def test_missing_items_fallback_is_readable_without_fixed_heading(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1332,7 +1332,7 @@ class TestWriterService:
         assert "• [Second extra](https://example.com/two)" in out
 
     def test_strip_unselected_github_advisory_links_keeps_selected_only(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1357,7 +1357,7 @@ class TestWriterService:
         assert "https://github.com/advisories/GHSA-w6x6-9fp7-fqm4" in out
 
     def test_strip_unselected_markdown_links_keeps_only_selected_urls(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1376,7 +1376,7 @@ class TestWriterService:
         assert "Drop Repeat" in out
 
     def test_quiet_day_mode_detection(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_quiet_day_enabled=True,
@@ -1424,7 +1424,7 @@ class TestWriterService:
         assert service.is_quiet_day(high_signal_items) is False
 
     def test_single_item_char_limits_are_relaxed(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_min_chars=1200,
@@ -1446,7 +1446,7 @@ class TestWriterService:
 
     @pytest.mark.asyncio
     async def test_postprocess_drop_recomputes_missing_urls_before_enrich(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=1,
@@ -1505,7 +1505,7 @@ class TestWriterService:
     async def test_postprocess_appends_missing_items_fallback_when_coverage_stalls(
         self,
     ):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=0,
@@ -1555,7 +1555,7 @@ class TestWriterService:
     async def test_postprocess_final_hygiene_removes_unselected_ghsa_and_restores_missing_urls(
         self,
     ):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings(
             briefing_missing_coverage_max_drops=0,
@@ -1823,7 +1823,7 @@ class TestWriterService:
         )
 
     def test_passes_critic_thresholds_blocks_critical_issue_terms(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1843,7 +1843,7 @@ class TestWriterService:
         assert service.passes_critic_thresholds(critique) is False
 
     def test_passes_critic_thresholds_does_not_block_low_source_diversity(self):
-        from bcn.agents.writer.service import WriterService
+        from bcn.services.writer.service import WriterService
 
         settings = _make_settings()
         service = WriterService(settings)
@@ -1867,7 +1867,7 @@ class TestWriterService:
 
 class TestDistributorService:
     def test_build_channels_daily_mode_only_telegram_and_discord(self):
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DistributorService
 
         settings = _make_settings(
             telegram_bot_token="123:abc",
@@ -1887,7 +1887,7 @@ class TestDistributorService:
         assert names == ["telegram", "discord"]
 
     def test_build_channels_monthly_mode_email_only(self):
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DistributorService
 
         settings = _make_settings(
             telegram_bot_token="123:abc",
@@ -1909,7 +1909,7 @@ class TestDistributorService:
         assert names == ["email"]
 
     def test_build_channels_monthly_mode_without_recipients_skips_email(self):
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DistributorService
 
         settings = _make_settings(
             smtp_host="smtp.example.com",
@@ -1926,8 +1926,8 @@ class TestDistributorService:
 
     @pytest.mark.asyncio
     async def test_deliver_returns_no_channels_message(self):
-        from bcn.agents.distributor.service import DeliveryRequest
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DeliveryRequest
+        from bcn.services.distributor.service import DistributorService
 
         settings = _make_settings()
         service = DistributorService(settings)
@@ -1955,8 +1955,8 @@ class TestDistributorService:
 
     @pytest.mark.asyncio
     async def test_deliver_partial_channel_failure_returns_incomplete_result(self):
-        from bcn.agents.distributor.service import DeliveryRequest
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DeliveryRequest
+        from bcn.services.distributor.service import DistributorService
 
         class _FakeChannel:
             def __init__(self, ok: bool):
@@ -2007,8 +2007,8 @@ class TestDistributorService:
 
     @pytest.mark.asyncio
     async def test_deliver_skips_previously_successful_channels(self):
-        from bcn.agents.distributor.service import DeliveryRequest
-        from bcn.agents.distributor.service import DistributorService
+        from bcn.services.distributor.service import DeliveryRequest
+        from bcn.services.distributor.service import DistributorService
 
         class _FakeChannel:
             def __init__(self):

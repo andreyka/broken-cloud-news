@@ -8,8 +8,8 @@ import httpx
 import pytest
 import respx
 
-from bcn.agents.analyst.llm import AnalystLLM
-from bcn.agents.writer.llm import WriterLLM
+from bcn.services.analyst.llm import AnalystLLM
+from bcn.services.writer.llm import WriterLLM
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
 

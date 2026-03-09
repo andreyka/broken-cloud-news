@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+
+
+@contextmanager
+def _schema_ready_runtime():
+    import bcn.persistence.runtime as runtime
+
+    original_schema_ready = runtime._schema_ready
+    runtime._schema_ready = True
+    try:
+        yield
+    finally:
+        runtime._schema_ready = original_schema_ready
 
 
 @pytest.mark.asyncio
@@ -14,19 +27,17 @@ async def test_get_analyzed_items_excludes_items_already_in_live_briefings():
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.get_analyzed_items(
-                min_score=8,
-                hours=12,
-                limit=99,
-                stale_writing_minutes=30,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.get_analyzed_items(
+            min_score=8,
+            hours=12,
+            limit=99,
+            stale_writing_minutes=30,
+        )
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -47,14 +58,12 @@ async def test_preview_analyzed_items_is_read_only():
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.preview_analyzed_items(min_score=7, hours=24, limit=15)
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.preview_analyzed_items(min_score=7, hours=24, limit=15)
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -72,14 +81,12 @@ async def test_get_top_items_for_period_dedupes_by_story_identity():
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.get_top_items_for_period(days=31, min_score=7, limit=12)
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.get_top_items_for_period(days=31, min_score=7, limit=12)
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -97,20 +104,15 @@ async def test_get_recent_published_items_uses_distribution_time_for_novelty():
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with (
-            patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool,
-            patch(
-                "bcn.common.db._backfill_recent_story_identity",
-                new_callable=AsyncMock,
-            ),
-        ):
-            mock_get_pool.return_value = fake_pool
-            await db.get_recent_published_items(hours=48, limit=9)
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool, patch(
+        "bcn.persistence.news_items._backfill_recent_story_identity",
+        new_callable=AsyncMock,
+    ):
+        mock_get_pool.return_value = fake_pool
+        await db.get_recent_published_items(hours=48, limit=9)
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -139,7 +141,7 @@ async def test_backfill_recent_story_identity_does_not_touch_updated_at():
     )
     fake_pool.executemany = AsyncMock()
 
-    with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
+    with patch("bcn.persistence.news_items.get_pool", new_callable=AsyncMock) as mock_get_pool:
         mock_get_pool.return_value = fake_pool
         await db._backfill_recent_story_identity(limit=10, lookback_days=30)
 
@@ -155,30 +157,28 @@ async def test_backfill_recent_story_identity_does_not_touch_updated_at():
 
 @pytest.mark.asyncio
 async def test_insert_evaluation_report_stores_lane_and_report():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     run_id = uuid4()
     fake_pool.fetchrow = AsyncMock(return_value={"id": run_id})
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            created = await db.insert_evaluation_report(
-                {
-                    "generated_at": "2026-03-06T12:00:00+00:00",
-                    "lane": "benchmark",
-                    "pack_path": "/tmp/benchmark_pack.json",
-                    "count": 7,
-                    "summary": {"recommendation": "hold"},
-                    "results": [],
-                },
-                report_path="/tmp/benchmark_report.json",
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        created = await evaluation_db.insert_evaluation_report(
+            {
+                "generated_at": "2026-03-06T12:00:00+00:00",
+                "lane": "benchmark",
+                "pack_path": "/tmp/benchmark_pack.json",
+                "count": 7,
+                "summary": {"recommendation": "hold"},
+                "results": [],
+            },
+            report_path="/tmp/benchmark_report.json",
+        )
 
     assert created == run_id
     args, _kwargs = fake_pool.fetchrow.await_args
@@ -191,24 +191,22 @@ async def test_insert_evaluation_report_stores_lane_and_report():
 
 @pytest.mark.asyncio
 async def test_create_evaluation_run_starts_in_running_state():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     run_id = uuid4()
     fake_pool.fetchrow = AsyncMock(return_value={"id": run_id})
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            created = await db.create_evaluation_run(
-                lane="shadow",
-                source="scheduler",
-                workflow_mode="regular_daily_briefing",
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        created = await evaluation_db.create_evaluation_run(
+            lane="shadow",
+            source="scheduler",
+            workflow_mode="regular_daily_briefing",
+        )
 
     assert created == run_id
     args, _kwargs = fake_pool.fetchrow.await_args
@@ -221,32 +219,30 @@ async def test_create_evaluation_run_starts_in_running_state():
 
 @pytest.mark.asyncio
 async def test_complete_evaluation_run_updates_status_and_report():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.complete_evaluation_run(
-                uuid4(),
-                {
-                    "generated_at": "2026-03-06T12:00:00+00:00",
-                    "lane": "shadow",
-                    "workflow_mode": "regular_daily_briefing",
-                    "item_pool_count": 9,
-                    "summary": {"recommendation": "hold"},
-                    "candidate_overrides": {"llm_model_writer": "candidate"},
-                    "champion": {},
-                    "candidate": {},
-                },
-                report_path="/tmp/shadow_report.json",
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await evaluation_db.complete_evaluation_run(
+            uuid4(),
+            {
+                "generated_at": "2026-03-06T12:00:00+00:00",
+                "lane": "shadow",
+                "workflow_mode": "regular_daily_briefing",
+                "item_pool_count": 9,
+                "summary": {"recommendation": "hold"},
+                "candidate_overrides": {"llm_model_writer": "candidate"},
+                "champion": {},
+                "candidate": {},
+            },
+            report_path="/tmp/shadow_report.json",
+        )
 
     args, _kwargs = fake_pool.execute.await_args
     sql = args[0]
@@ -257,19 +253,17 @@ async def test_complete_evaluation_run_updates_status_and_report():
 
 @pytest.mark.asyncio
 async def test_fail_evaluation_run_marks_row_failed():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.fail_evaluation_run(uuid4(), error_message="boom")
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await evaluation_db.fail_evaluation_run(uuid4(), error_message="boom")
 
     args, _kwargs = fake_pool.execute.await_args
     sql = args[0]
@@ -279,19 +273,17 @@ async def test_fail_evaluation_run_marks_row_failed():
 
 @pytest.mark.asyncio
 async def test_list_recent_evaluation_runs_applies_lane_filter():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.list_recent_evaluation_runs(lane="shadow", limit=5)
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await evaluation_db.list_recent_evaluation_runs(lane="shadow", limit=5)
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -301,23 +293,21 @@ async def test_list_recent_evaluation_runs_applies_lane_filter():
 
 @pytest.mark.asyncio
 async def test_get_evaluation_runs_for_export_reads_full_shadow_reports():
-    import bcn.common.db as db
+    import bcn.persistence.evaluation as evaluation_db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.get_evaluation_runs_for_export(
-                lane="shadow",
-                since_days=14,
-                limit=7,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.evaluation.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await evaluation_db.get_evaluation_runs_for_export(
+            lane="shadow",
+            since_days=14,
+            limit=7,
+        )
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -377,20 +367,18 @@ async def test_insert_briefing_writes_join_table_positions():
     conn = _FakeConn(briefing_id)
     fake_pool = _FakePool(conn)
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            created = await db.insert_briefing(
-                content_markdown="hello",
-                content_html=None,
-                cover_image_url=None,
-                cover_image_prompt=None,
-                item_ids=[first_item, second_item, first_item],
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.briefings.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        created = await db.insert_briefing(
+            content_markdown="hello",
+            content_html=None,
+            cover_image_url=None,
+            cover_image_prompt=None,
+            item_ids=[first_item, second_item, first_item],
+        )
 
     assert created == briefing_id
     conn.fetchrow.assert_awaited_once()
@@ -411,19 +399,17 @@ async def test_upsert_distribution_outcome_appends_attempt_row():
     fake_pool.execute = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.upsert_distribution_outcome(
-                briefing_id=uuid4(),
-                channel="telegram",
-                status="ok",
-                metadata={"attempt": 1},
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.training.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.upsert_distribution_outcome(
+            briefing_id=uuid4(),
+            channel="telegram",
+            status="ok",
+            metadata={"attempt": 1},
+        )
 
     args, _kwargs = fake_pool.execute.await_args
     sql = args[0]
@@ -439,14 +425,12 @@ async def test_get_distribution_outcomes_reads_latest_view():
     fake_pool.execute = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.get_distribution_outcomes(briefing_ids=[uuid4()], limit=25)
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.training.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.get_distribution_outcomes(briefing_ids=[uuid4()], limit=25)
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -460,18 +444,16 @@ async def test_get_new_items_applies_retry_guards():
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.get_new_items(
-                limit=10,
-                stale_analyzing_minutes=15,
-                max_analysis_retries=4,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.get_new_items(
+            limit=10,
+            stale_analyzing_minutes=15,
+            max_analysis_retries=4,
+        )
 
     args, _kwargs = fake_pool.fetch.await_args
     sql = args[0]
@@ -488,21 +470,19 @@ async def test_release_items_from_analyzing_records_retry_metadata():
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            item_id = uuid4()
-            await db.release_items_from_analyzing(
-                [item_id],
-                error="analysis timeout",
-                max_retries=3,
-                base_delay_seconds=30,
-                max_delay_seconds=300,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        item_id = uuid4()
+        await db.release_items_from_analyzing(
+            [item_id],
+            error="analysis timeout",
+            max_retries=3,
+            base_delay_seconds=30,
+            max_delay_seconds=300,
+        )
 
     args, _kwargs = fake_pool.execute.await_args
     sql = args[0]
@@ -523,17 +503,15 @@ async def test_claim_latest_draft_briefing_applies_retry_guards():
     fake_pool = AsyncMock()
     fake_pool.fetchrow = AsyncMock(return_value=None)
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            await db.claim_latest_draft_briefing(
-                stale_distributing_minutes=20,
-                max_distribution_retries=5,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.briefings.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await db.claim_latest_draft_briefing(
+            stale_distributing_minutes=20,
+            max_distribution_retries=5,
+        )
 
     args, _kwargs = fake_pool.fetchrow.await_args
     sql = args[0]
@@ -550,21 +528,19 @@ async def test_release_briefing_for_retry_records_retry_metadata():
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
 
-    original_schema_ready = db._schema_ready
-    db._schema_ready = True
-    try:
-        with patch("bcn.common.db.get_pool", new_callable=AsyncMock) as mock_get_pool:
-            mock_get_pool.return_value = fake_pool
-            briefing_id = uuid4()
-            await db.release_briefing_for_retry(
-                briefing_id,
-                error="telegram failed",
-                max_retries=4,
-                base_delay_seconds=45,
-                max_delay_seconds=900,
-            )
-    finally:
-        db._schema_ready = original_schema_ready
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.briefings.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        briefing_id = uuid4()
+        await db.release_briefing_for_retry(
+            briefing_id,
+            error="telegram failed",
+            max_retries=4,
+            base_delay_seconds=45,
+            max_delay_seconds=900,
+        )
 
     args, _kwargs = fake_pool.execute.await_args
     sql = args[0]

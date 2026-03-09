@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from bcn.agents.analyst.service import AnalystService
+from bcn.services.analyst.service import AnalystService
 from bcn.common.config import Settings
-from bcn.common.db import close_pool
-from bcn.common.db import get_new_items
-from bcn.common.db import get_pool
-from bcn.common.db import release_items_from_analyzing
-from bcn.common.db import update_item_analyzed
+from bcn.persistence.news_items import get_new_items
+from bcn.persistence.news_items import release_items_from_analyzing
+from bcn.persistence.news_items import update_item_analyzed
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
 
 logger = logging.getLogger(__name__)
 

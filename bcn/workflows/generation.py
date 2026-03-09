@@ -7,23 +7,24 @@ import subprocess
 from typing import Any
 from uuid import UUID
 
-from bcn.agents.writer.service import WriterService
 from bcn.common.config import Settings
-from bcn.common.db import append_generation_round
-from bcn.common.db import close_pool
-from bcn.common.db import create_generation_run
-from bcn.common.db import finalize_generation_run
-from bcn.common.db import finalize_stale_pending_generation_runs
-from bcn.common.db import get_analyzed_items
-from bcn.common.db import get_pool
-from bcn.common.db import get_recent_briefings
-from bcn.common.db import get_top_items_for_period
-from bcn.common.db import insert_briefing
-from bcn.common.db import insert_generation_preference_pair
-from bcn.common.db import release_items_from_writing
+from bcn.contracts.services import WriterWorkflow
 from bcn.contracts.workflow import WriterHandoff
 from bcn.contracts.workflow import WriterHandoffResult
 from bcn.contracts.workflow import render_writer_handoff_message
+from bcn.persistence.briefings import get_recent_briefings
+from bcn.persistence.briefings import insert_briefing
+from bcn.persistence.news_items import get_analyzed_items
+from bcn.persistence.news_items import get_top_items_for_period
+from bcn.persistence.news_items import release_items_from_writing
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
+from bcn.persistence.training import append_generation_round
+from bcn.persistence.training import create_generation_run
+from bcn.persistence.training import finalize_generation_run
+from bcn.persistence.training import finalize_stale_pending_generation_runs
+from bcn.persistence.training import insert_generation_preference_pair
+from bcn.service_registry import build_writer_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -44,16 +45,6 @@ def _resolve_workflow_mode(mode: str) -> str:
     if normalized in _SUPPORTED_WORKFLOW_MODES:
         return normalized
     return REGULAR_DAILY_BRIEFING_MODE
-
-
-def _model_version(service: WriterService, role: str) -> str:
-    """Extract a coarse model version suffix for trace metadata."""
-    model = (service.llm_client.model_for_role(role) or "").strip()
-    if ":" in model:
-        return model.rsplit(":", 1)[-1].strip() or "unknown"
-    if "@" in model:
-        return model.rsplit("@", 1)[-1].strip() or "unknown"
-    return "unknown"
 
 
 def _component_config_snapshot(settings: Settings) -> dict[str, Any]:
@@ -103,18 +94,22 @@ def _component_config_snapshot(settings: Settings) -> dict[str, Any]:
             "comfyui_url",
             "comfyui_timeout",
             "comfyui_poll_interval",
+            "writer_service_url",
+            "service_request_timeout_seconds",
         }
         or key.startswith("llm_")
     }
     critic = {
         key: filtered[key]
         for key in filtered
-        if key.startswith("briefing_critic_") or key in {"briefing_gate_mode"}
+        if key.startswith("briefing_critic_")
+        or key in {"briefing_gate_mode", "critic_service_url", "service_request_timeout_seconds"}
     }
     verifier = {
         key: filtered[key]
         for key in filtered
         if key.startswith("briefing_verifier_")
+        or key in {"verifier_service_url", "service_request_timeout_seconds"}
     }
     return {
         "collector": collector,
@@ -231,13 +226,13 @@ async def execute_generation_result(
     settings: Settings,
     *,
     mode: str,
-    writer_service: WriterService | None = None,
+    writer_service: WriterWorkflow | None = None,
     source: str = "workflow_service",
     manage_pool: bool = True,
 ) -> WriterHandoffResult:
     """Claim items, generate one briefing candidate, and return a typed outcome."""
     await get_pool(settings)
-    active_service = writer_service or WriterService(settings)
+    active_service = writer_service or build_writer_workflow(settings)
     owns_service = writer_service is None
     claimed_item_ids: list[UUID] = []
 
@@ -338,6 +333,7 @@ async def execute_generation_result(
                 mode=generation_mode,
             )
             final_selected_items = list(candidate.get("selected_items") or selected_items)
+            trace_metadata = await active_service.get_trace_metadata()
             trace_run_id = await create_generation_run(
                 trigger_source=source,
                 mode=generation_mode,
@@ -349,9 +345,9 @@ async def execute_generation_result(
                     if item_id is not None
                 ],
                 selected_items=final_selected_items,
-                llm_model=active_service.llm_client.model_for_role("writer"),
-                llm_model_version=_model_version(active_service, "writer"),
-                prompts=active_service.writer_llm.prompt_versions(),
+                llm_model=trace_metadata.llm_model,
+                llm_model_version=trace_metadata.llm_model_version,
+                prompts=trace_metadata.prompts,
                 config_snapshot=_component_config_snapshot(settings),
                 git_sha=_git_sha(),
                 initial_draft=(
@@ -382,7 +378,7 @@ async def execute_generation_result(
                     "Blocking publish: briefing did not meet release thresholds after "
                     f"{int(candidate.get('rewrites', 0))} rewrite(s). "
                     f"gate={bool(gate.get('passed', False))} "
-                    f"critic={active_service.passes_critic_thresholds(critique)} "
+                    f"critic={bool(candidate.get('critic_threshold_passed', False))} "
                     f"verifier={bool(verifier.get('passed', True))}"
                 )
                 logger.warning(message)
@@ -486,7 +482,7 @@ async def execute_generation(
     settings: Settings,
     *,
     mode: str,
-    writer_service: WriterService | None = None,
+    writer_service: WriterWorkflow | None = None,
     source: str = "workflow_service",
     manage_pool: bool = True,
 ) -> str:

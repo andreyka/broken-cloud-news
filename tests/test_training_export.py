@@ -31,21 +31,30 @@ def test_export_training_includes_shadow_preference_rows(monkeypatch, tmp_path):
         },
     }
 
-    monkeypatch.setattr("bcn.common.db.get_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.close_pool", AsyncMock())
-    monkeypatch.setattr("bcn.common.db.get_generation_runs_for_export", AsyncMock(return_value=[]))
-    monkeypatch.setattr("bcn.common.db.get_generation_rounds_for_runs", AsyncMock(return_value=[]))
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
     monkeypatch.setattr(
-        "bcn.common.db.get_generation_preference_pairs_for_runs",
-        AsyncMock(return_value=[]),
-    )
-    monkeypatch.setattr("bcn.common.db.get_human_reviews", AsyncMock(return_value=[]))
-    monkeypatch.setattr(
-        "bcn.common.db.get_distribution_outcomes",
+        "bcn.persistence.training.get_generation_runs_for_export",
         AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
-        "bcn.common.db.get_evaluation_runs_for_export",
+        "bcn.persistence.training.get_generation_rounds_for_runs",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_generation_preference_pairs_for_runs",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_human_reviews",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_distribution_outcomes",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.evaluation.get_evaluation_runs_for_export",
         AsyncMock(
             return_value=[
                 {

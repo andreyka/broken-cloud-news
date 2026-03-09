@@ -8,21 +8,21 @@ from datetime import timezone
 import logging
 from uuid import UUID
 
-from bcn.agents.distributor.service import DeliveryRequest
-from bcn.agents.distributor.service import DistributorService
-from bcn.agents.distributor.service import REGULAR_MONTHLY_NEWSLETTER_MODE
-from bcn.agents.distributor.service import normalize_distribution_mode
+from bcn.services.distributor.service import DeliveryRequest
+from bcn.services.distributor.service import DistributorService
+from bcn.services.distributor.service import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.services.distributor.service import normalize_distribution_mode
 from bcn.common.config import Settings
-from bcn.common.db import claim_draft_briefing_by_id
-from bcn.common.db import claim_latest_draft_briefing
-from bcn.common.db import close_pool
-from bcn.common.db import get_distribution_outcomes
-from bcn.common.db import get_newsletter_subscribers
-from bcn.common.db import get_pool
-from bcn.common.db import mark_briefing_distributed
-from bcn.common.db import mark_items_published
-from bcn.common.db import release_briefing_for_retry
-from bcn.common.db import upsert_distribution_outcome
+from bcn.persistence.briefings import claim_draft_briefing_by_id
+from bcn.persistence.briefings import claim_latest_draft_briefing
+from bcn.persistence.briefings import mark_briefing_distributed
+from bcn.persistence.briefings import release_briefing_for_retry
+from bcn.persistence.news_items import mark_items_published
+from bcn.persistence.newsletter import get_newsletter_subscribers
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
+from bcn.persistence.training import get_distribution_outcomes
+from bcn.persistence.training import upsert_distribution_outcome
 logger = logging.getLogger(__name__)
 
 

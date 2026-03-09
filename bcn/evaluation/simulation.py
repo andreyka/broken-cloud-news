@@ -16,14 +16,14 @@ import re
 from statistics import mean
 from statistics import pstdev
 
-from bcn.agents.analyst.service import AnalystService
-from bcn.agents.analyst.service import AnalystWorkflowProtocol
-from bcn.agents.writer.service import WriterService
-from bcn.agents.writer.service import WriterWorkflowProtocol
+from bcn.services.analyst.service import AnalystService
+from bcn.services.analyst.service import AnalystWorkflowProtocol
 from bcn.common.config import Settings
-from bcn.common.db import get_distributed_briefings
-from bcn.common.db import get_items_by_ids
-from bcn.common.db import update_item_analyzed
+from bcn.persistence.briefings import get_distributed_briefings
+from bcn.persistence.news_items import get_items_by_ids
+from bcn.persistence.news_items import update_item_analyzed
+from bcn.contracts.services import WriterWorkflow
+from bcn.service_registry import build_writer_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -573,7 +573,7 @@ def score_feedback_rubric(
 
 
 async def _simulate_briefing_body(
-    writer: WriterWorkflowProtocol,
+    writer: WriterWorkflow,
     items: list[dict],
     recent_briefings: list[dict],
     *,
@@ -614,7 +614,7 @@ async def simulate_historical_briefings(
 
     # Replay oldest -> newest for realistic style memory context.
     ordered = sorted(briefings, key=lambda b: b["created_at"])
-    writer = WriterService(settings)
+    writer = build_writer_workflow(settings)
     analyst: AnalystWorkflowProtocol | None = None
     if reanalyze_items:
         analyst = AnalystService(settings)
@@ -677,65 +677,48 @@ async def simulate_historical_briefings(
             simulated_items = list(meta.get("selected_items") or items)
 
             mode = str(meta["mode"])
-            min_chars = int(meta["min_chars"])
-            hard_max_chars = int(meta["hard_max_chars"])
 
-            actual_gate = writer.quality_gate(
+            actual_review = await writer.evaluate_existing_markdown(
                 markdown=actual_body,
                 selected_items=items,
+                history=history,
                 mode=mode,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
             )
-            simulated_gate = writer.quality_gate(
+            simulated_review = await writer.evaluate_existing_markdown(
                 markdown=simulated_body,
                 selected_items=simulated_items,
+                history=history,
                 mode=mode,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
             )
 
             actual_eval = score_feedback_rubric(
                 actual_body,
                 items,
-                actual_gate,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
+                actual_review["gate"],
+                min_chars=int(actual_review["min_chars"]),
+                hard_max_chars=int(actual_review["hard_max_chars"]),
             )
             simulated_eval = score_feedback_rubric(
                 simulated_body,
                 simulated_items,
-                simulated_gate,
-                min_chars=min_chars,
-                hard_max_chars=hard_max_chars,
+                simulated_review["gate"],
+                min_chars=int(simulated_review["min_chars"]),
+                hard_max_chars=int(simulated_review["hard_max_chars"]),
             )
 
-            actual_critic_eval = await writer.critique_markdown(
-                actual_body,
-                items,
-                mode=mode,
-                recent_briefings=history,
-            )
-            simulated_critic_eval = await writer.critique_markdown(
-                simulated_body,
-                simulated_items,
-                mode=mode,
-                recent_briefings=history,
-            )
-
-            actual_style_score = actual_critic_eval.get("dimension_scores", {}).get(
+            actual_style_score = actual_review.get("critique", {}).get("dimension_scores", {}).get(
                 "style",
                 0,
             )
-            simulated_style_score = simulated_critic_eval.get("dimension_scores", {}).get(
+            simulated_style_score = simulated_review.get("critique", {}).get("dimension_scores", {}).get(
                 "style",
                 0,
             )
-            actual_novelty_score = actual_critic_eval.get("dimension_scores", {}).get(
+            actual_novelty_score = actual_review.get("critique", {}).get("dimension_scores", {}).get(
                 "novelty",
                 0,
             )
-            simulated_novelty_score = simulated_critic_eval.get("dimension_scores", {}).get(
+            simulated_novelty_score = simulated_review.get("critique", {}).get("dimension_scores", {}).get(
                 "novelty",
                 0,
             )
@@ -760,21 +743,22 @@ async def simulate_historical_briefings(
                 "delta": delta,
                 "actual_breakdown": actual_eval["breakdown"],
                 "simulated_breakdown": simulated_eval["breakdown"],
-                "actual_critic_dimension_scores": actual_critic_eval.get(
+                "actual_critic_dimension_scores": actual_review.get("critique", {}).get(
                     "dimension_scores",
                     {},
                 ),
-                "simulated_critic_dimension_scores": simulated_critic_eval.get(
+                "simulated_critic_dimension_scores": simulated_review.get("critique", {}).get(
                     "dimension_scores",
                     {},
                 ),
                 "actual_notes": actual_eval["notes"],
                 "simulated_notes": simulated_eval["notes"],
                 "actual_gate_hard_issues": [
-                    str(issue) for issue in actual_gate.get("hard_issues", [])
+                    str(issue) for issue in actual_review.get("gate", {}).get("hard_issues", [])
                 ],
                 "simulated_gate_hard_issues": [
-                    str(issue) for issue in simulated_gate.get("hard_issues", [])
+                    str(issue)
+                    for issue in simulated_review.get("gate", {}).get("hard_issues", [])
                 ],
             }
             if include_text:

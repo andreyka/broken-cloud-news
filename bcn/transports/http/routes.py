@@ -1,0 +1,15 @@
+"""Canonical HTTP route constants for BCN deployable services."""
+
+API_VERSION_PREFIX = "/v1"
+HEALTH_PATH = f"{API_VERSION_PREFIX}/healthz"
+
+WRITER_TRACE_METADATA_PATH = f"{API_VERSION_PREFIX}/trace-metadata"
+WRITER_SELECT_ITEMS_PATH = f"{API_VERSION_PREFIX}/select-items-for-workflow"
+WRITER_EVALUATE_EXISTING_PATH = f"{API_VERSION_PREFIX}/evaluate-existing-markdown"
+WRITER_GENERATE_CANDIDATE_PATH = f"{API_VERSION_PREFIX}/generate-release-candidate"
+WRITER_BUILD_ARTIFACT_PATH = f"{API_VERSION_PREFIX}/build-release-artifact"
+WRITER_SIMULATE_PATH = f"{API_VERSION_PREFIX}/simulate-briefing-body"
+
+CRITIC_EVALUATE_PATH = f"{API_VERSION_PREFIX}/evaluate"
+VERIFIER_EVALUATE_PATH = f"{API_VERSION_PREFIX}/evaluate"
+
