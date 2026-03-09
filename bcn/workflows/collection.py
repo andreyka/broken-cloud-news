@@ -6,15 +6,13 @@ import asyncio
 from dataclasses import dataclass
 import logging
 from typing import Any
-from typing import Awaitable
-from typing import Callable
 from typing import Literal
 
 from bcn.services.collector.review import SourceReviewLLM
-from bcn.services.collector.service import CollectorService
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
 from bcn.common.models import CollectedNewsItem
+from bcn.contracts.services import CollectorWorkflow
 from bcn.persistence.collection_sources import collection_source_has_historical_items
 from bcn.persistence.collection_sources import get_collection_source
 from bcn.persistence.collection_sources import record_collection_source_review
@@ -22,6 +20,7 @@ from bcn.persistence.collection_sources import upsert_collection_source
 from bcn.persistence.news_items import insert_news_item
 from bcn.persistence.runtime import close_pool
 from bcn.persistence.runtime import get_pool
+from bcn.service_registry import build_collector_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +31,13 @@ _SOURCE_LABELS = {
     "rss": "RSS",
     "twitter": "Twitter",
     "reddit": "Reddit",
+}
+
+_LEGACY_COLLECT_METHODS = {
+    "ghsa": "collect_ghsa_items",
+    "rss": "collect_rss_items",
+    "twitter": "collect_twitter_items",
+    "reddit": "collect_reddit_items",
 }
 
 
@@ -303,20 +309,6 @@ async def _persist_collected_items(
     return inserted_count
 
 
-def _collect_method(
-    collector_service: CollectorService,
-    source: Literal["ghsa", "rss", "twitter", "reddit"],
-) -> Callable[[], Awaitable[list[CollectedNewsItem]]]:
-    """Return the matching collector service method for one source."""
-    if source == "ghsa":
-        return collector_service.collect_ghsa_items
-    if source == "rss":
-        return collector_service.collect_rss_items
-    if source == "twitter":
-        return collector_service.collect_twitter_items
-    return collector_service.collect_reddit_items
-
-
 def _record_failure(
     *,
     source: str,
@@ -335,12 +327,12 @@ def _record_failure(
 async def _run_single_source(
     settings: Settings,
     *,
-    collector_service: CollectorService,
+    collector_service: CollectorWorkflow,
     source: Literal["ghsa", "rss", "twitter", "reddit"],
     reviewer: SourceReviewLLM | None,
 ) -> CollectionRunResult:
     """Run one collector source and persist its items."""
-    items = await _collect_method(collector_service, source)()
+    items = await _collect_from_service(collector_service, source)
     inserted_count = await _persist_collected_items(
         items,
         settings=settings,
@@ -359,13 +351,12 @@ async def _run_single_source(
 async def _run_all_sources(
     settings: Settings,
     *,
-    collector_service: CollectorService,
+    collector_service: CollectorWorkflow,
     reviewer: SourceReviewLLM | None,
 ) -> CollectionRunResult:
     """Run all collector sources concurrently and persist successes."""
     coroutines = [
-        _collect_method(collector_service, source)()
-        for source in _SOURCE_ORDER
+        _collect_from_service(collector_service, source) for source in _SOURCE_ORDER
     ]
     raw_results = await asyncio.gather(*coroutines, return_exceptions=True)
 
@@ -395,18 +386,36 @@ async def _run_all_sources(
     return CollectionRunResult(source="all", counts=counts, failures=failures)
 
 
+async def _collect_from_service(
+    collector_service: CollectorWorkflow,
+    source: Literal["ghsa", "rss", "twitter", "reddit"],
+) -> list[CollectedNewsItem]:
+    """Collect from protocol-first or legacy source-specific collector surfaces."""
+    method_name = _LEGACY_COLLECT_METHODS[source]
+    legacy = getattr(collector_service, method_name, None)
+    if callable(legacy):
+        return await legacy()
+
+    collect = getattr(collector_service, "collect", None)
+    if callable(collect):
+        return await collect(source)
+    raise AttributeError(
+        f"Collector service does not support collect('{source}') or {method_name}()"
+    )
+
+
 async def execute_collection(
     settings: Settings,
     *,
     source: CollectionSource = "all",
-    collector_service: CollectorService | None = None,
+    collector_service: CollectorWorkflow | None = None,
     llm_client: LLMClient | None = None,
     origin: str = "workflow_service",
     manage_pool: bool = True,
 ) -> str:
     """Collect from one or all sources, persist results, and return a summary."""
     await get_pool(settings)
-    active_service = collector_service or CollectorService(settings)
+    active_service = collector_service or build_collector_workflow(settings)
     owns_service = collector_service is None
     active_llm_client: LLMClient | None = None
     owns_llm_client = False

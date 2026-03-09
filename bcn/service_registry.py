@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from bcn.common.component_settings import service_client_settings
 from bcn.services.critic.service import CriticService
+from bcn.services.analyst.service import AnalystService
+from bcn.services.collector.service import CollectorService
 from bcn.services.verifier.service import VerifierService
 from bcn.services.writer.service import WriterService
 from bcn.common.config import Settings
+from bcn.contracts.services import AnalystWorkflow
+from bcn.contracts.services import CollectorWorkflow
 from bcn.contracts.services import CriticEvaluator
 from bcn.contracts.services import VerificationEvaluator
 from bcn.contracts.services import WriterWorkflow
+from bcn.transports.http.analyst import RemoteAnalystClient
+from bcn.transports.http.collector import RemoteCollectorClient
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.review import RemoteVerifierClient
 from bcn.transports.http.writer import RemoteWriterWorkflowClient
@@ -16,22 +23,24 @@ from bcn.transports.http.writer import RemoteWriterWorkflowClient
 
 def build_critic_evaluator(settings: Settings) -> CriticEvaluator:
     """Build the critic evaluator selected by configuration."""
-    if settings.critic_service_url:
+    endpoint = service_client_settings(settings, "critic")
+    if endpoint.configured:
         return RemoteCriticClient(
-            base_url=settings.critic_service_url,
-            timeout_seconds=settings.service_request_timeout_seconds,
-            auth_token=settings.service_auth_token,
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
         )
     return CriticService(settings)
 
 
 def build_verifier_evaluator(settings: Settings) -> VerificationEvaluator:
     """Build the verifier evaluator selected by configuration."""
-    if settings.verifier_service_url:
+    endpoint = service_client_settings(settings, "verifier")
+    if endpoint.configured:
         return RemoteVerifierClient(
-            base_url=settings.verifier_service_url,
-            timeout_seconds=settings.service_request_timeout_seconds,
-            auth_token=settings.service_auth_token,
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
         )
     return VerifierService(settings)
 
@@ -56,13 +65,38 @@ def build_local_writer_workflow(settings: Settings) -> WriterWorkflow:
 
 def build_writer_workflow(settings: Settings) -> WriterWorkflow:
     """Build the writer workflow selected by configuration."""
-    if settings.writer_service_url:
+    endpoint = service_client_settings(settings, "writer")
+    if endpoint.configured:
         return RemoteWriterWorkflowClient(
-            base_url=settings.writer_service_url,
-            timeout_seconds=settings.service_request_timeout_seconds,
-            auth_token=settings.service_auth_token,
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
         )
     return build_local_writer_workflow(settings)
+
+
+def build_collector_workflow(settings: Settings) -> CollectorWorkflow:
+    """Build the collector workflow selected by configuration."""
+    endpoint = service_client_settings(settings, "collector")
+    if endpoint.configured:
+        return RemoteCollectorClient(
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
+        )
+    return CollectorService(settings)
+
+
+def build_analyst_workflow(settings: Settings) -> AnalystWorkflow:
+    """Build the analyst workflow selected by configuration."""
+    endpoint = service_client_settings(settings, "analyst")
+    if endpoint.configured:
+        return RemoteAnalystClient(
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
+        )
+    return AnalystService(settings)
 
 
 def build_local_critic_evaluator(settings: Settings) -> CriticEvaluator:
@@ -73,3 +107,13 @@ def build_local_critic_evaluator(settings: Settings) -> CriticEvaluator:
 def build_local_verifier_evaluator(settings: Settings) -> VerificationEvaluator:
     """Build a local verifier evaluator for verifier-service deployments."""
     return VerifierService(settings)
+
+
+def build_local_collector_workflow(settings: Settings) -> CollectorWorkflow:
+    """Build a local collector workflow for collector-service deployments."""
+    return CollectorService(settings)
+
+
+def build_local_analyst_workflow(settings: Settings) -> AnalystWorkflow:
+    """Build a local analyst workflow for analyst-service deployments."""
+    return AnalystService(settings)

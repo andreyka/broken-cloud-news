@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import pytest
 
+from bcn.common.models import AnalyzedItemUpdate
+from bcn.common.models import CollectedNewsItem
 from bcn.services.writer.service import WriterService
 from bcn.common.config import Settings
+from bcn.service_registry import build_analyst_workflow
+from bcn.service_registry import build_collector_workflow
 from bcn.service_registry import build_critic_evaluator
 from bcn.service_registry import build_local_writer_workflow
 from bcn.service_registry import build_verifier_evaluator
 from bcn.service_registry import build_writer_workflow
+from bcn.transports.http.analyst import RemoteAnalystClient
+from bcn.transports.http.collector import RemoteCollectorClient
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.review import RemoteVerifierClient
 from bcn.transports.http.writer import RemoteWriterWorkflowClient
@@ -62,3 +68,19 @@ async def test_build_local_writer_workflow_injects_remote_review_clients():
     assert isinstance(workflow.critic_evaluator, RemoteCriticClient)
     assert isinstance(workflow.verifier_evaluator, RemoteVerifierClient)
     await workflow.close()
+
+
+@pytest.mark.asyncio
+async def test_build_collector_and_analyst_workflows_return_remote_clients_when_configured():
+    settings = _make_settings(
+        collector_service_url="http://collector.internal:8084",
+        analyst_service_url="http://analyst.internal:8085",
+    )
+    collector = build_collector_workflow(settings)
+    analyst = build_analyst_workflow(settings)
+    try:
+        assert isinstance(collector, RemoteCollectorClient)
+        assert isinstance(analyst, RemoteAnalystClient)
+    finally:
+        await collector.close()
+        await analyst.close()

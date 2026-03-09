@@ -75,6 +75,9 @@ def _component_config_snapshot(settings: Settings) -> dict[str, Any]:
     collector = {
         key: filtered[key] for key in filtered if key.startswith(collector_keys)
     }
+    for key in ("collector_service_url", "service_request_timeout_seconds"):
+        if key in filtered:
+            collector[key] = filtered[key]
     analyzer = {
         key: filtered[key]
         for key in filtered
@@ -82,6 +85,9 @@ def _component_config_snapshot(settings: Settings) -> dict[str, Any]:
         or key.startswith("llm_")
         or key in {"relevance_threshold"}
     }
+    for key in ("analyst_service_url", "service_request_timeout_seconds"):
+        if key in filtered:
+            analyzer[key] = filtered[key]
     writer = {
         key: filtered[key]
         for key in filtered

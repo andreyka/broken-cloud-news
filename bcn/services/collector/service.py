@@ -137,6 +137,19 @@ class CollectorService:
         if self._owns_http_client:
             await self._http.aclose()
 
+    async def collect(self, source: str) -> list[CollectedNewsItem]:
+        """Collect items for one normalized source label."""
+        normalized = str(source or "").strip().lower()
+        if normalized == "ghsa":
+            return await self.collect_ghsa_items()
+        if normalized == "rss":
+            return await self.collect_rss_items()
+        if normalized == "twitter":
+            return await self.collect_twitter_items()
+        if normalized == "reddit":
+            return await self.collect_reddit_items()
+        raise ValueError(f"Unsupported collector source: {source}")
+
     def _is_cloud_security_relevant(self, text: str) -> bool:
         """Return whether the text looks relevant to cloud security."""
         normalized = re.sub(r"\s+", " ", text).strip().lower()

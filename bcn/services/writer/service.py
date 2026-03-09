@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import html
-from dataclasses import dataclass
 import logging
-import re
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -13,9 +10,26 @@ from urllib.parse import urlparse
 from bcn.services.critic.service import CriticService
 from bcn.services.verifier.service import VerifierService
 from bcn.services.writer.llm import WriterLLM
+from bcn.services.writer.models import PostprocessedBriefing
+from bcn.services.writer.orchestration import (
+    generate_release_candidate as run_generate_release_candidate,
+)
+from bcn.services.writer.orchestration import (
+    simulate_briefing_body as run_simulate_briefing_body,
+)
+from bcn.services.writer.postprocess import WriterPostprocessor
+from bcn.services.writer.postprocess import append_missing_items_section
+from bcn.services.writer.postprocess import clip_markdown
+from bcn.services.writer.postprocess import de_template_fields
+from bcn.services.writer.postprocess import dedupe_markdown_links
+from bcn.services.writer.postprocess import missing_items_for_markdown
+from bcn.services.writer.postprocess import normalize_section_headings
+from bcn.services.writer.rendering import format_html
+from bcn.services.writer.rendering import format_markdown
+from bcn.services.writer.rendering import inline_markdown_to_html
+from bcn.services.writer.rendering import render_html_body
 from bcn.briefing import BriefingQualityGate
 from bcn.briefing import BriefingSelector
-from bcn.briefing import text as briefing_text
 from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
@@ -72,16 +86,6 @@ def _default_verifier() -> dict[str, object]:
         "issues": [],
         "recommendations": [],
     }
-
-
-@dataclass(frozen=True)
-class PostprocessedBriefing:
-    """Finalized draft body plus the selected items it actually covers."""
-
-    markdown: str
-    selected_items: list[dict[str, Any]]
-
-
 class WriterService:
     """Domain service for item selection, release checks, and draft generation."""
 
@@ -113,6 +117,15 @@ class WriterService:
         self.writer_llm = WriterLLM(self.llm_client)
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
+        self.postprocessor = WriterPostprocessor(
+            settings,
+            writer_llm=self.writer_llm,
+            priority_score=self.priority_score,
+            char_limits=lambda mode, selected_count=None: self.char_limits(
+                mode,
+                selected_count=selected_count,
+            ),
+        )
         self.critic_evaluator = critic_evaluator or CriticService(
             settings,
             llm_client=self.llm_client,
@@ -341,157 +354,12 @@ class WriterService:
         mode: str,
     ) -> dict[str, Any]:
         """Generate and evaluate one release candidate without publishing it."""
-        min_chars, target_chars, hard_max_chars = self.char_limits(
-            mode,
-            selected_count=len(selected_items),
-        )
-        draft = await self.writer_llm.generate_briefing(
-            selected_items,
-            recent_briefings=history,
+        return await run_generate_release_candidate(
+            self,
+            selected_items=selected_items,
+            history=history,
             mode=mode,
         )
-        active_selected_items = list(selected_items)
-        postprocessed = await self.postprocess_briefing(
-            briefing_body=draft,
-            selected_items=active_selected_items,
-            mode=mode,
-            min_chars=min_chars,
-            target_chars=target_chars,
-            hard_max_chars=hard_max_chars,
-        )
-        draft = postprocessed.markdown
-        active_selected_items = postprocessed.selected_items
-
-        rewrites = 0
-        max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
-        trace_rounds: list[dict[str, Any]] = []
-        preference_pairs: list[dict[str, Any]] = []
-        while True:
-            evaluation = await self.evaluate_existing_markdown(
-                markdown=draft,
-                selected_items=active_selected_items,
-                history=history,
-                mode=mode,
-            )
-            round_input = str(evaluation["markdown"] or "")
-            evaluation["rewrites"] = rewrites
-            evaluation["selected_items"] = list(active_selected_items)
-            if bool(evaluation["release_passed"]):
-                trace_rounds.append(
-                    {
-                        "round_index": len(trace_rounds),
-                        "phase": "initial" if not trace_rounds else "rewrite",
-                        "draft_input": round_input,
-                        "gate_result": dict(evaluation["gate"]),
-                        "critique_result": dict(evaluation["critique"]),
-                        "verifier_result": dict(evaluation["verifier"]),
-                        "feedback": [],
-                        "rewrite_output": None,
-                        "passed": True,
-                    }
-                )
-                evaluation["rounds"] = trace_rounds
-                evaluation["preference_pairs"] = preference_pairs
-                return evaluation
-            if rewrites >= max_rewrites:
-                trace_rounds.append(
-                    {
-                        "round_index": len(trace_rounds),
-                        "phase": "initial" if not trace_rounds else "rewrite",
-                        "draft_input": round_input,
-                        "gate_result": dict(evaluation["gate"]),
-                        "critique_result": dict(evaluation["critique"]),
-                        "verifier_result": dict(evaluation["verifier"]),
-                        "feedback": [],
-                        "rewrite_output": None,
-                        "passed": False,
-                    }
-                )
-                evaluation["rounds"] = trace_rounds
-                evaluation["preference_pairs"] = preference_pairs
-                return evaluation
-
-            gate = evaluation["gate"]
-            critique = evaluation["critique"]
-            verifier = evaluation["verifier"]
-            feedback: list[str] = []
-            feedback.extend(str(issue) for issue in gate.get("issues", []))
-            feedback.extend(str(issue) for issue in critique.get("issues", []))
-            feedback.extend(str(issue) for issue in critique.get("recommendations", []))
-            feedback.extend(str(issue) for issue in verifier.get("issues", []))
-            feedback.extend(
-                str(issue) for issue in verifier.get("recommendations", [])
-            )
-            missing_items = self.missing_items_for_markdown(draft, active_selected_items)
-            missing_urls = [
-                str(item.get("url", "")) for item in missing_items if item.get("url")
-            ]
-            if missing_items:
-                draft = self.append_missing_items_section(draft, missing_items)
-                draft = self.normalize_section_headings(
-                    self.dedupe_markdown_links(draft.strip())
-                )
-                draft = self.de_template_fields(draft)
-
-            feedback_context = self.build_rewrite_feedback_context(
-                gate=gate,
-                critique=critique,
-                verification=verifier,
-                mode=mode,
-                min_chars=int(evaluation["min_chars"]),
-                target_chars=int(evaluation["target_chars"]),
-                hard_max_chars=int(evaluation["hard_max_chars"]),
-                rewrite_attempt=rewrites + 1,
-                max_rewrites=max_rewrites,
-                selected_items=active_selected_items,
-                missing_selected_urls=missing_urls,
-            )
-
-            rewrites += 1
-            rewritten_output = await self.writer_llm.revise_briefing(
-                draft_markdown=draft,
-                items=active_selected_items,
-                feedback=feedback,
-                feedback_context=feedback_context,
-                recent_briefings=history,
-                mode=mode,
-                min_chars=int(evaluation["min_chars"]),
-                target_chars=int(evaluation["target_chars"]),
-                hard_max_chars=int(evaluation["hard_max_chars"]),
-            )
-            postprocessed = await self.postprocess_briefing(
-                briefing_body=rewritten_output,
-                selected_items=active_selected_items,
-                mode=mode,
-                min_chars=int(evaluation["min_chars"]),
-                target_chars=int(evaluation["target_chars"]),
-                hard_max_chars=int(evaluation["hard_max_chars"]),
-            )
-            rewritten_output = postprocessed.markdown
-            active_selected_items = postprocessed.selected_items
-            trace_rounds.append(
-                {
-                    "round_index": len(trace_rounds),
-                    "phase": "initial" if not trace_rounds else "rewrite",
-                    "draft_input": round_input,
-                    "gate_result": dict(gate),
-                    "critique_result": dict(critique),
-                    "verifier_result": dict(verifier),
-                    "feedback": [str(item) for item in feedback],
-                    "rewrite_output": rewritten_output,
-                    "passed": False,
-                }
-            )
-            preference_pairs.append(
-                {
-                    "round_index": len(trace_rounds),
-                    "chosen_text": rewritten_output,
-                    "rejected_text": round_input,
-                    "rationale": self.build_preference_rationale(feedback),
-                    "source": "auto_writer_loop",
-                }
-            )
-            draft = rewritten_output
 
     async def build_release_artifact(
         self,
@@ -545,131 +413,12 @@ class WriterService:
         apply_critic_rewrites: bool,
     ) -> tuple[str, dict[str, object]]:
         """Generate a replay candidate body without storing a draft row."""
-        quiet_mode = self.is_quiet_day(items)
-        mode = "quiet_day" if quiet_mode else "standard"
-        min_chars, target_chars, hard_max_chars = self.char_limits(
-            mode,
-            selected_count=len(items),
+        return await run_simulate_briefing_body(
+            self,
+            items,
+            recent_briefings,
+            apply_critic_rewrites=apply_critic_rewrites,
         )
-        active_items = list(items)
-
-        briefing_body = await self.writer_llm.generate_briefing(
-            active_items,
-            recent_briefings=recent_briefings,
-            mode=mode,
-        )
-        postprocessed = await self.postprocess_briefing(
-            briefing_body=briefing_body,
-            selected_items=active_items,
-            mode=mode,
-            min_chars=min_chars,
-            target_chars=target_chars,
-            hard_max_chars=hard_max_chars,
-        )
-        briefing_body = postprocessed.markdown
-        active_items = postprocessed.selected_items
-        min_chars, target_chars, hard_max_chars = self.char_limits(
-            mode,
-            selected_count=len(active_items),
-        )
-
-        rewrites = 0
-        if apply_critic_rewrites and self.settings.briefing_critique_enabled:
-            max_rewrites = max(0, int(self.settings.briefing_critique_max_rounds))
-            while True:
-                min_chars, target_chars, hard_max_chars = self.char_limits(
-                    mode,
-                    selected_count=len(active_items),
-                )
-                gate = self.quality_gate(
-                    markdown=briefing_body,
-                    selected_items=active_items,
-                    mode=mode,
-                    min_chars=min_chars,
-                    hard_max_chars=hard_max_chars,
-                )
-                critique = await self.critique_markdown(
-                    briefing_body,
-                    active_items,
-                    mode=mode,
-                    gate_hard_issues=[
-                        str(issue) for issue in gate.get("hard_issues", [])
-                    ],
-                    gate_soft_issues=[
-                        str(issue) for issue in gate.get("soft_issues", [])
-                    ],
-                    recent_briefings=recent_briefings,
-                )
-                gate_passed = bool(gate.get("passed", False))
-                critic_passed = bool(critique.get("passed", False))
-                if gate_passed and critic_passed:
-                    break
-                if rewrites >= max_rewrites:
-                    break
-
-                feedback: list[str] = []
-                feedback.extend(gate.get("issues", []))
-                feedback.extend([str(issue) for issue in critique.get("issues", [])])
-                feedback.extend(
-                    [str(issue) for issue in critique.get("recommendations", [])]
-                )
-                missing_items = self.missing_items_for_markdown(
-                    briefing_body,
-                    active_items,
-                )
-                feedback_context = self.build_rewrite_feedback_context(
-                    gate=gate,
-                    critique=critique,
-                    verification=_default_verifier(),
-                    mode=mode,
-                    min_chars=min_chars,
-                    target_chars=target_chars,
-                    hard_max_chars=hard_max_chars,
-                    rewrite_attempt=rewrites + 1,
-                    max_rewrites=max_rewrites,
-                    selected_items=active_items,
-                    missing_selected_urls=[
-                        str(item.get("url", "")) for item in missing_items if item.get("url")
-                    ],
-                )
-
-                rewrites += 1
-                briefing_body = await self.writer_llm.revise_briefing(
-                    draft_markdown=briefing_body,
-                    items=active_items,
-                    feedback=feedback,
-                    feedback_context=feedback_context,
-                    mode=mode,
-                    min_chars=min_chars,
-                    target_chars=target_chars,
-                    hard_max_chars=hard_max_chars,
-                )
-                postprocessed = await self.postprocess_briefing(
-                    briefing_body=briefing_body,
-                    selected_items=active_items,
-                    mode=mode,
-                    min_chars=min_chars,
-                    target_chars=target_chars,
-                    hard_max_chars=hard_max_chars,
-                )
-                briefing_body = postprocessed.markdown
-                active_items = postprocessed.selected_items
-
-        briefing_body = self.normalize_section_headings(briefing_body)
-        briefing_body = self.de_template_fields(briefing_body)
-        min_chars, target_chars, hard_max_chars = self.char_limits(
-            mode,
-            selected_count=len(active_items),
-        )
-
-        meta = {
-            "mode": mode,
-            "rewrites": rewrites,
-            "min_chars": min_chars,
-            "hard_max_chars": hard_max_chars,
-            "selected_items": list(active_items),
-        }
-        return briefing_body, meta
 
     def select_items_for_briefing(
         self,
@@ -818,6 +567,11 @@ class WriterService:
         joined = " | ".join(text.lower() for text in payload if text)
         return any(term in joined for term in _CRITIC_BLOCKING_TERMS)
 
+    @staticmethod
+    def _default_verifier() -> dict[str, object]:
+        """Return the permissive verifier payload used in simulation rewrites."""
+        return _default_verifier()
+
     async def postprocess_briefing(
         self,
         *,
@@ -829,156 +583,34 @@ class WriterService:
         hard_max_chars: int,
     ) -> PostprocessedBriefing:
         """Enforce URL coverage and body length constraints on an LLM draft."""
-        del min_chars, target_chars, hard_max_chars  # recomputed from current item count
-        active_selected_items = list(selected_items)
-        current_min_chars, current_target_chars, current_hard_max_chars = self.char_limits(
-            mode,
-            selected_count=len(active_selected_items),
-        )
-        markdown = self.normalize_section_headings(
-            self.dedupe_markdown_links((briefing_body or "").strip())
-        )
-        markdown = self.de_template_fields(markdown)
-
-        for _ in range(2):
-            missing_items = self.missing_items_for_markdown(
-                markdown,
-                active_selected_items,
-            )
-            too_short = len(markdown) < current_min_chars
-            if not missing_items and not too_short:
-                break
-
-            missing_urls = [
-                str(item.get("url", "")) for item in missing_items if item.get("url")
-            ]
-            markdown = await self.writer_llm.enrich_briefing(
-                draft_markdown=markdown,
-                items=active_selected_items,
-                min_chars=current_min_chars,
-                target_chars=current_target_chars,
-                hard_max_chars=current_hard_max_chars,
-                missing_urls=missing_urls or None,
-                mode=mode,
-            )
-            markdown = self.normalize_section_headings(
-                self.dedupe_markdown_links(markdown.strip())
-            )
-            markdown = self.de_template_fields(markdown)
-
-        missing_items = self.missing_items_for_markdown(markdown, active_selected_items)
-        max_drops = max(0, int(self.settings.briefing_missing_coverage_max_drops))
-        min_items_after_drop = max(
-            1, int(self.settings.briefing_min_items_after_coverage_drop)
-        )
-        drops = 0
-        while (
-            missing_items
-            and drops < max_drops
-            and len(active_selected_items) > min_items_after_drop
-        ):
-            weakest = min(
-                missing_items,
-                key=lambda item: self.priority_score(item),
-            )
-            active_selected_items = [
-                item
-                for item in active_selected_items
-                if str(item.get("id")) != str(weakest.get("id"))
-            ]
-            current_min_chars, current_target_chars, current_hard_max_chars = self.char_limits(
-                mode,
-                selected_count=len(active_selected_items),
-            )
-            drops += 1
-            logger.warning(
-                "Dropping uncovered low-priority item after rewrite retries: %s (%s)",
-                weakest.get("title"),
-                weakest.get("url"),
-            )
-
-            missing_items = self.missing_items_for_markdown(
-                markdown,
-                active_selected_items,
-            )
-            if not missing_items:
-                break
-
-            markdown = await self.writer_llm.enrich_briefing(
-                draft_markdown=markdown,
-                items=active_selected_items,
-                min_chars=current_min_chars,
-                target_chars=current_target_chars,
-                hard_max_chars=current_hard_max_chars,
-                missing_urls=[
-                    str(item.get("url", "")) for item in missing_items if item.get("url")
-                ]
-                or None,
-                mode=mode,
-            )
-            markdown = self.normalize_section_headings(
-                self.dedupe_markdown_links(markdown.strip())
-            )
-            markdown = self.de_template_fields(markdown)
-            missing_items = self.missing_items_for_markdown(
-                markdown,
-                active_selected_items,
-            )
-
-        if missing_items:
-            logger.warning(
-                "Coverage fallback appending %d missing selected item references.",
-                len(missing_items),
-            )
-            markdown = self.append_missing_items_section(markdown, missing_items)
-            markdown = self.normalize_section_headings(
-                self.dedupe_markdown_links(markdown.strip())
-            )
-            markdown = self.de_template_fields(markdown)
-
-        if len(markdown) > current_hard_max_chars:
-            markdown = await self.writer_llm.tighten_briefing(
-                markdown=markdown,
-                target_chars=current_target_chars,
-                hard_max_chars=current_hard_max_chars,
-            )
-            markdown = self.normalize_section_headings(
-                self.dedupe_markdown_links(markdown.strip())
-            )
-            markdown = self.de_template_fields(markdown)
-
-        if len(markdown) > current_hard_max_chars:
-            markdown = self.clip_markdown(markdown, current_hard_max_chars)
-
-        markdown = self.enforce_release_link_hygiene(
-            markdown,
-            active_selected_items,
-            hard_max_chars=current_hard_max_chars,
-        )
-        return PostprocessedBriefing(
-            markdown=markdown.strip(),
-            selected_items=active_selected_items,
+        return await self.postprocessor.postprocess_briefing(
+            briefing_body=briefing_body,
+            selected_items=selected_items,
+            mode=mode,
+            min_chars=min_chars,
+            target_chars=target_chars,
+            hard_max_chars=hard_max_chars,
         )
 
     @staticmethod
     def dedupe_markdown_links(markdown: str) -> str:
         """Remove duplicate markdown links while preserving surrounding text."""
-        return briefing_text.dedupe_markdown_links(markdown)
+        return dedupe_markdown_links(markdown)
 
     @staticmethod
     def normalize_section_headings(markdown: str) -> str:
         """Normalize digest section headings to the house style."""
-        return briefing_text.normalize_section_headings(markdown)
+        return normalize_section_headings(markdown)
 
     @staticmethod
     def de_template_fields(markdown: str) -> str:
         """Strip template filler fields left by the model."""
-        return briefing_text.de_template_fields(markdown)
+        return de_template_fields(markdown)
 
     @staticmethod
     def missing_items_for_markdown(markdown: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return selected items whose URLs are missing from markdown."""
-        return briefing_text.missing_items_for_markdown(markdown, items)
+        return missing_items_for_markdown(markdown, items)
 
     @staticmethod
     def append_missing_items_section(
@@ -986,12 +618,12 @@ class WriterService:
         missing_items: list[dict[str, Any]],
     ) -> str:
         """Append a deterministic references section for missing URLs."""
-        return briefing_text.append_missing_items_section(markdown, missing_items)
+        return append_missing_items_section(markdown, missing_items)
 
     @staticmethod
     def clip_markdown(markdown: str, limit: int) -> str:
         """Clip markdown to a hard size limit while preserving readability."""
-        return briefing_text.clip_markdown(markdown, limit)
+        return clip_markdown(markdown, limit)
 
     def enforce_release_link_hygiene(
         self,
@@ -1001,28 +633,11 @@ class WriterService:
         hard_max_chars: int,
     ) -> str:
         """Apply deterministic URL cleanup just before release checks."""
-        cleaned = self.strip_unselected_markdown_links(markdown, selected_items)
-        cleaned = self.normalize_section_headings(
-            self.dedupe_markdown_links((cleaned or "").strip())
+        return self.postprocessor.enforce_release_link_hygiene(
+            markdown,
+            selected_items,
+            hard_max_chars=hard_max_chars,
         )
-        cleaned = self.de_template_fields(cleaned)
-
-        missing_items = self.missing_items_for_markdown(cleaned, selected_items)
-        if missing_items:
-            logger.warning(
-                "Final deterministic coverage pass appending %d missing selected item references.",
-                len(missing_items),
-            )
-            cleaned = self.append_missing_items_section(cleaned, missing_items)
-            cleaned = self.normalize_section_headings(
-                self.dedupe_markdown_links(cleaned.strip())
-            )
-            cleaned = self.de_template_fields(cleaned)
-
-        if len(cleaned) > hard_max_chars:
-            cleaned = self.clip_markdown(cleaned, hard_max_chars)
-
-        return cleaned.strip()
 
     @staticmethod
     def strip_unselected_markdown_links(
@@ -1030,22 +645,10 @@ class WriterService:
         selected_items: list[dict[str, Any]],
     ) -> str:
         """Drop markdown-link formatting for any URL outside the selected item set."""
-        selected_keys = {
-            briefing_text.canonical_url_key(str(item.get("url", "")))
-            for item in selected_items
-            if item.get("url")
-        }
-        selected_keys.discard("")
-
-        def _replace(match: re.Match[str]) -> str:
-            label = match.group(1)
-            url = match.group(2)
-            key = briefing_text.canonical_url_key(url)
-            if key and key not in selected_keys:
-                return label
-            return match.group(0)
-
-        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace, markdown or "")
+        return WriterPostprocessor.strip_unselected_markdown_links(
+            markdown,
+            selected_items,
+        )
 
     @staticmethod
     def strip_unselected_github_advisory_links(
@@ -1053,23 +656,10 @@ class WriterService:
         selected_items: list[dict[str, Any]],
     ) -> str:
         """Drop markdown-link formatting for GHSA URLs that were not selected."""
-        selected_urls = {
-            briefing_text.normalize_url(str(item.get("url", "")))
-            for item in selected_items
-            if item.get("url")
-        }
-
-        def _replace(match: re.Match[str]) -> str:
-            label = match.group(1)
-            url = match.group(2)
-            normalized = briefing_text.normalize_url(url)
-            lowered = normalized.lower()
-            is_github_ghsa = "github.com/" in lowered and "/ghsa-" in lowered
-            if is_github_ghsa and normalized not in selected_urls:
-                return label
-            return match.group(0)
-
-        return re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", _replace, markdown or "")
+        return WriterPostprocessor.strip_unselected_github_advisory_links(
+            markdown,
+            selected_items,
+        )
 
     def build_rewrite_feedback_context(
         self,
@@ -1260,16 +850,7 @@ class WriterService:
         mode: str = "standard",
     ) -> str:
         """Wrap the briefing body with an optional cover image in markdown."""
-        markdown = ""
-        if cover_url and cover_url.startswith(("http://", "https://")):
-            alt = (
-                "Monthly Newsletter Cover"
-                if mode == "monthly_newsletter"
-                else "Daily Cover"
-            )
-            markdown += f"![{alt}]({cover_url})\n\n"
-        markdown += briefing_body
-        return markdown
+        return format_markdown(briefing_body, cover_url, mode=mode)
 
     @staticmethod
     def format_html(
@@ -1279,116 +860,17 @@ class WriterService:
         mode: str = "standard",
     ) -> str:
         """Convert briefing markdown-ish text to styled HTML email markup."""
-        if mode == "monthly_newsletter":
-            title = "Broken Cloud News Monthly Newsletter"
-            subtitle = (
-                "Most interesting cloud security developments from the last month."
-            )
-        else:
-            title = "Broken Cloud News Briefing"
-            subtitle = "Cloud security highlights, analysis, and operator guidance."
-
-        body_html = WriterService.render_html_body(briefing_body)
-        cover_block = ""
-        if cover_url and cover_url.startswith(("http://", "https://", "data:image/")):
-            safe_cover = html.escape(cover_url, quote=True)
-            cover_block = (
-                "<div style=\"margin:0 0 20px 0;\">"
-                f"<img src=\"{safe_cover}\" alt=\"Briefing cover\" "
-                "style=\"display:block;width:100%;max-width:760px;border-radius:14px;border:1px solid #d7e3ef;\"/>"
-                "</div>"
-            )
-
-        return (
-            "<html><body style=\"margin:0;padding:24px;background:#f4f7fb;"
-            "font-family:'Segoe UI',Arial,sans-serif;color:#142033;\">"
-            "<div style=\"max-width:820px;margin:0 auto;background:#ffffff;border:1px solid #d8e3ee;"
-            "border-radius:16px;overflow:hidden;box-shadow:0 10px 26px rgba(16,40,69,0.08);\">"
-            "<div style=\"padding:20px 24px;background:linear-gradient(120deg,#0f243f,#1a4f7a);color:#eaf3fb;\">"
-            f"<h1 style=\"margin:0 0 8px 0;font-size:28px;line-height:1.2;\">{html.escape(title)}</h1>"
-            f"<p style=\"margin:0;font-size:14px;opacity:0.93;\">{html.escape(subtitle)}</p>"
-            "</div>"
-            "<div style=\"padding:22px 24px 26px 24px;\">"
-            f"{cover_block}"
-            f"{body_html}"
-            "</div>"
-            "</div></body></html>"
-        )
+        return format_html(briefing_body, cover_url, mode=mode)
 
     @staticmethod
     def render_html_body(markdown: str) -> str:
         """Render markdown-ish digest text into readable HTML blocks."""
-        parts: list[str] = []
-        in_list = False
-        for raw in str(markdown or "").splitlines():
-            line = raw.strip()
-            if not line:
-                if in_list:
-                    parts.append("</ul>")
-                    in_list = False
-                continue
-
-            heading_text = ""
-            heading_tag = ""
-            if line.startswith("## "):
-                heading_text = line[3:].strip()
-                heading_tag = "h2"
-            elif line.startswith("### "):
-                heading_text = line[4:].strip()
-                heading_tag = "h3"
-            else:
-                bold_heading = re.fullmatch(r"\*\*(.+?)\*\*", line)
-                if bold_heading:
-                    heading_text = bold_heading.group(1).strip()
-                    heading_tag = "h3"
-
-            if heading_tag:
-                if in_list:
-                    parts.append("</ul>")
-                    in_list = False
-                parts.append(
-                    f"<{heading_tag} style=\"margin:18px 0 10px 0;color:#143154;\">"
-                    f"{WriterService.inline_markdown_to_html(heading_text)}"
-                    f"</{heading_tag}>"
-                )
-                continue
-
-            if line.startswith("- ") or line.startswith("* "):
-                if not in_list:
-                    parts.append("<ul style=\"margin:8px 0 14px 18px;padding:0;\">")
-                    in_list = True
-                parts.append(
-                    "<li style=\"margin:0 0 8px 0;line-height:1.5;\">"
-                    f"{WriterService.inline_markdown_to_html(line[2:].strip())}"
-                    "</li>"
-                )
-                continue
-
-            if in_list:
-                parts.append("</ul>")
-                in_list = False
-            parts.append(
-                "<p style=\"margin:0 0 12px 0;line-height:1.6;color:#1a2940;\">"
-                f"{WriterService.inline_markdown_to_html(line)}"
-                "</p>"
-            )
-
-        if in_list:
-            parts.append("</ul>")
-        return "\n".join(parts)
+        return render_html_body(markdown)
 
     @staticmethod
     def inline_markdown_to_html(value: str) -> str:
         """Convert basic inline markdown syntax to safe HTML."""
-        text = html.escape(value or "", quote=True)
-        text = re.sub(
-            r"\[([^\]]+)\]\((https?://[^)]+)\)",
-            r'<a href="\2" style="color:#1c5f96;text-decoration:underline;">\1</a>',
-            text,
-        )
-        text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-        text = re.sub(r"\*(.+?)\*", r"<em>\1</em>", text)
-        return text
+        return inline_markdown_to_html(value)
 
 
 WriterWorkflowProtocol = WriterWorkflow

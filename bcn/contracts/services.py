@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 from typing import Protocol
 
+from bcn.common.models import AnalyzedItemUpdate
+from bcn.common.models import CollectedNewsItem
 from bcn.contracts.review import CritiqueRequest
 from bcn.contracts.review import VerificationRequest
 
@@ -56,6 +58,26 @@ class VerificationEvaluator(Protocol):
 
     async def close(self) -> None:
         """Release owned resources."""
+
+
+class CollectorWorkflow(Protocol):
+    """Collector interface used by the control plane and remote adapters."""
+
+    async def close(self) -> None:
+        """Release any resources held by the collector workflow service."""
+
+    async def collect(self, source: str) -> list[CollectedNewsItem]:
+        """Collect items for one source without persisting them."""
+
+
+class AnalystWorkflow(Protocol):
+    """Analyst interface used by the control plane and remote adapters."""
+
+    async def close(self) -> None:
+        """Release any resources held by the analyst workflow service."""
+
+    async def analyze_item(self, item: dict[str, Any]) -> AnalyzedItemUpdate:
+        """Analyze one collected item and return the persistable update."""
 
 
 class WriterWorkflow(Protocol):
@@ -110,4 +132,3 @@ class WriterWorkflow(Protocol):
         apply_critic_rewrites: bool,
     ) -> tuple[str, dict[str, object]]:
         """Generate a replay candidate body without inserting a briefing row."""
-

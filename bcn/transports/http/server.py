@@ -1,19 +1,26 @@
-"""Minimal JSON-over-HTTP servers for BCN deployable services."""
+"""ASGI JSON-over-HTTP servers for BCN deployable services."""
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable
 from collections.abc import Callable
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler
-from http.server import ThreadingHTTPServer
+from contextlib import asynccontextmanager
 import json
 import logging
 from typing import Any
-from urllib.parse import urlsplit
 
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from bcn.common.component_settings import default_service_port
 from bcn.common.config import Settings
+from bcn.contracts.analyst import AnalystItemRequest
+from bcn.contracts.analyst import analyzed_item_to_payload
+from bcn.contracts.collector import CollectorSourceRequest
+from bcn.contracts.collector import collector_items_to_payload
+from bcn.contracts.collector import validate_collection_source
 from bcn.contracts.review import critique_request_from_payload
 from bcn.contracts.review import verification_request_from_payload
 from bcn.contracts.writer import WriterArtifactRequest
@@ -22,9 +29,13 @@ from bcn.contracts.writer import WriterReleaseCandidateRequest
 from bcn.contracts.writer import WriterSelectionRequest
 from bcn.contracts.writer import WriterSimulationRequest
 from bcn.persistence.runtime import close_pool
+from bcn.service_registry import build_local_analyst_workflow
+from bcn.service_registry import build_local_collector_workflow
 from bcn.service_registry import build_local_critic_evaluator
 from bcn.service_registry import build_local_verifier_evaluator
 from bcn.service_registry import build_local_writer_workflow
+from bcn.transports.http.routes import ANALYST_ANALYZE_ITEM_PATH
+from bcn.transports.http.routes import COLLECTOR_COLLECT_PATH
 from bcn.transports.http.routes import CRITIC_EVALUATE_PATH
 from bcn.transports.http.routes import HEALTH_PATH
 from bcn.transports.http.routes import VERIFIER_EVALUATE_PATH
@@ -39,147 +50,6 @@ logger = logging.getLogger(__name__)
 
 JsonHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 GetHandler = Callable[[], Awaitable[dict[str, Any]]]
-
-
-class ComponentHTTPServer(ThreadingHTTPServer):
-    """Threaded JSON API server for one BCN component."""
-
-    daemon_threads = True
-    allow_reuse_address = True
-
-    def __init__(
-        self,
-        server_address: tuple[str, int],
-        component: str,
-        settings: Settings,
-    ) -> None:
-        self.component = component
-        self.settings = settings
-        self.get_routes, self.post_routes = _build_routes(component, settings)
-        super().__init__(server_address, ComponentRequestHandler)
-
-
-class ComponentRequestHandler(BaseHTTPRequestHandler):
-    """Handle JSON requests for one component server."""
-
-    server: ComponentHTTPServer
-    protocol_version = "HTTP/1.1"
-
-    def do_GET(self) -> None:  # noqa: N802 - stdlib handler naming
-        self._handle(get_only=True)
-
-    def do_POST(self) -> None:  # noqa: N802 - stdlib handler naming
-        self._handle(get_only=False)
-
-    def log_message(self, format: str, *args: object) -> None:
-        logger.info(
-            "%s %s - %s",
-            self.server.component,
-            self.address_string(),
-            format % args,
-        )
-
-    def _handle(self, *, get_only: bool) -> None:
-        path = urlsplit(self.path).path or "/"
-        if path in _route_aliases(HEALTH_PATH):
-            self._write_json(
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "component": self.server.component,
-                },
-            )
-            return
-
-        if not self._is_authorized():
-            self._write_json(
-                HTTPStatus.UNAUTHORIZED,
-                {"error": "missing or invalid service auth token"},
-            )
-            return
-
-        if get_only:
-            handler = self.server.get_routes.get(path)
-            if handler is None:
-                self._write_json(
-                    HTTPStatus.NOT_FOUND,
-                    {"error": f"Unknown GET endpoint: {path}"},
-                )
-                return
-            try:
-                payload = asyncio.run(handler())
-            except Exception:
-                logger.exception(
-                    "Unhandled %s GET %s failure",
-                    self.server.component,
-                    path,
-                )
-                self._write_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"error": "internal server error"},
-                )
-                return
-            self._write_json(HTTPStatus.OK, payload)
-            return
-
-        handler = self.server.post_routes.get(path)
-        if handler is None:
-            self._write_json(
-                HTTPStatus.NOT_FOUND,
-                {"error": f"Unknown POST endpoint: {path}"},
-            )
-            return
-
-        try:
-            payload = self._read_json_body()
-            body = asyncio.run(handler(payload))
-        except ValueError as exc:
-            self._write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
-            return
-        except Exception:
-            logger.exception(
-                "Unhandled %s POST %s failure",
-                self.server.component,
-                path,
-            )
-            self._write_json(
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-                {"error": "internal server error"},
-            )
-            return
-
-        self._write_json(HTTPStatus.OK, body)
-
-    def _read_json_body(self) -> dict[str, Any]:
-        """Read and validate a JSON object request body."""
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Request body must be valid JSON.") from exc
-        if not isinstance(payload, dict):
-            raise ValueError("Request body must be a JSON object.")
-        return payload
-
-    def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        """Send one JSON response with a fixed content length."""
-        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(int(status))
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _is_authorized(self) -> bool:
-        """Return whether the request satisfies configured service auth."""
-        return _headers_authorized(
-            expected_token=str(self.server.settings.service_auth_token or ""),
-            header_token=str(self.headers.get("X-BCN-Service-Token", "") or ""),
-            authorization_header=str(self.headers.get("Authorization", "") or ""),
-        )
 
 
 def _route_aliases(path: str) -> tuple[str, ...]:
@@ -223,6 +93,10 @@ def _build_routes(
         return _critic_routes(settings)
     if component == "verifier":
         return _verifier_routes(settings)
+    if component == "collector":
+        return _collector_routes(settings)
+    if component == "analyst":
+        return _analyst_routes(settings)
     raise ValueError(f"Unsupported component: {component}")
 
 
@@ -366,15 +240,143 @@ def _verifier_routes(
     return {}, post_routes
 
 
-def create_component_http_server(
+def _collector_routes(
+    settings: Settings,
+) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+    """Return collector HTTP routes."""
+
+    async def _collect(payload: dict[str, Any]) -> dict[str, Any]:
+        request = CollectorSourceRequest.from_payload(payload)
+        source = validate_collection_source(request.source)
+        service = build_local_collector_workflow(settings)
+        try:
+            items = await service.collect(source)
+        finally:
+            await service.close()
+        return collector_items_to_payload(items)
+
+    post_routes: dict[str, JsonHandler] = {}
+    for path in _route_aliases(COLLECTOR_COLLECT_PATH):
+        post_routes[path] = _collect
+    return {}, post_routes
+
+
+def _analyst_routes(
+    settings: Settings,
+) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+    """Return analyst HTTP routes."""
+
+    async def _analyze_item(payload: dict[str, Any]) -> dict[str, Any]:
+        request = AnalystItemRequest.from_payload(payload)
+        if not request.item:
+            raise ValueError("item is required.")
+        service = build_local_analyst_workflow(settings)
+        try:
+            update = await service.analyze_item(request.item)
+        finally:
+            await service.close()
+        return analyzed_item_to_payload(update)
+
+    post_routes: dict[str, JsonHandler] = {}
+    for path in _route_aliases(ANALYST_ANALYZE_ITEM_PATH):
+        post_routes[path] = _analyze_item
+    return {}, post_routes
+
+
+async def _read_json_body(request: Request) -> dict[str, Any]:
+    """Decode one request body as a JSON object."""
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Request body must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object.")
+    return payload
+
+
+def create_component_http_app(
     settings: Settings,
     *,
     component: str,
-    host: str,
-    port: int,
-) -> ComponentHTTPServer:
-    """Create one threaded HTTP server for a BCN component."""
-    return ComponentHTTPServer((host, int(port)), component, settings)
+) -> Starlette:
+    """Create one ASGI app for a BCN component."""
+    normalized_component = str(component or "").strip().lower()
+    get_routes, post_routes = _build_routes(normalized_component, settings)
+
+    @asynccontextmanager
+    async def _lifespan(_: Starlette):
+        try:
+            yield
+        finally:
+            await close_pool()
+
+    async def _health(_: Request) -> JSONResponse:
+        return JSONResponse({"ok": True, "component": normalized_component})
+
+    async def _handle_get(request: Request) -> JSONResponse:
+        if not _headers_authorized(
+            expected_token=str(settings.service_auth_token or ""),
+            header_token=str(request.headers.get("X-BCN-Service-Token", "") or ""),
+            authorization_header=str(request.headers.get("Authorization", "") or ""),
+        ):
+            return JSONResponse(
+                {"error": "missing or invalid service auth token"},
+                status_code=401,
+            )
+        handler = get_routes.get(request.url.path or "/")
+        if handler is None:
+            return JSONResponse(
+                {"error": f"Unknown GET endpoint: {request.url.path}"},
+                status_code=404,
+            )
+        try:
+            payload = await handler()
+        except Exception:
+            logger.exception(
+                "Unhandled %s GET %s failure",
+                normalized_component,
+                request.url.path,
+            )
+            return JSONResponse({"error": "internal server error"}, status_code=500)
+        return JSONResponse(payload)
+
+    async def _handle_post(request: Request) -> JSONResponse:
+        if not _headers_authorized(
+            expected_token=str(settings.service_auth_token or ""),
+            header_token=str(request.headers.get("X-BCN-Service-Token", "") or ""),
+            authorization_header=str(request.headers.get("Authorization", "") or ""),
+        ):
+            return JSONResponse(
+                {"error": "missing or invalid service auth token"},
+                status_code=401,
+            )
+        handler = post_routes.get(request.url.path or "/")
+        if handler is None:
+            return JSONResponse(
+                {"error": f"Unknown POST endpoint: {request.url.path}"},
+                status_code=404,
+            )
+        try:
+            payload = await _read_json_body(request)
+            body = await handler(payload)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except Exception:
+            logger.exception(
+                "Unhandled %s POST %s failure",
+                normalized_component,
+                request.url.path,
+            )
+            return JSONResponse({"error": "internal server error"}, status_code=500)
+        return JSONResponse(body)
+
+    routes = [Route(path, _health, methods=["GET"]) for path in _route_aliases(HEALTH_PATH)]
+    routes.extend(Route(path, _handle_get, methods=["GET"]) for path in get_routes)
+    routes.extend(Route(path, _handle_post, methods=["POST"]) for path in post_routes)
+    return Starlette(routes=routes, lifespan=_lifespan)
 
 
 def serve_component_http(
@@ -385,20 +387,23 @@ def serve_component_http(
     port: int,
 ) -> None:
     """Serve one BCN component over JSON/HTTP until interrupted."""
-    server = create_component_http_server(
-        settings,
-        component=component,
-        host=host,
-        port=port,
-    )
+    import uvicorn
+
+    normalized_component = str(component or "").strip().lower()
+    bind_port = int(port) if int(port) > 0 else default_service_port(normalized_component)
+    app = create_component_http_app(settings, component=normalized_component)
     logger.info(
         "Serving %s service on http://%s:%d",
-        component,
-        server.server_address[0],
-        server.server_address[1],
+        normalized_component,
+        host,
+        bind_port,
     )
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
-        asyncio.run(close_pool())
+    uvicorn.run(app, host=host, port=bind_port, log_level="info")
+
+
+__all__ = [
+    "_build_routes",
+    "_headers_authorized",
+    "create_component_http_app",
+    "serve_component_http",
+]

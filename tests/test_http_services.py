@@ -6,6 +6,8 @@ import respx
 
 from bcn.common.config import Settings
 from bcn.contracts.review import CritiqueRequest
+from bcn.transports.http.analyst import RemoteAnalystClient
+from bcn.transports.http.collector import RemoteCollectorClient
 from bcn.transports.http.server import _headers_authorized
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.server import _build_routes
@@ -114,6 +116,74 @@ async def test_remote_writer_workflow_client_fetches_metadata_and_candidate():
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_remote_collector_and_analyst_clients_post_json_requests():
+    collect_route = respx.post("http://collector.internal/v1/collect").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "source_type": "rss",
+                        "source_id": "rss-1",
+                        "url": "https://example.com/advisory",
+                        "title": "Cloud advisory",
+                        "published_at": "2026-03-08T00:00:00Z",
+                        "raw_data": {"feed_url": "https://example.com/feed.xml"},
+                        "full_content": "Details",
+                    }
+                ]
+            },
+        )
+    )
+    analyze_route = respx.post("http://analyst.internal/v1/analyze-item").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "summary": "Cloud advisory summary",
+                "relevance_score": 8,
+                "ai_tags": ["cloud", "advisory"],
+                "full_content": "Details",
+                "image_prompt": "cloud advisory art",
+                "canonical_url": "https://example.com/advisory",
+            },
+        )
+    )
+    collector = RemoteCollectorClient(
+        base_url="http://collector.internal",
+        timeout_seconds=30,
+        auth_token="shared-token",
+    )
+    analyst = RemoteAnalystClient(
+        base_url="http://analyst.internal",
+        timeout_seconds=30,
+        auth_token="shared-token",
+    )
+
+    try:
+        items = await collector.collect("rss")
+        update = await analyst.analyze_item(
+            {
+                "source_type": "rss",
+                "source_id": "rss-1",
+                "url": "https://example.com/advisory",
+                "title": "Cloud advisory",
+            }
+        )
+    finally:
+        await collector.close()
+        await analyst.close()
+
+    assert collect_route.called
+    assert analyze_route.called
+    assert len(items) == 1
+    assert items[0].url == "https://example.com/advisory"
+    assert update.relevance_score == 8
+    assert collect_route.calls.last.request.headers["X-BCN-Service-Token"] == "shared-token"
+    assert analyze_route.calls.last.request.headers["X-BCN-Service-Token"] == "shared-token"
+
+
+@pytest.mark.asyncio
 async def test_component_http_server_serves_critic_requests(monkeypatch):
     class _Critic:
         async def evaluate(self, request):
@@ -143,6 +213,14 @@ def test_component_http_routes_include_versioned_and_legacy_aliases():
     _, post_routes = _build_routes("critic", _make_settings())
     assert "/v1/evaluate" in post_routes
     assert "/evaluate" in post_routes
+
+    _, collector_post_routes = _build_routes("collector", _make_settings())
+    assert "/v1/collect" in collector_post_routes
+    assert "/collect" in collector_post_routes
+
+    _, analyst_post_routes = _build_routes("analyst", _make_settings())
+    assert "/v1/analyze-item" in analyst_post_routes
+    assert "/analyze-item" in analyst_post_routes
 
 
 def test_headers_authorized_accepts_service_token_and_bearer():

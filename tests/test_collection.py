@@ -73,14 +73,21 @@ async def test_execute_collection_persists_single_source(monkeypatch):
 @pytest.mark.asyncio
 async def test_execute_collection_closes_owned_resources(monkeypatch):
     settings = _make_settings()
-    collector_service = AsyncMock()
-    collector_service.collect_reddit_items.return_value = []
-    collector_ctor = Mock(return_value=collector_service)
+    class _Collector:
+        def __init__(self):
+            self.collect = AsyncMock(return_value=[])
+            self.close = AsyncMock()
+
+    collector_service = _Collector()
+    build_workflow_mock = Mock(return_value=collector_service)
     close_pool_mock = AsyncMock()
 
     monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
     monkeypatch.setattr("bcn.workflows.collection.close_pool", close_pool_mock)
-    monkeypatch.setattr("bcn.workflows.collection.CollectorService", collector_ctor)
+    monkeypatch.setattr(
+        "bcn.workflows.collection.build_collector_workflow",
+        build_workflow_mock,
+    )
     monkeypatch.setattr(
         "bcn.workflows.collection.get_collection_source",
         AsyncMock(return_value=None),
@@ -94,7 +101,8 @@ async def test_execute_collection_closes_owned_resources(monkeypatch):
     )
 
     assert result == "Reddit: collected 0 items"
-    collector_ctor.assert_called_once_with(settings)
+    build_workflow_mock.assert_called_once_with(settings)
+    collector_service.collect.assert_awaited_once_with("reddit")
     collector_service.close.assert_awaited_once()
     close_pool_mock.assert_awaited_once()
 
@@ -364,7 +372,7 @@ async def test_source_review_llm_raises_when_json_is_invalid():
 
 @pytest.mark.asyncio
 async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
-    from bcn.common.db import insert_news_item
+    from bcn.persistence.news_items import insert_news_item
 
     fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
 
@@ -397,7 +405,7 @@ async def test_insert_news_item_parses_rfc822_published_at(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_insert_news_item_skips_invalid_published_at(monkeypatch):
-    from bcn.common.db import insert_news_item
+    from bcn.persistence.news_items import insert_news_item
 
     fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
 
@@ -426,7 +434,7 @@ async def test_insert_news_item_skips_invalid_published_at(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_insert_news_item_skips_empty_published_at(monkeypatch):
-    from bcn.common.db import insert_news_item
+    from bcn.persistence.news_items import insert_news_item
 
     fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
 
@@ -455,7 +463,7 @@ async def test_insert_news_item_skips_empty_published_at(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_insert_news_item_skips_future_published_at(monkeypatch):
-    from bcn.common.db import insert_news_item
+    from bcn.persistence.news_items import insert_news_item
 
     fetchrow_mock = AsyncMock(return_value={"id": uuid4()})
 

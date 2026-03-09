@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from bcn.services.analyst.service import AnalystService
 from bcn.common.config import Settings
+from bcn.contracts.services import AnalystWorkflow
 from bcn.persistence.news_items import get_new_items
 from bcn.persistence.news_items import release_items_from_analyzing
 from bcn.persistence.news_items import update_item_analyzed
 from bcn.persistence.runtime import close_pool
 from bcn.persistence.runtime import get_pool
+from bcn.service_registry import build_analyst_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,13 @@ def _coerce_uuid(value: object) -> UUID | None:
 async def execute_analysis(
     settings: Settings,
     *,
-    analyst_service: AnalystService | None = None,
+    analyst_service: AnalystWorkflow | None = None,
     source: str = "workflow_service",
     manage_pool: bool = True,
 ) -> str:
     """Claim new items, analyze them, persist results, and release retries."""
     await get_pool(settings)
-    active_service = analyst_service or AnalystService(settings)
+    active_service = analyst_service or build_analyst_workflow(settings)
     owns_service = analyst_service is None
 
     try:

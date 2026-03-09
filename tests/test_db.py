@@ -22,7 +22,7 @@ def _schema_ready_runtime():
 
 @pytest.mark.asyncio
 async def test_get_analyzed_items_excludes_items_already_in_live_briefings():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
@@ -53,7 +53,7 @@ async def test_get_analyzed_items_excludes_items_already_in_live_briefings():
 
 @pytest.mark.asyncio
 async def test_preview_analyzed_items_is_read_only():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
@@ -76,7 +76,7 @@ async def test_preview_analyzed_items_is_read_only():
 
 @pytest.mark.asyncio
 async def test_get_top_items_for_period_dedupes_by_story_identity():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
@@ -99,7 +99,7 @@ async def test_get_top_items_for_period_dedupes_by_story_identity():
 
 @pytest.mark.asyncio
 async def test_get_recent_published_items_uses_distribution_time_for_novelty():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
@@ -126,7 +126,7 @@ async def test_get_recent_published_items_uses_distribution_time_for_novelty():
 
 @pytest.mark.asyncio
 async def test_backfill_recent_story_identity_does_not_touch_updated_at():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(
@@ -388,7 +388,7 @@ class _FakePool:
 
 @pytest.mark.asyncio
 async def test_insert_briefing_writes_join_table_positions():
-    import bcn.common.db as db
+    import bcn.persistence.briefings as db
 
     briefing_id = uuid4()
     first_item = uuid4()
@@ -423,7 +423,7 @@ async def test_insert_briefing_writes_join_table_positions():
 
 @pytest.mark.asyncio
 async def test_upsert_distribution_outcome_appends_attempt_row():
-    import bcn.common.db as db
+    import bcn.persistence.training as db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
@@ -449,7 +449,7 @@ async def test_upsert_distribution_outcome_appends_attempt_row():
 
 @pytest.mark.asyncio
 async def test_get_distribution_outcomes_reads_latest_view():
-    import bcn.common.db as db
+    import bcn.persistence.training as db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
@@ -469,7 +469,7 @@ async def test_get_distribution_outcomes_reads_latest_view():
 
 @pytest.mark.asyncio
 async def test_get_new_items_applies_retry_guards():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.fetch = AsyncMock(return_value=[])
@@ -495,7 +495,7 @@ async def test_get_new_items_applies_retry_guards():
 
 @pytest.mark.asyncio
 async def test_release_items_from_analyzing_records_retry_metadata():
-    import bcn.common.db as db
+    import bcn.persistence.news_items as db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()
@@ -528,7 +528,7 @@ async def test_release_items_from_analyzing_records_retry_metadata():
 
 @pytest.mark.asyncio
 async def test_claim_latest_draft_briefing_applies_retry_guards():
-    import bcn.common.db as db
+    import bcn.persistence.briefings as db
 
     fake_pool = AsyncMock()
     fake_pool.fetchrow = AsyncMock(return_value=None)
@@ -553,7 +553,7 @@ async def test_claim_latest_draft_briefing_applies_retry_guards():
 
 @pytest.mark.asyncio
 async def test_release_briefing_for_retry_records_retry_metadata():
-    import bcn.common.db as db
+    import bcn.persistence.briefings as db
 
     fake_pool = AsyncMock()
     fake_pool.execute = AsyncMock()

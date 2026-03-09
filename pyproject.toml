@@ -20,6 +20,8 @@ dependencies = [
     "jinja2>=3.1",
     "playwright>=1.49",
     "google-genai>=0.3",
+    "starlette>=0.37",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
