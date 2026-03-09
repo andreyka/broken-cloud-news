@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
+import json
 import httpx
 import pytest
 import respx
@@ -97,6 +98,18 @@ async def test_remote_writer_workflow_client_fetches_metadata_and_candidate():
             },
         )
     )
+    selection_route = respx.post(
+        "http://writer.internal/v1/select-items-for-workflow"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "decision": "generate",
+                "mode": "standard",
+                "selected_items": [],
+            },
+        )
+    )
     client = RemoteWriterWorkflowClient(
         base_url="http://writer.internal",
         timeout_seconds=30,
@@ -105,6 +118,11 @@ async def test_remote_writer_workflow_client_fetches_metadata_and_candidate():
 
     try:
         trace = await client.get_trace_metadata()
+        selection = await client.select_items_for_workflow(
+            item_dicts=[{"id": "1", "title": "item"}],
+            workflow_mode="regular_daily_briefing",
+            recent_published=[{"id": "prior-1", "title": "prior"}],
+        )
         result = await client.generate_release_candidate(
             selected_items=[],
             history=[],
@@ -114,9 +132,13 @@ async def test_remote_writer_workflow_client_fetches_metadata_and_candidate():
         await client.close()
 
     assert trace_route.called
+    assert selection_route.called
     assert candidate_route.called
     assert trace.llm_model == "writer:model@v1"
+    assert selection["decision"] == "generate"
     assert result["release_passed"] is True
+    selection_payload = json.loads(selection_route.calls.last.request.content.decode())
+    assert selection_payload["recent_published"] == [{"id": "prior-1", "title": "prior"}]
     assert candidate_route.calls.last.request.headers["X-BCN-Service-Token"] == "shared-token"
 
 
@@ -260,6 +282,47 @@ async def test_component_http_server_serves_critic_requests(monkeypatch):
 
     assert response["critic_score"] == 88
     assert response["source"] == "cli"
+
+
+@pytest.mark.asyncio
+async def test_component_http_server_passes_recent_published_to_writer(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _Writer:
+        async def select_items_for_workflow(
+            self,
+            item_dicts,
+            workflow_mode,
+            recent_published=None,
+        ):
+            captured["item_dicts"] = item_dicts
+            captured["workflow_mode"] = workflow_mode
+            captured["recent_published"] = recent_published
+            return {
+                "decision": "generate",
+                "mode": "standard",
+                "selected_items": [],
+            }
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        "bcn.transports.http.server.build_local_writer_workflow",
+        lambda settings: _Writer(),
+    )
+    _, post_routes = _build_routes("writer", _make_settings())
+    response = await post_routes["/v1/select-items-for-workflow"](
+        {
+            "item_dicts": [{"id": "item-1"}],
+            "workflow_mode": "regular_daily_briefing",
+            "recent_published": [{"id": "prior-1"}],
+        }
+    )
+
+    assert response["decision"] == "generate"
+    assert captured["workflow_mode"] == "regular_daily_briefing"
+    assert captured["recent_published"] == [{"id": "prior-1"}]
 
 
 def test_component_http_routes_include_versioned_and_legacy_aliases():

@@ -15,6 +15,7 @@ from bcn.contracts.workflow import render_writer_handoff_message
 from bcn.persistence.briefings import get_recent_briefings
 from bcn.persistence.briefings import insert_briefing
 from bcn.persistence.news_items import get_analyzed_items
+from bcn.persistence.news_items import get_recent_published_items
 from bcn.persistence.news_items import get_top_items_for_period
 from bcn.persistence.news_items import release_items_from_writing
 from bcn.persistence.runtime import close_pool
@@ -309,9 +310,16 @@ async def execute_generation_result(
             )
 
         item_dicts = [dict(item) for item in items]
+        recent_published_rows = []
+        if workflow_mode != REGULAR_MONTHLY_NEWSLETTER_MODE:
+            recent_published_rows = await get_recent_published_items(
+                hours=settings.briefing_novelty_lookback_hours,
+                limit=settings.briefing_novelty_max_items,
+            )
         selection_plan = await active_service.select_items_for_workflow(
             item_dicts=item_dicts,
             workflow_mode=workflow_mode,
+            recent_published=[dict(row) for row in recent_published_rows],
         )
         generation_mode = str(selection_plan.get("mode") or "standard")
         selected_items = list(selection_plan.get("selected_items") or [])

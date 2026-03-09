@@ -108,6 +108,7 @@ class WriterWorkflow(Protocol):
         self,
         item_dicts: list[dict[str, Any]],
         workflow_mode: str,
+        recent_published: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return the side-effect-free selection plan for one workflow mode."""
 

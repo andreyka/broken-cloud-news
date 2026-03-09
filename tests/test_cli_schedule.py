@@ -26,6 +26,7 @@ from bcn.workflows.automation import job_collect_twitter
 from bcn.workflows.automation import job_shadow_regular_briefing
 from bcn.workflows.automation import job_publish_regular_monthly_newsletter
 from bcn.workflows.automation import job_publish_regular_briefing
+from bcn.workflows.catalog import iter_scheduled_workflows
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import parse_writer_handoff_payload
@@ -291,6 +292,44 @@ def test_build_regular_monthly_newsletter_trigger():
     assert trigger.hour == 17
     assert trigger.minute == 5
     assert str(trigger.timezone) == "America/Los_Angeles"
+
+
+def test_iter_scheduled_workflows_reflects_enabled_optional_jobs():
+    settings = Settings(
+        shadow_enabled=True,
+        monthly_newsletter_enabled=True,
+    )
+
+    definitions = iter_scheduled_workflows(settings)
+    ids = {definition.workflow_id for definition in definitions}
+
+    assert "ghsa_collector" in ids
+    assert "rss_collector" in ids
+    assert "reddit_collector" in ids
+    assert "twitter_collector" in ids
+    assert "analyst" in ids
+    assert f"{REGULAR_DAILY_BRIEFING_MODE}_shadow" in ids
+    assert REGULAR_DAILY_BRIEFING_MODE in ids
+    assert REGULAR_MONTHLY_NEWSLETTER_MODE in ids
+
+    daily = next(
+        definition
+        for definition in definitions
+        if definition.workflow_id == REGULAR_DAILY_BRIEFING_MODE
+    )
+    assert [step.component for step in daily.steps] == ["writer", "distributor"]
+
+
+def test_iter_scheduled_workflows_skips_disabled_optional_jobs():
+    settings = Settings(
+        shadow_enabled=False,
+        monthly_newsletter_enabled=False,
+    )
+
+    ids = {definition.workflow_id for definition in iter_scheduled_workflows(settings)}
+
+    assert f"{REGULAR_DAILY_BRIEFING_MODE}_shadow" not in ids
+    assert REGULAR_MONTHLY_NEWSLETTER_MODE not in ids
 
 
 @pytest.mark.asyncio

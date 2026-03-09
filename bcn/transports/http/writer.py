@@ -31,11 +31,13 @@ class RemoteWriterWorkflowClient(JsonHttpServiceClient):
         self,
         item_dicts: list[dict[str, Any]],
         workflow_mode: str,
+        recent_published: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Select items remotely for one workflow mode."""
         request = WriterSelectionRequest(
             item_dicts=list(item_dicts),
             workflow_mode=workflow_mode,
+            recent_published=list(recent_published or []),
         )
         return await self._post_json(WRITER_SELECT_ITEMS_PATH, request.to_payload())
 

@@ -192,6 +192,11 @@ async def test_execute_generation_publishes_and_persists_trace():
             return_value=[],
         ),
         patch(
+            "bcn.workflows.generation.get_recent_published_items",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as mock_recent_published,
+        patch(
             "bcn.workflows.generation.create_generation_run",
             new_callable=AsyncMock,
             return_value=run_id,
@@ -231,6 +236,8 @@ async def test_execute_generation_publishes_and_persists_trace():
     assert handoff.briefing_id == briefing_id
     assert handoff.item_count == 1
     service.select_items_for_workflow.assert_awaited_once()
+    assert service.select_items_for_workflow.await_args.kwargs["recent_published"] == []
+    mock_recent_published.assert_awaited_once()
     service.generate_release_candidate.assert_awaited_once()
     service.build_release_artifact.assert_awaited_once_with(
         briefing_body="Final body",
@@ -297,6 +304,11 @@ async def test_execute_generation_blocks_publish_and_releases_claimed_items():
         ),
         patch(
             "bcn.workflows.generation.get_recent_briefings",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.get_recent_published_items",
             new_callable=AsyncMock,
             return_value=[],
         ),
@@ -403,6 +415,11 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
             return_value=[],
         ),
         patch(
+            "bcn.workflows.generation.get_recent_published_items",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
             "bcn.workflows.generation.create_generation_run",
             new_callable=AsyncMock,
             return_value=run_id,
@@ -486,6 +503,11 @@ async def test_execute_generation_result_returns_typed_handoff():
             "bcn.workflows.generation.release_items_from_writing",
             new_callable=AsyncMock,
         ) as mock_release,
+        patch(
+            "bcn.workflows.generation.get_recent_published_items",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
     ):
         result = await execute_generation_result(
             settings,

@@ -12,6 +12,7 @@ from typing import Any
 from bcn.common.config import Settings
 from bcn.persistence.briefings import get_distributed_briefings
 from bcn.persistence.briefings import get_recent_briefings
+from bcn.persistence.news_items import get_recent_published_items
 from bcn.persistence.news_items import get_top_items_for_period
 from bcn.persistence.news_items import preview_analyzed_items
 from bcn.persistence.training import get_generation_runs_for_export
@@ -75,9 +76,14 @@ async def _select_items_for_workflow(
     writer: WriterWorkflow,
     item_dicts: list[dict[str, Any]],
     workflow_mode: str,
+    recent_published: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Select items for one workflow mode without mutating DB state."""
-    return await writer.select_items_for_workflow(item_dicts, workflow_mode)
+    return await writer.select_items_for_workflow(
+        item_dicts,
+        workflow_mode,
+        recent_published=recent_published,
+    )
 
 
 async def _evaluate_existing_markdown(
@@ -667,16 +673,33 @@ async def run_shadow_lane(
         )
         history_rows = await get_recent_briefings(limit=history_limit)
         history = [dict(row) for row in history_rows]
+        recent_published_rows = []
+        if workflow_mode != REGULAR_MONTHLY_NEWSLETTER_MODE:
+            recent_published_limit = max(
+                int(settings.briefing_novelty_max_items),
+                int(candidate_settings.briefing_novelty_max_items),
+            )
+            recent_published_hours = max(
+                int(settings.briefing_novelty_lookback_hours),
+                int(candidate_settings.briefing_novelty_lookback_hours),
+            )
+            recent_published_rows = await get_recent_published_items(
+                hours=recent_published_hours,
+                limit=recent_published_limit,
+            )
+        recent_published = [dict(row) for row in recent_published_rows]
 
         champion_plan = await _select_items_for_workflow(
             champion_writer,
             item_dicts,
             workflow_mode,
+            recent_published=recent_published,
         )
         candidate_plan = await _select_items_for_workflow(
             candidate_writer,
             item_dicts,
             workflow_mode,
+            recent_published=recent_published,
         )
 
         champion_result: dict[str, Any] = {

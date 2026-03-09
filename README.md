@@ -76,7 +76,6 @@ flowchart LR
 
     Collector --> Postgres
     Analyst --> Postgres
-    Writer --> Postgres
     Distributor --> Postgres
     Eval --> Postgres
     Dashboard --> Postgres
@@ -167,8 +166,8 @@ sequenceDiagram
     A-->>W: summary, score, canonical URL
     W->>DB: persist analyzed update
 
-    W->>DB: select eligible items + history
-    W->>WR: select_items_for_workflow(...)
+    W->>DB: select eligible items + recent published history
+    W->>WR: select_items_for_workflow(..., recent_published)
     WR-->>W: selection plan
     W->>WR: generate_release_candidate(...)
     WR-->>W: draft + selected items + gate state
@@ -205,13 +204,23 @@ sequenceDiagram
 The control plane owns:
 
 - scheduling
+- scheduled workflow definitions
 - workflow orchestration
 - retry and stale-claim recovery
 - database state transitions
 - generation trace persistence
 - human review and evaluation orchestration
+- retrieval of novelty/history context for downstream services
 
 The control plane lives under `bcn/workflows` and is the only layer that mutates workflow state.
+
+Scheduled jobs are defined through a small workflow catalog in `bcn/workflows/catalog.py`. Each definition declares:
+
+- workflow id
+- trigger builder
+- executor binding
+- logical steps and component ownership
+- optional enablement predicate
 
 ### Deployable services
 
@@ -224,7 +233,7 @@ Current service set:
 
 | Service | Default port | Canonical endpoint(s) | Responsibility |
 |---|---:|---|---|
-| `writer` | `8081` | `/v1/trace-metadata`, `/v1/select-items-for-workflow`, `/v1/evaluate-existing-markdown`, `/v1/generate-release-candidate`, `/v1/build-release-artifact`, `/v1/simulate-briefing-body` | selection planning, draft generation, artifact rendering, simulation |
+| `writer` | `8081` | `/v1/trace-metadata`, `/v1/select-items-for-workflow`, `/v1/evaluate-existing-markdown`, `/v1/generate-release-candidate`, `/v1/build-release-artifact`, `/v1/simulate-briefing-body` | selection planning, novelty-aware draft generation, artifact rendering, simulation |
 | `critic` | `8082` | `/v1/evaluate` | editorial and quality evaluation |
 | `verifier` | `8083` | `/v1/evaluate` | deterministic and LLM-backed factual verification |
 | `collector` | `8084` | `/v1/collect` | source collection and normalization |
@@ -232,6 +241,12 @@ Current service set:
 | `distributor` | `8086` | `/v1/deliver` | outbound delivery to Telegram, Discord, and email |
 
 Every service also exposes `/v1/healthz`.
+
+Service boundary rule:
+
+- the control plane loads workflow state and history from PostgreSQL
+- services operate on explicit request payloads
+- novelty/repetition policy lives in writer and critic logic, not in the control plane
 
 Transport characteristics:
 
@@ -280,7 +295,7 @@ The dashboard in `dashboard/` reads persisted evaluation data from PostgreSQL.
 
 | Path | Purpose |
 |---|---|
-| `bcn/workflows/` | control-plane orchestration and scheduled jobs |
+| `bcn/workflows/` | control-plane orchestration, scheduled job catalog, and workflow runtimes |
 | `bcn/services/` | deployable processing services |
 | `bcn/contracts/` | typed cross-service payloads and protocols |
 | `bcn/persistence/` | database access layer |

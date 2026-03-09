@@ -7,24 +7,10 @@ import logging
 from collections.abc import Callable
 
 from bcn.common.config import Settings
-from bcn.workflows.automation import build_regular_briefing_trigger
-from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
-from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
-from bcn.workflows.automation import job_analyze_items
-from bcn.workflows.automation import job_collect_ghsa
-from bcn.workflows.automation import job_collect_reddit
-from bcn.workflows.automation import job_collect_rss
-from bcn.workflows.automation import job_collect_twitter
-from bcn.workflows.automation import job_publish_regular_briefing
-from bcn.workflows.automation import (
-    job_publish_regular_monthly_newsletter as job_publish_monthly_newsletter,
-)
-from bcn.workflows.automation import job_shadow_regular_briefing
+from bcn.workflows.catalog import iter_scheduled_workflows
 from bcn.workflows.distribution import execute_distribution
 from bcn.workflows.generation import execute_generation_result
-from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
-from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.workflows.modes.common import run_writer_distributor_handoff
 
 logger = logging.getLogger("bcn")
@@ -61,7 +47,6 @@ async def run_daemon(
 ) -> None:
     """Start the APScheduler runtime."""
     from apscheduler import AsyncScheduler
-    from apscheduler.triggers.interval import IntervalTrigger
 
     from bcn.persistence.runtime import close_pool
     from bcn.persistence.runtime import get_pool
@@ -93,49 +78,11 @@ async def run_daemon(
     _emit("Starting Broken Cloud News scheduler...")
     try:
         async with AsyncScheduler() as scheduler:
-            await scheduler.add_schedule(
-                partial(job_collect_ghsa, runtime),
-                IntervalTrigger(hours=settings.ghsa_interval_hours),
-                id="ghsa_collector",
-            )
-            await scheduler.add_schedule(
-                partial(job_collect_rss, runtime),
-                IntervalTrigger(hours=settings.rss_interval_hours),
-                id="rss_collector",
-            )
-            await scheduler.add_schedule(
-                partial(job_collect_reddit, runtime),
-                IntervalTrigger(hours=settings.reddit_interval_hours),
-                id="reddit_collector",
-            )
-            await scheduler.add_schedule(
-                partial(job_collect_twitter, runtime),
-                IntervalTrigger(hours=settings.twitter_interval_hours),
-                id="twitter_collector",
-            )
-            await scheduler.add_schedule(
-                partial(job_analyze_items, runtime),
-                IntervalTrigger(minutes=settings.analyst_interval_minutes),
-                id="analyst",
-            )
-
-            if settings.shadow_enabled:
+            for definition in iter_scheduled_workflows(settings):
                 await scheduler.add_schedule(
-                    partial(job_shadow_regular_briefing, runtime),
-                    build_shadow_regular_briefing_trigger(settings),
-                    id=f"{REGULAR_DAILY_BRIEFING_MODE}_shadow",
-                )
-
-            await scheduler.add_schedule(
-                partial(job_publish_regular_briefing, runtime),
-                build_regular_briefing_trigger(settings),
-                id=REGULAR_DAILY_BRIEFING_MODE,
-            )
-            if settings.monthly_newsletter_enabled:
-                await scheduler.add_schedule(
-                    partial(job_publish_monthly_newsletter, runtime),
-                    build_regular_monthly_newsletter_trigger(settings),
-                    id=REGULAR_MONTHLY_NEWSLETTER_MODE,
+                    partial(definition.run, runtime),
+                    definition.build_trigger(settings),
+                    id=definition.workflow_id,
                 )
 
             _emit("Scheduler started. Press Ctrl+C to stop.")

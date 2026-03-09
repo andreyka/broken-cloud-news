@@ -39,7 +39,6 @@ from bcn.contracts.services import CriticEvaluator
 from bcn.contracts.services import VerificationEvaluator
 from bcn.contracts.services import WriterTraceMetadata
 from bcn.contracts.services import WriterWorkflow
-from bcn.persistence.news_items import get_recent_published_items
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 logger = logging.getLogger(__name__)
@@ -171,6 +170,7 @@ class WriterService:
         self,
         item_dicts: list[dict[str, Any]],
         workflow_mode: str,
+        recent_published: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Select items for one workflow mode without mutating DB state."""
         if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
@@ -213,15 +213,11 @@ class WriterService:
                     "selected_items": [],
                 }
 
-        recent_published = await get_recent_published_items(
-            hours=self.settings.briefing_novelty_lookback_hours,
-            limit=self.settings.briefing_novelty_max_items,
-        )
         quiet_mode = self.is_quiet_day(item_dicts)
         mode = "quiet_day" if quiet_mode else "standard"
         selected = self.select_items_for_briefing(
             item_dicts,
-            recent_published=[dict(row) for row in recent_published],
+            recent_published=list(recent_published or []),
             quiet_mode=quiet_mode,
         )
         if not selected:

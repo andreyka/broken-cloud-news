@@ -19,11 +19,13 @@ class WriterSelectionRequest:
 
     item_dicts: list[dict[str, Any]]
     workflow_mode: str
+    recent_published: list[dict[str, Any]]
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "item_dicts": list(self.item_dicts),
             "workflow_mode": self.workflow_mode,
+            "recent_published": list(self.recent_published),
         }
 
     @classmethod
@@ -32,6 +34,7 @@ class WriterSelectionRequest:
         return cls(
             item_dicts=_coerce_dict_list(data.get("item_dicts")),
             workflow_mode=str(data.get("workflow_mode") or "").strip(),
+            recent_published=_coerce_dict_list(data.get("recent_published")),
         )
 
 
@@ -142,4 +145,3 @@ class WriterSimulationRequest:
             recent_briefings=_coerce_dict_list(data.get("recent_briefings")),
             apply_critic_rewrites=bool(data.get("apply_critic_rewrites", False)),
         )
-

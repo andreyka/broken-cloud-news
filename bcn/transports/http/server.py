@@ -124,6 +124,7 @@ def _writer_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, J
             return await service.select_items_for_workflow(
                 item_dicts=request.item_dicts,
                 workflow_mode=request.workflow_mode,
+                recent_published=request.recent_published,
             )
         finally:
             await service.close()
