@@ -192,8 +192,15 @@ async def run_daemon(
 
             _emit("Scheduler started. Press Ctrl+C to stop.")
 
-            # Wait for either the scheduler to stop or SIGTERM
-            await shutdown_event.wait()
+            # Run the scheduler and wait for SIGTERM concurrently
+            scheduler_task = asyncio.create_task(scheduler.run_until_stopped())
+            shutdown_task = asyncio.create_task(shutdown_event.wait())
+            done, pending = await asyncio.wait(
+                {scheduler_task, shutdown_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
             logger.info("Shutting down scheduler...")
     finally:
         if health_server is not None:

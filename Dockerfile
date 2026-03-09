@@ -13,7 +13,6 @@ WORKDIR /app
 
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin/bcn /usr/local/bin/bcn
-COPY --from=builder /app/bcn/ bcn/
 COPY --from=builder /app/postgres/ postgres/
 
 # Install Playwright Chromium + all system dependencies

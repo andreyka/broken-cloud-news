@@ -9,7 +9,9 @@ This module provides:
 from __future__ import annotations
 
 import logging
+from collections.abc import Coroutine
 from pathlib import Path
+from typing import Any
 
 from bcn.common.config import Settings
 from bcn.workflows.analysis import execute_analysis
@@ -61,7 +63,7 @@ def configure_scheduler_runtime(
     return build_workflow_runtime(settings=settings)
 
 
-async def _run_job_safely(name: str, coro) -> None:  # noqa: ANN001
+async def _run_job_safely(name: str, coro: Coroutine[Any, Any, None]) -> None:
     """Execute a scheduled job with error isolation.
 
     Catches and logs any exception so that a single failing job does not
