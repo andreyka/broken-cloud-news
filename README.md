@@ -166,33 +166,39 @@ sequenceDiagram
     A-->>W: summary, score, canonical URL
     W->>DB: persist analyzed update
 
-    W->>DB: select eligible items + recent published history
+    W->>DB: load eligible items + recent published history
     W->>WR: select_items_for_workflow(..., recent_published)
     WR-->>W: selection plan
-    W->>WR: generate_release_candidate(...)
-    WR-->>W: draft + selected items + gate state
 
-    opt critique enabled
-        W->>CR: evaluate(draft)
-        CR-->>W: critique result
-    end
+    alt selection says generate
+        W->>DB: load recent briefing history
+        W->>WR: generate_release_candidate(selected_items, history, mode)
+        WR->>WR: draft + postprocess
 
-    opt verification enabled
-        W->>VE: evaluate(draft)
-        VE-->>W: verification result
-    end
+        loop rewrite loop until pass or max rounds
+            WR->>CR: evaluate(draft)
+            CR-->>WR: critique result
+            WR->>VE: evaluate(draft)
+            VE-->>WR: verification result
+            WR->>WR: apply rewrite feedback
+        end
 
-    W->>WR: build_release_artifact(...)
-    WR-->>W: markdown/html/cover payload
-    W->>DB: persist briefing + generation trace
+        WR-->>W: candidate markdown + selected items + gate state
 
-    alt publishable briefing exists
-        W->>DB: claim draft for distribution
-        W->>D: deliver(briefing)
-        D->>CH: send to Telegram / Discord / Email
-        D-->>W: delivery results
-        W->>DB: persist outcomes + mark distributed
-    else skip
+        alt candidate is publishable
+            W->>WR: build_release_artifact(...)
+            WR-->>W: markdown/html/cover payload
+            W->>DB: persist briefing + generation trace
+            W->>DB: claim draft for distribution
+            W->>D: deliver(briefing)
+            D->>CH: send to Telegram / Discord / Email
+            D-->>W: delivery results
+            W->>DB: persist outcomes + mark distributed
+        else blocked after review
+            W->>DB: persist blocked generation trace
+            W-->>S: blocked reason
+        end
+    else selection says skip
         W-->>S: skip reason
     end
 ```
