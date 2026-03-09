@@ -8,6 +8,9 @@ from typing import Any
 from uuid import UUID
 
 from bcn.common.config import Settings
+from bcn.contracts.modes import ALL_WORKFLOW_MODES
+from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 from bcn.contracts.services import WriterWorkflow
 from bcn.contracts.workflow import WriterHandoff
 from bcn.contracts.workflow import WriterHandoffResult
@@ -29,15 +32,7 @@ from bcn.service_registry import build_writer_workflow
 
 logger = logging.getLogger(__name__)
 
-REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
-REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
-_SUPPORTED_WORKFLOW_MODES = frozenset(
-    (
-        REGULAR_DAILY_BRIEFING_MODE,
-        "ad_hoc",
-        REGULAR_MONTHLY_NEWSLETTER_MODE,
-    )
-)
+_SUPPORTED_WORKFLOW_MODES = frozenset(ALL_WORKFLOW_MODES)
 
 
 def _resolve_workflow_mode(mode: str) -> str:

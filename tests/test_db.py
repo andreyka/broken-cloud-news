@@ -7,17 +7,27 @@ from uuid import uuid4
 
 import pytest
 
+from bcn.common.config import Settings
+
 
 @contextmanager
 def _schema_ready_runtime():
     import bcn.persistence.runtime as runtime
 
-    original_schema_ready = runtime._schema_ready
-    runtime._schema_ready = True
+    token = runtime._current_runtime.set(
+        runtime.PersistenceRuntime(
+            database_url=str(
+                Settings(
+                    database_url="postgresql://test:test@localhost:5432/test",
+                ).database_url
+            ),
+            schema_ready=True,
+        )
+    )
     try:
         yield
     finally:
-        runtime._schema_ready = original_schema_ready
+        runtime._current_runtime.reset(token)
 
 
 @pytest.mark.asyncio

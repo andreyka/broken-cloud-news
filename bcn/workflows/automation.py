@@ -13,7 +13,7 @@ from pathlib import Path
 from bcn.common.config import Settings
 from bcn.workflows.analysis import execute_analysis
 from bcn.workflows.collection import execute_collection
-from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
 from bcn.workflows.modes.regular_daily_briefing import (
     build_trigger as build_regular_briefing_trigger,

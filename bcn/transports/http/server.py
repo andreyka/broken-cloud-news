@@ -30,12 +30,7 @@ from bcn.contracts.writer import WriterReleaseCandidateRequest
 from bcn.contracts.writer import WriterSelectionRequest
 from bcn.contracts.writer import WriterSimulationRequest
 from bcn.persistence.runtime import close_pool
-from bcn.service_registry import build_local_analyst_workflow
-from bcn.service_registry import build_local_collector_workflow
-from bcn.service_registry import build_local_critic_evaluator
-from bcn.service_registry import build_local_distributor_workflow
-from bcn.service_registry import build_local_verifier_evaluator
-from bcn.service_registry import build_local_writer_workflow
+from bcn.service_registry import build_local_component_service
 from bcn.transports.http.routes import ANALYST_ANALYZE_ITEM_PATH
 from bcn.transports.http.routes import COLLECTOR_COLLECT_PATH
 from bcn.transports.http.routes import CRITIC_EVALUATE_PATH
@@ -76,102 +71,103 @@ def _headers_authorized(
 
 def _build_routes(
     component: str,
-    settings: object,
+    service: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Build component-local HTTP routes."""
     if component == "writer":
-        return _writer_routes(settings)
+        return _writer_routes(service)
     if component == "critic":
-        return _critic_routes(settings)
+        return _critic_routes(service)
     if component == "verifier":
-        return _verifier_routes(settings)
+        return _verifier_routes(service)
     if component == "collector":
-        return _collector_routes(settings)
+        return _collector_routes(service)
     if component == "analyst":
-        return _analyst_routes(settings)
+        return _analyst_routes(service)
     if component == "distributor":
-        return _distributor_routes(settings)
+        return _distributor_routes(service)
     raise ValueError(f"Unsupported component: {component}")
 
 
-def _writer_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+def _route_paths(component: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return declared GET and POST route paths for one component."""
+    normalized = str(component or "").strip().lower()
+    if normalized == "writer":
+        return (
+            (WRITER_TRACE_METADATA_PATH,),
+            (
+                WRITER_SELECT_ITEMS_PATH,
+                WRITER_EVALUATE_EXISTING_PATH,
+                WRITER_GENERATE_CANDIDATE_PATH,
+                WRITER_BUILD_ARTIFACT_PATH,
+                WRITER_SIMULATE_PATH,
+            ),
+        )
+    if normalized in {"critic", "verifier"}:
+        return ((), (CRITIC_EVALUATE_PATH,))
+    if normalized == "collector":
+        return ((), (COLLECTOR_COLLECT_PATH,))
+    if normalized == "analyst":
+        return ((), (ANALYST_ANALYZE_ITEM_PATH,))
+    if normalized == "distributor":
+        return ((), (DISTRIBUTOR_DELIVER_PATH,))
+    raise ValueError(f"Unsupported component: {component}")
+
+
+def _writer_routes(service: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return writer HTTP routes."""
 
     async def _trace_metadata() -> dict[str, Any]:
-        service = build_local_writer_workflow(settings)
-        try:
-            return (await service.get_trace_metadata()).to_payload()
-        finally:
-            await service.close()
+        return (await service.get_trace_metadata()).to_payload()
 
     async def _select_items(payload: dict[str, Any]) -> dict[str, Any]:
         request = WriterSelectionRequest.from_payload(payload)
         if not request.workflow_mode:
             raise ValueError("workflow_mode is required.")
-        service = build_local_writer_workflow(settings)
-        try:
-            return await service.select_items_for_workflow(
-                item_dicts=request.item_dicts,
-                workflow_mode=request.workflow_mode,
-                recent_published=request.recent_published,
-            )
-        finally:
-            await service.close()
+        return await service.select_items_for_workflow(
+            item_dicts=request.item_dicts,
+            workflow_mode=request.workflow_mode,
+            recent_published=request.recent_published,
+        )
 
     async def _evaluate_existing(payload: dict[str, Any]) -> dict[str, Any]:
         request = WriterDraftEvaluationRequest.from_payload(payload)
         if not request.mode:
             raise ValueError("mode is required.")
-        service = build_local_writer_workflow(settings)
-        try:
-            return await service.evaluate_existing_markdown(
-                markdown=request.markdown,
-                selected_items=request.selected_items,
-                history=request.history,
-                mode=request.mode,
-            )
-        finally:
-            await service.close()
+        return await service.evaluate_existing_markdown(
+            markdown=request.markdown,
+            selected_items=request.selected_items,
+            history=request.history,
+            mode=request.mode,
+        )
 
     async def _generate_candidate(payload: dict[str, Any]) -> dict[str, Any]:
         request = WriterReleaseCandidateRequest.from_payload(payload)
         if not request.mode:
             raise ValueError("mode is required.")
-        service = build_local_writer_workflow(settings)
-        try:
-            return await service.generate_release_candidate(
-                selected_items=request.selected_items,
-                history=request.history,
-                mode=request.mode,
-            )
-        finally:
-            await service.close()
+        return await service.generate_release_candidate(
+            selected_items=request.selected_items,
+            history=request.history,
+            mode=request.mode,
+        )
 
     async def _build_artifact(payload: dict[str, Any]) -> dict[str, Any]:
         request = WriterArtifactRequest.from_payload(payload)
         if not request.mode:
             raise ValueError("mode is required.")
-        service = build_local_writer_workflow(settings)
-        try:
-            return await service.build_release_artifact(
-                briefing_body=request.briefing_body,
-                selected_items=request.selected_items,
-                mode=request.mode,
-            )
-        finally:
-            await service.close()
+        return await service.build_release_artifact(
+            briefing_body=request.briefing_body,
+            selected_items=request.selected_items,
+            mode=request.mode,
+        )
 
     async def _simulate(payload: dict[str, Any]) -> dict[str, Any]:
         request = WriterSimulationRequest.from_payload(payload)
-        service = build_local_writer_workflow(settings)
-        try:
-            markdown, meta = await service.simulate_briefing_body(
-                request.items,
-                request.recent_briefings,
-                apply_critic_rewrites=request.apply_critic_rewrites,
-            )
-        finally:
-            await service.close()
+        markdown, meta = await service.simulate_briefing_body(
+            request.items,
+            request.recent_briefings,
+            apply_critic_rewrites=request.apply_critic_rewrites,
+        )
         return {
             "markdown": markdown,
             "meta": dict(meta),
@@ -189,24 +185,20 @@ def _writer_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, J
     return get_routes, post_routes
 
 
-def _critic_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+def _critic_routes(service: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return critic HTTP routes."""
 
     async def _evaluate(payload: dict[str, Any]) -> dict[str, Any]:
         request = critique_request_from_payload(payload)
         if request is None:
             raise ValueError("draft_markdown is required.")
-        service = build_local_critic_evaluator(settings)
-        try:
-            return await service.evaluate(request)
-        finally:
-            await service.close()
+        return await service.evaluate(request)
 
     return {}, {CRITIC_EVALUATE_PATH: _evaluate}
 
 
 def _verifier_routes(
-    settings: object,
+    service: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return verifier HTTP routes."""
 
@@ -214,35 +206,27 @@ def _verifier_routes(
         request = verification_request_from_payload(payload)
         if request is None:
             raise ValueError("draft_markdown is required.")
-        service = build_local_verifier_evaluator(settings)
-        try:
-            return await service.evaluate(request)
-        finally:
-            await service.close()
+        return await service.evaluate(request)
 
     return {}, {VERIFIER_EVALUATE_PATH: _evaluate}
 
 
 def _collector_routes(
-    settings: object,
+    service: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return collector HTTP routes."""
 
     async def _collect(payload: dict[str, Any]) -> dict[str, Any]:
         request = CollectorSourceRequest.from_payload(payload)
         source = validate_collection_source(request.source)
-        service = build_local_collector_workflow(settings)
-        try:
-            items = await service.collect(source)
-        finally:
-            await service.close()
+        items = await service.collect(source)
         return collector_items_to_payload(items)
 
     return {}, {COLLECTOR_COLLECT_PATH: _collect}
 
 
 def _analyst_routes(
-    settings: object,
+    service: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return analyst HTTP routes."""
 
@@ -250,18 +234,14 @@ def _analyst_routes(
         request = AnalystItemRequest.from_payload(payload)
         if not request.item:
             raise ValueError("item is required.")
-        service = build_local_analyst_workflow(settings)
-        try:
-            update = await service.analyze_item(request.item)
-        finally:
-            await service.close()
+        update = await service.analyze_item(request.item)
         return analyzed_item_to_payload(update)
 
     return {}, {ANALYST_ANALYZE_ITEM_PATH: _analyze_item}
 
 
 def _distributor_routes(
-    settings: object,
+    service: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return distributor HTTP routes."""
 
@@ -269,11 +249,7 @@ def _distributor_routes(
         request = delivery_request_from_payload(payload)
         if request is None:
             raise ValueError("briefing is required.")
-        service = build_local_distributor_workflow(settings)
-        try:
-            result = await service.deliver(request)
-        finally:
-            await service.close()
+        result = await service.deliver(request)
         return delivery_result_to_payload(result)
 
     return {}, {DISTRIBUTOR_DELIVER_PATH: _deliver}
@@ -300,13 +276,20 @@ def create_component_http_app(
 ) -> Starlette:
     """Create one ASGI app for a BCN component."""
     normalized_component = str(component or "").strip().lower()
-    get_routes, post_routes = _build_routes(normalized_component, settings)
+    service_holder: dict[str, object] = {}
 
     @asynccontextmanager
     async def _lifespan(_: Starlette):
+        service_holder["service"] = build_local_component_service(
+            normalized_component,
+            settings,
+        )
         try:
             yield
         finally:
+            service = service_holder.pop("service", None)
+            if service is not None:
+                await service.close()
             await close_pool()
 
     async def _health(_: Request) -> JSONResponse:
@@ -322,6 +305,10 @@ def create_component_http_app(
                 {"error": "missing or invalid service auth token"},
                 status_code=401,
             )
+        service = service_holder.get("service")
+        if service is None:
+            return JSONResponse({"error": "service not initialized"}, status_code=503)
+        get_routes, _ = _build_routes(normalized_component, service)
         handler = get_routes.get(request.url.path or "/")
         if handler is None:
             return JSONResponse(
@@ -349,6 +336,10 @@ def create_component_http_app(
                 {"error": "missing or invalid service auth token"},
                 status_code=401,
             )
+        service = service_holder.get("service")
+        if service is None:
+            return JSONResponse({"error": "service not initialized"}, status_code=503)
+        _, post_routes = _build_routes(normalized_component, service)
         handler = post_routes.get(request.url.path or "/")
         if handler is None:
             return JSONResponse(
@@ -369,9 +360,10 @@ def create_component_http_app(
             return JSONResponse({"error": "internal server error"}, status_code=500)
         return JSONResponse(body)
 
+    get_paths, post_paths = _route_paths(normalized_component)
     routes = [Route(HEALTH_PATH, _health, methods=["GET"])]
-    routes.extend(Route(path, _handle_get, methods=["GET"]) for path in get_routes)
-    routes.extend(Route(path, _handle_post, methods=["POST"]) for path in post_routes)
+    routes.extend(Route(path, _handle_get, methods=["GET"]) for path in get_paths)
+    routes.extend(Route(path, _handle_post, methods=["POST"]) for path in post_paths)
     return Starlette(routes=routes, lifespan=_lifespan)
 
 

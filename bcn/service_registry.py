@@ -184,12 +184,32 @@ def build_distributor_workflow(settings: Settings) -> DistributorWorkflow:
     )
 
 
+_LOCAL_COMPONENT_BUILDERS: dict[str, _LocalBuilder] = {
+    "writer": build_local_writer_workflow,
+    "critic": build_local_critic_evaluator,
+    "verifier": build_local_verifier_evaluator,
+    "collector": build_local_collector_workflow,
+    "analyst": build_local_analyst_workflow,
+    "distributor": build_local_distributor_workflow,
+}
+
+
+def build_local_component_service(component: str, settings: object) -> object:
+    """Build one local component instance for service hosting."""
+    normalized = str(component or "").strip().lower()
+    builder = _LOCAL_COMPONENT_BUILDERS.get(normalized)
+    if builder is None:
+        raise ValueError(f"Unsupported component: {component}")
+    return builder(settings)
+
+
 __all__ = [
     "build_analyst_workflow",
     "build_collector_workflow",
     "build_critic_evaluator",
     "build_distributor_workflow",
     "build_local_analyst_workflow",
+    "build_local_component_service",
     "build_local_collector_workflow",
     "build_local_critic_evaluator",
     "build_local_distributor_workflow",

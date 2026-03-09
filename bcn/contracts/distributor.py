@@ -8,15 +8,11 @@ from datetime import datetime
 import json
 from typing import Any
 
-REGULAR_DAILY_BRIEFING_MODE = "regular_daily_briefing"
-REGULAR_MONTHLY_NEWSLETTER_MODE = "regular_monthly_newsletter"
-_SUPPORTED_MODES = frozenset(
-    (
-        REGULAR_DAILY_BRIEFING_MODE,
-        "ad_hoc",
-        REGULAR_MONTHLY_NEWSLETTER_MODE,
-    )
-)
+from bcn.contracts.modes import ALL_WORKFLOW_MODES
+from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+
+_SUPPORTED_MODES = frozenset(ALL_WORKFLOW_MODES)
 _DELIVERY_REQUEST_PREFIX = "deliver_briefing::"
 _DELIVERY_RESULT_PREFIX = "delivery_result::"
 

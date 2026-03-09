@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 
 def select_items_for_workflow(

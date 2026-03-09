@@ -259,7 +259,7 @@ async def test_remote_distributor_client_posts_json_request():
 
 
 @pytest.mark.asyncio
-async def test_component_http_server_serves_critic_requests(monkeypatch):
+async def test_component_http_server_serves_critic_requests():
     class _Critic:
         async def evaluate(self, request):
             return {
@@ -271,11 +271,8 @@ async def test_component_http_server_serves_critic_requests(monkeypatch):
         async def close(self):
             return None
 
-    monkeypatch.setattr(
-        "bcn.transports.http.server.build_local_critic_evaluator",
-        lambda settings: _Critic(),
-    )
-    _, post_routes = _build_routes("critic", _make_settings())
+    service = _Critic()
+    _, post_routes = _build_routes("critic", service)
     response = await post_routes["/v1/evaluate"](
         {"draft_markdown": "**Draft**", "source": "cli"}
     )
@@ -285,7 +282,7 @@ async def test_component_http_server_serves_critic_requests(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_component_http_server_passes_recent_published_to_writer(monkeypatch):
+async def test_component_http_server_passes_recent_published_to_writer():
     captured: dict[str, object] = {}
 
     class _Writer:
@@ -307,11 +304,8 @@ async def test_component_http_server_passes_recent_published_to_writer(monkeypat
         async def close(self):
             return None
 
-    monkeypatch.setattr(
-        "bcn.transports.http.server.build_local_writer_workflow",
-        lambda settings: _Writer(),
-    )
-    _, post_routes = _build_routes("writer", _make_settings())
+    service = _Writer()
+    _, post_routes = _build_routes("writer", service)
     response = await post_routes["/v1/select-items-for-workflow"](
         {
             "item_dicts": [{"id": "item-1"}],

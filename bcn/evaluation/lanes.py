@@ -19,8 +19,8 @@ from bcn.persistence.training import get_generation_runs_for_export
 from bcn.persistence.training import get_human_reviews
 from bcn.contracts.services import WriterWorkflow
 from bcn.service_registry import build_writer_workflow
-from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
-from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 from .simulation import _strip_cover_image
 from .simulation import score_feedback_rubric
