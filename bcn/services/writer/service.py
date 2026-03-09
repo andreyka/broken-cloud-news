@@ -39,10 +39,12 @@ from bcn.services.writer.review import build_rewrite_feedback_context
 from bcn.services.writer.review import critique_markdown
 from bcn.services.writer.review import default_verifier
 from bcn.services.writer.review import evaluate_existing_markdown
+from bcn.services.writer.review import extract_repeated_topics
 from bcn.services.writer.review import has_critical_critic_issue
 from bcn.services.writer.review import passes_critic_thresholds
 from bcn.services.writer.review import quality_gate
 from bcn.services.writer.review import string_list
+from bcn.services.writer.review import trim_repeated_selected_items
 from bcn.services.writer.review import verify_markdown
 from bcn.services.writer.selection import char_limits
 from bcn.services.writer.selection import is_quiet_day
@@ -443,6 +445,26 @@ class WriterService:
             max_rewrites=max_rewrites,
             selected_items=selected_items,
             missing_selected_urls=missing_selected_urls,
+        )
+
+    @staticmethod
+    def extract_repeated_topics(critique: dict[str, object]) -> list[str]:
+        """Extract repeated-topic labels from the critic payload."""
+        return extract_repeated_topics(critique)
+
+    def trim_repeated_selected_items(
+        self,
+        *,
+        selected_items: list[dict[str, Any]],
+        critique: dict[str, object],
+        history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Drop critic-flagged repeats when recent briefing history supports it."""
+        return trim_repeated_selected_items(
+            self,
+            selected_items=selected_items,
+            critique=critique,
+            history=history,
         )
 
     @staticmethod

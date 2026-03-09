@@ -65,6 +65,79 @@ async def generate_release_candidate(
             evaluation["rounds"] = trace_rounds
             evaluation["preference_pairs"] = preference_pairs
             return evaluation
+        critique = evaluation["critique"]
+        repeated_trim = service.trim_repeated_selected_items(
+            selected_items=active_selected_items,
+            critique=critique,
+            history=history,
+        )
+        dropped_repeats = list(repeated_trim.get("dropped_items") or [])
+        if dropped_repeats and rewrites < max_rewrites:
+            trimmed_items = list(repeated_trim.get("selected_items") or [])
+            matched_topics = dict(repeated_trim.get("matched_topics") or {})
+            dropped_titles = [str(item.get("title") or item.get("url") or "") for item in dropped_repeats]
+            feedback = [
+                (
+                    "Remove repeated topics already covered in recent briefings: "
+                    + ", ".join(
+                        sorted(
+                            {
+                                topic
+                                for topics in matched_topics.values()
+                                for topic in topics
+                            }
+                        )
+                    )
+                ),
+                (
+                    "Dropped repeated selected items: "
+                    + ", ".join(title for title in dropped_titles if title)
+                ),
+            ]
+            rewrites += 1
+            rewritten_output = await service.writer_llm.generate_briefing(
+                trimmed_items,
+                recent_briefings=history,
+                mode=mode,
+            )
+            min_chars, target_chars, hard_max_chars = service.char_limits(
+                mode,
+                selected_count=len(trimmed_items),
+            )
+            postprocessed = await service.postprocess_briefing(
+                briefing_body=rewritten_output,
+                selected_items=trimmed_items,
+                mode=mode,
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
+            )
+            rewritten_output = postprocessed.markdown
+            active_selected_items = postprocessed.selected_items
+            trace_rounds.append(
+                {
+                    "round_index": len(trace_rounds),
+                    "phase": "initial" if not trace_rounds else "rewrite",
+                    "draft_input": round_input,
+                    "gate_result": dict(evaluation["gate"]),
+                    "critique_result": dict(critique),
+                    "verifier_result": dict(evaluation["verifier"]),
+                    "feedback": feedback,
+                    "rewrite_output": rewritten_output,
+                    "passed": False,
+                }
+            )
+            preference_pairs.append(
+                {
+                    "round_index": len(trace_rounds),
+                    "chosen_text": rewritten_output,
+                    "rejected_text": round_input,
+                    "rationale": service.build_preference_rationale(feedback),
+                    "source": "auto_writer_loop",
+                }
+            )
+            draft = rewritten_output
+            continue
         if rewrites >= max_rewrites:
             trace_rounds.append(
                 {
@@ -84,7 +157,6 @@ async def generate_release_candidate(
             return evaluation
 
         gate = evaluation["gate"]
-        critique = evaluation["critique"]
         verifier = evaluation["verifier"]
         feedback: list[str] = []
         feedback.extend(str(issue) for issue in gate.get("issues", []))
@@ -227,6 +299,31 @@ async def simulate_briefing_body(
             critic_passed = bool(critique.get("passed", False))
             if gate_passed and critic_passed:
                 break
+            repeated_trim = service.trim_repeated_selected_items(
+                selected_items=active_items,
+                critique=critique,
+                history=recent_briefings,
+            )
+            dropped_repeats = list(repeated_trim.get("dropped_items") or [])
+            if dropped_repeats and rewrites < max_rewrites:
+                active_items = list(repeated_trim.get("selected_items") or [])
+                rewrites += 1
+                briefing_body = await service.writer_llm.generate_briefing(
+                    active_items,
+                    recent_briefings=recent_briefings,
+                    mode=mode,
+                )
+                postprocessed = await service.postprocess_briefing(
+                    briefing_body=briefing_body,
+                    selected_items=active_items,
+                    mode=mode,
+                    min_chars=min_chars,
+                    target_chars=target_chars,
+                    hard_max_chars=hard_max_chars,
+                )
+                briefing_body = postprocessed.markdown
+                active_items = postprocessed.selected_items
+                continue
             if rewrites >= max_rewrites:
                 break
 

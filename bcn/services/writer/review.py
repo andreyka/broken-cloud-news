@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from bcn.briefing.story_identity import normalize_story_title
 from bcn.contracts.review import CritiqueRequest
 from bcn.contracts.review import VerificationRequest
 
@@ -17,6 +19,33 @@ _CRITIC_BLOCKING_TERMS = (
     "invalid advisory",
     "invalid link",
     "misleading claim",
+)
+_REPEATED_TOPIC_RE = re.compile(
+    r"^\s*repeated topic:\s*(.+?)(?:\s*\(.*\))?\.?\s*$",
+    flags=re.IGNORECASE,
+)
+_REPEAT_TOPIC_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "already",
+        "as",
+        "at",
+        "be",
+        "briefing",
+        "covered",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "topic",
+        "via",
+        "was",
+        "were",
+        "with",
+    }
 )
 
 
@@ -230,6 +259,135 @@ def has_critical_critic_issue(critique: dict[str, object]) -> bool:
     return any(term in joined for term in _CRITIC_BLOCKING_TERMS)
 
 
+def _repeat_topic_tokens(text: str) -> tuple[str, ...]:
+    """Normalize one repeated-topic label into stable matching tokens."""
+    normalized = normalize_story_title(text)
+    if not normalized:
+        return ()
+    tokens: list[str] = []
+    for token in re.findall(r"[a-z0-9]{2,}", normalized):
+        if token.isdigit() or token in _REPEAT_TOPIC_STOPWORDS:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def _topic_overlap(text: str, topic_tokens: tuple[str, ...]) -> int:
+    """Return the count of overlapping topic tokens for one text body."""
+    if not text or not topic_tokens:
+        return 0
+    text_tokens = set(_repeat_topic_tokens(text))
+    if not text_tokens:
+        return 0
+    return len(text_tokens & set(topic_tokens))
+
+
+def _topic_match_threshold(topic_tokens: tuple[str, ...]) -> int:
+    """Return the minimum overlap needed to treat a topic match as credible."""
+    return 1 if len(topic_tokens) <= 1 else 2
+
+
+def extract_repeated_topics(critique: dict[str, object]) -> list[str]:
+    """Extract repeated-topic labels from critic issues."""
+    topics: list[str] = []
+    for issue in string_list(critique.get("issues"), limit=24):
+        match = _REPEATED_TOPIC_RE.match(issue)
+        if not match:
+            continue
+        topic = match.group(1).strip(" .")
+        if topic and topic not in topics:
+            topics.append(topic)
+    return topics
+
+
+def trim_repeated_selected_items(
+    service: Any,
+    *,
+    selected_items: list[dict[str, Any]],
+    critique: dict[str, object],
+    history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Drop critic-flagged repeat topics when recent briefing history supports it."""
+    repeated_topics = extract_repeated_topics(critique)
+    if not repeated_topics or not selected_items or not history:
+        return {
+            "selected_items": list(selected_items),
+            "dropped_items": [],
+            "matched_topics": {},
+        }
+
+    supported_topics: list[tuple[str, tuple[str, ...]]] = []
+    for topic in repeated_topics:
+        topic_tokens = _repeat_topic_tokens(topic)
+        if not topic_tokens:
+            continue
+        threshold = _topic_match_threshold(topic_tokens)
+        if any(
+            _topic_overlap(
+                str(briefing.get("content_markdown") or ""),
+                topic_tokens,
+            )
+            >= threshold
+            for briefing in history
+        ):
+            supported_topics.append((topic, topic_tokens))
+
+    if not supported_topics:
+        return {
+            "selected_items": list(selected_items),
+            "dropped_items": [],
+            "matched_topics": {},
+        }
+
+    kept_items: list[dict[str, Any]] = []
+    dropped_items: list[dict[str, Any]] = []
+    matched_topics: dict[str, list[str]] = {}
+    for item in selected_items:
+        item_text = " ".join(
+            str(part or "")
+            for part in (
+                item.get("title"),
+                item.get("summary"),
+                item.get("url"),
+            )
+        )
+        item_matches = [
+            topic
+            for topic, topic_tokens in supported_topics
+            if _topic_overlap(item_text, topic_tokens)
+            >= _topic_match_threshold(topic_tokens)
+        ]
+        if item_matches:
+            dropped_items.append(item)
+            matched_topics[str(item.get("id") or item.get("url") or item.get("title"))] = (
+                item_matches
+            )
+        else:
+            kept_items.append(item)
+
+    if not dropped_items or not kept_items:
+        return {
+            "selected_items": list(selected_items),
+            "dropped_items": [],
+            "matched_topics": {},
+        }
+
+    min_selected_items = max(1, int(service.settings.briefing_min_selected_items))
+    if len(kept_items) < min_selected_items:
+        return {
+            "selected_items": list(selected_items),
+            "dropped_items": [],
+            "matched_topics": {},
+        }
+
+    return {
+        "selected_items": kept_items,
+        "dropped_items": dropped_items,
+        "matched_topics": matched_topics,
+    }
+
+
 def build_rewrite_feedback_context(
     service: Any,
     *,
@@ -416,6 +574,7 @@ __all__ = [
     "build_preference_rationale",
     "build_rewrite_feedback_context",
     "critique_markdown",
+    "extract_repeated_topics",
     "default_critique",
     "default_verifier",
     "evaluate_existing_markdown",
@@ -423,5 +582,6 @@ __all__ = [
     "passes_critic_thresholds",
     "quality_gate",
     "string_list",
+    "trim_repeated_selected_items",
     "verify_markdown",
 ]

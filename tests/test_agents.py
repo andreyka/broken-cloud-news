@@ -15,6 +15,7 @@ import respx
 
 from bcn.common.config import Settings
 from bcn.services.writer.service import WriterService
+from bcn.services.writer.models import PostprocessedBriefing
 
 
 def _make_settings(**overrides) -> Settings:
@@ -1165,6 +1166,180 @@ class TestWriterService:
             "Unexpected URL not present in selected items" in issue
             for issue in gate.get("hard_issues", [])
         )
+
+    def test_trim_repeated_selected_items_drops_only_history_backed_repeats(self):
+        from bcn.services.writer.service import WriterService
+
+        settings = _make_settings()
+        service = WriterService(settings)
+        pingora = {
+            "id": str(uuid4()),
+            "title": "Fixing request smuggling vulnerabilities in Pingora OSS deployments",
+            "summary": "Cloudflare patched request smuggling in Pingora OSS.",
+            "url": "https://blog.cloudflare.com/pingora-oss-smuggling-vulnerabilities/",
+        }
+        cisco = {
+            "id": str(uuid4()),
+            "title": "CVE-2026-20127 (Cisco SD-WAN, CVSS 10) has been actively exploited since 2023",
+            "summary": "PatchIntel breakdown of the active exploitation campaign.",
+            "url": "https://patchintel.substack.com/p/patchintel-issue-1-week-of-march?r=7v8ayn",
+        }
+        budibase = {
+            "id": str(uuid4()),
+            "title": "@budibase/server: Command Injection in PostgreSQL Dump Command",
+            "summary": "GHSA-726g-59wr-cj4c impacts backup export handling.",
+            "url": "https://github.com/advisories/GHSA-726g-59wr-cj4c",
+        }
+        history = [
+            {
+                "content_markdown": (
+                    "**Smuggling Mess**\n"
+                    "[Pingora vulnerable to HTTP Request Smuggling via Premature Upgrade]"
+                    "(https://github.com/cloudflare/pingora/security/advisories/GHSA-xq2h-p299-vjwv)\n\n"
+                    "**SD-WAN Fire**\n"
+                    "[Cisco flags more SD-WAN flaws as actively exploited in attacks]"
+                    "(https://www.bleepingcomputer.com/news/security/cisco-flags-more-sd-wan-flaws-as-actively-exploited-in-attacks/)"
+                )
+            }
+        ]
+        critique = {
+            "issues": [
+                "Repeated topic: Pingora HTTP request smuggling (already covered in briefing 4)",
+                "Repeated topic: Cisco SD-WAN active exploitation (already covered in briefing 5)",
+            ]
+        }
+
+        trimmed = service.trim_repeated_selected_items(
+            selected_items=[pingora, cisco, budibase],
+            critique=critique,
+            history=history,
+        )
+
+        assert [item["id"] for item in trimmed["selected_items"]] == [budibase["id"]]
+        assert {item["id"] for item in trimmed["dropped_items"]} == {
+            pingora["id"],
+            cisco["id"],
+        }
+
+    @pytest.mark.asyncio
+    async def test_generate_release_candidate_redrafts_after_dropping_repeated_items(self):
+        settings = _make_settings(briefing_critique_max_rounds=2)
+        service = WriterService(settings)
+        pingora = {
+            "id": "pingora",
+            "title": "Fixing request smuggling vulnerabilities in Pingora OSS deployments",
+            "summary": "Cloudflare patched request smuggling in Pingora OSS.",
+            "url": "https://blog.cloudflare.com/pingora-oss-smuggling-vulnerabilities/",
+        }
+        cisco = {
+            "id": "cisco",
+            "title": "CVE-2026-20127 (Cisco SD-WAN, CVSS 10) has been actively exploited since 2023",
+            "summary": "PatchIntel breakdown of the active exploitation campaign.",
+            "url": "https://patchintel.substack.com/p/patchintel-issue-1-week-of-march?r=7v8ayn",
+        }
+        budibase = {
+            "id": "budibase",
+            "title": "@budibase/server: Command Injection in PostgreSQL Dump Command",
+            "summary": "GHSA-726g-59wr-cj4c impacts backup export handling.",
+            "url": "https://github.com/advisories/GHSA-726g-59wr-cj4c",
+        }
+        history = [
+            {
+                "content_markdown": (
+                    "[Pingora vulnerable to HTTP Request Smuggling via Premature Upgrade]"
+                    "(https://github.com/cloudflare/pingora/security/advisories/GHSA-xq2h-p299-vjwv)\n"
+                    "[Cisco flags more SD-WAN flaws as actively exploited in attacks]"
+                    "(https://www.bleepingcomputer.com/news/security/cisco-flags-more-sd-wan-flaws-as-actively-exploited-in-attacks/)"
+                )
+            }
+        ]
+
+        initial_draft = "Initial draft"
+        trimmed_draft = "Trimmed draft"
+        with (
+            patch.object(
+                service.writer_llm,
+                "generate_briefing",
+                new_callable=AsyncMock,
+                side_effect=[initial_draft, trimmed_draft],
+            ) as mock_generate,
+            patch.object(
+                service,
+                "postprocess_briefing",
+                new_callable=AsyncMock,
+                side_effect=[
+                    PostprocessedBriefing(
+                        markdown=initial_draft,
+                        selected_items=[pingora, cisco, budibase],
+                    ),
+                    PostprocessedBriefing(
+                        markdown=trimmed_draft,
+                        selected_items=[budibase],
+                    ),
+                ],
+            ),
+            patch.object(
+                service,
+                "evaluate_existing_markdown",
+                new_callable=AsyncMock,
+                side_effect=[
+                    {
+                        "markdown": initial_draft,
+                        "mode": "standard",
+                        "min_chars": 10,
+                        "target_chars": 100,
+                        "hard_max_chars": 1000,
+                        "gate": {"passed": True, "issues": []},
+                        "critique": {
+                            "passed": True,
+                            "score": 40,
+                            "issues": [
+                                "Repeated topic: Pingora HTTP request smuggling (already covered in briefing 4)",
+                                "Repeated topic: Cisco SD-WAN active exploitation (already covered in briefing 5)",
+                            ],
+                            "recommendations": [],
+                        },
+                        "critic_threshold_passed": False,
+                        "verifier": {"passed": True, "issues": [], "recommendations": []},
+                        "release_passed": False,
+                    },
+                    {
+                        "markdown": trimmed_draft,
+                        "mode": "standard",
+                        "min_chars": 10,
+                        "target_chars": 100,
+                        "hard_max_chars": 1000,
+                        "gate": {"passed": True, "issues": []},
+                        "critique": {
+                            "passed": True,
+                            "score": 95,
+                            "issues": [],
+                            "recommendations": [],
+                            "dimension_scores": {
+                                "actionability": 90,
+                                "link_hygiene": 90,
+                            },
+                        },
+                        "critic_threshold_passed": True,
+                        "verifier": {"passed": True, "issues": [], "recommendations": []},
+                        "release_passed": True,
+                    },
+                ],
+            ),
+        ):
+            candidate = await service.generate_release_candidate(
+                selected_items=[pingora, cisco, budibase],
+                history=history,
+                mode="standard",
+            )
+
+        assert candidate["release_passed"] is True
+        assert candidate["rewrites"] == 1
+        assert [item["id"] for item in candidate["selected_items"]] == ["budibase"]
+        assert mock_generate.await_count == 2
+        assert [item["id"] for item in mock_generate.await_args_list[1].args[0]] == [
+            "budibase"
+        ]
 
     def test_dedupe_markdown_links_uses_canonical_url_key(self):
         from bcn.services.writer.service import WriterService
