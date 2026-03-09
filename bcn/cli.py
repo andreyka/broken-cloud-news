@@ -8,8 +8,13 @@ import sys
 import click
 
 from bcn.cli_commands.core import register_core_commands
+from bcn.cli_commands.distribution import register_distribution_commands
 from bcn.cli_commands.evaluation import register_evaluation_commands
-from bcn.cli_commands.ops import register_ops_commands
+from bcn.cli_commands.history import register_history_commands
+from bcn.cli_commands.newsletter import register_newsletter_commands
+from bcn.cli_commands.recovery import register_recovery_commands
+from bcn.cli_commands.review import register_review_commands
+from bcn.cli_commands.training import register_training_commands
 from bcn.transports.http.server import serve_component_http
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
@@ -40,7 +45,12 @@ def cli(verbose: bool) -> None:
 
 register_core_commands(cli, _WORKFLOW_MODE_CHOICES, bindings=sys.modules[__name__])
 register_evaluation_commands(cli, _WORKFLOW_MODE_CHOICES)
-register_ops_commands(cli)
+register_newsletter_commands(cli)
+register_review_commands(cli)
+register_distribution_commands(cli)
+register_history_commands(cli)
+register_training_commands(cli)
+register_recovery_commands(cli)
 
 
 __all__ = [
