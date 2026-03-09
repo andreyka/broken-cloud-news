@@ -6,16 +6,19 @@ from bcn.common.component_settings import service_client_settings
 from bcn.services.critic.service import CriticService
 from bcn.services.analyst.service import AnalystService
 from bcn.services.collector.service import CollectorService
+from bcn.services.distributor.service import DistributorService
 from bcn.services.verifier.service import VerifierService
 from bcn.services.writer.service import WriterService
 from bcn.common.config import Settings
 from bcn.contracts.services import AnalystWorkflow
 from bcn.contracts.services import CollectorWorkflow
 from bcn.contracts.services import CriticEvaluator
+from bcn.contracts.services import DistributorWorkflow
 from bcn.contracts.services import VerificationEvaluator
 from bcn.contracts.services import WriterWorkflow
 from bcn.transports.http.analyst import RemoteAnalystClient
 from bcn.transports.http.collector import RemoteCollectorClient
+from bcn.transports.http.distributor import RemoteDistributorClient
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.review import RemoteVerifierClient
 from bcn.transports.http.writer import RemoteWriterWorkflowClient
@@ -48,8 +51,8 @@ def build_verifier_evaluator(settings: Settings) -> VerificationEvaluator:
 def build_local_writer_workflow(settings: Settings) -> WriterWorkflow:
     """Build a local writer workflow while still honoring remote review services."""
     if (
-        settings.critic_service_url
-        or settings.verifier_service_url
+        str(getattr(settings, "critic_service_url", "") or "").strip()
+        or str(getattr(settings, "verifier_service_url", "") or "").strip()
     ):
         critic_evaluator = build_critic_evaluator(settings)
         verifier_evaluator = build_verifier_evaluator(settings)
@@ -99,6 +102,18 @@ def build_analyst_workflow(settings: Settings) -> AnalystWorkflow:
     return AnalystService(settings)
 
 
+def build_distributor_workflow(settings: Settings) -> DistributorWorkflow:
+    """Build the distributor workflow selected by configuration."""
+    endpoint = service_client_settings(settings, "distributor")
+    if endpoint.configured:
+        return RemoteDistributorClient(
+            base_url=endpoint.base_url,
+            timeout_seconds=endpoint.timeout_seconds,
+            auth_token=endpoint.auth_token,
+        )
+    return DistributorService(settings)
+
+
 def build_local_critic_evaluator(settings: Settings) -> CriticEvaluator:
     """Build a local critic evaluator for critic-service deployments."""
     return CriticService(settings)
@@ -117,3 +132,8 @@ def build_local_collector_workflow(settings: Settings) -> CollectorWorkflow:
 def build_local_analyst_workflow(settings: Settings) -> AnalystWorkflow:
     """Build a local analyst workflow for analyst-service deployments."""
     return AnalystService(settings)
+
+
+def build_local_distributor_workflow(settings: Settings) -> DistributorWorkflow:
+    """Build a local distributor workflow for distributor-service deployments."""
+    return DistributorService(settings)

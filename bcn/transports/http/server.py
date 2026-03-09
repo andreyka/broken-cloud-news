@@ -15,12 +15,13 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from bcn.common.component_settings import default_service_port
-from bcn.common.config import Settings
 from bcn.contracts.analyst import AnalystItemRequest
 from bcn.contracts.analyst import analyzed_item_to_payload
 from bcn.contracts.collector import CollectorSourceRequest
 from bcn.contracts.collector import collector_items_to_payload
 from bcn.contracts.collector import validate_collection_source
+from bcn.contracts.distributor import delivery_request_from_payload
+from bcn.contracts.distributor import delivery_result_to_payload
 from bcn.contracts.review import critique_request_from_payload
 from bcn.contracts.review import verification_request_from_payload
 from bcn.contracts.writer import WriterArtifactRequest
@@ -32,11 +33,13 @@ from bcn.persistence.runtime import close_pool
 from bcn.service_registry import build_local_analyst_workflow
 from bcn.service_registry import build_local_collector_workflow
 from bcn.service_registry import build_local_critic_evaluator
+from bcn.service_registry import build_local_distributor_workflow
 from bcn.service_registry import build_local_verifier_evaluator
 from bcn.service_registry import build_local_writer_workflow
 from bcn.transports.http.routes import ANALYST_ANALYZE_ITEM_PATH
 from bcn.transports.http.routes import COLLECTOR_COLLECT_PATH
 from bcn.transports.http.routes import CRITIC_EVALUATE_PATH
+from bcn.transports.http.routes import DISTRIBUTOR_DELIVER_PATH
 from bcn.transports.http.routes import HEALTH_PATH
 from bcn.transports.http.routes import VERIFIER_EVALUATE_PATH
 from bcn.transports.http.routes import WRITER_BUILD_ARTIFACT_PATH
@@ -84,7 +87,7 @@ def _headers_authorized(
 
 def _build_routes(
     component: str,
-    settings: Settings,
+    settings: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Build component-local HTTP routes."""
     if component == "writer":
@@ -97,10 +100,12 @@ def _build_routes(
         return _collector_routes(settings)
     if component == "analyst":
         return _analyst_routes(settings)
+    if component == "distributor":
+        return _distributor_routes(settings)
     raise ValueError(f"Unsupported component: {component}")
 
 
-def _writer_routes(settings: Settings) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+def _writer_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return writer HTTP routes."""
 
     async def _trace_metadata() -> dict[str, Any]:
@@ -200,7 +205,7 @@ def _writer_routes(settings: Settings) -> tuple[dict[str, GetHandler], dict[str,
     return get_routes, post_routes
 
 
-def _critic_routes(settings: Settings) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+def _critic_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return critic HTTP routes."""
 
     async def _evaluate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -220,7 +225,7 @@ def _critic_routes(settings: Settings) -> tuple[dict[str, GetHandler], dict[str,
 
 
 def _verifier_routes(
-    settings: Settings,
+    settings: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return verifier HTTP routes."""
 
@@ -241,7 +246,7 @@ def _verifier_routes(
 
 
 def _collector_routes(
-    settings: Settings,
+    settings: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return collector HTTP routes."""
 
@@ -262,7 +267,7 @@ def _collector_routes(
 
 
 def _analyst_routes(
-    settings: Settings,
+    settings: object,
 ) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
     """Return analyst HTTP routes."""
 
@@ -283,6 +288,28 @@ def _analyst_routes(
     return {}, post_routes
 
 
+def _distributor_routes(
+    settings: object,
+) -> tuple[dict[str, GetHandler], dict[str, JsonHandler]]:
+    """Return distributor HTTP routes."""
+
+    async def _deliver(payload: dict[str, Any]) -> dict[str, Any]:
+        request = delivery_request_from_payload(payload)
+        if request is None:
+            raise ValueError("briefing is required.")
+        service = build_local_distributor_workflow(settings)
+        try:
+            result = await service.deliver(request)
+        finally:
+            await service.close()
+        return delivery_result_to_payload(result)
+
+    post_routes: dict[str, JsonHandler] = {}
+    for path in _route_aliases(DISTRIBUTOR_DELIVER_PATH):
+        post_routes[path] = _deliver
+    return {}, post_routes
+
+
 async def _read_json_body(request: Request) -> dict[str, Any]:
     """Decode one request body as a JSON object."""
     raw = await request.body()
@@ -298,7 +325,7 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
 
 
 def create_component_http_app(
-    settings: Settings,
+    settings: object,
     *,
     component: str,
 ) -> Starlette:
@@ -380,7 +407,7 @@ def create_component_http_app(
 
 
 def serve_component_http(
-    settings: Settings,
+    settings: object,
     *,
     component: str,
     host: str,

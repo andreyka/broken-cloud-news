@@ -8,6 +8,7 @@ from uuid import UUID
 import click
 
 from bcn.common.component_settings import default_service_port
+from bcn.cli_commands.shared import build_component_settings
 from bcn.cli_commands.shared import build_settings
 from bcn.cli_commands.shared import run_async
 
@@ -249,7 +250,9 @@ def register_core_commands(
     @cli.command("serve")
     @click.argument(
         "component",
-        type=click.Choice(["writer", "critic", "verifier", "collector", "analyst"]),
+        type=click.Choice(
+            ["writer", "critic", "verifier", "collector", "analyst", "distributor"]
+        ),
     )
     @click.option("--host", default="0.0.0.0", show_default=True)
     @click.option(
@@ -261,7 +264,7 @@ def register_core_commands(
     )
     def serve(component: str, host: str, port: int) -> None:
         """Serve one BCN component over JSON/HTTP for remote deployment."""
-        settings = build_settings()
+        settings = build_component_settings(component)
         bind_port = int(port) if int(port) > 0 else default_service_port(component)
 
         try:

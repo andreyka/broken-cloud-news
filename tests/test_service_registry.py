@@ -9,11 +9,13 @@ from bcn.common.config import Settings
 from bcn.service_registry import build_analyst_workflow
 from bcn.service_registry import build_collector_workflow
 from bcn.service_registry import build_critic_evaluator
+from bcn.service_registry import build_distributor_workflow
 from bcn.service_registry import build_local_writer_workflow
 from bcn.service_registry import build_verifier_evaluator
 from bcn.service_registry import build_writer_workflow
 from bcn.transports.http.analyst import RemoteAnalystClient
 from bcn.transports.http.collector import RemoteCollectorClient
+from bcn.transports.http.distributor import RemoteDistributorClient
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.review import RemoteVerifierClient
 from bcn.transports.http.writer import RemoteWriterWorkflowClient
@@ -84,3 +86,14 @@ async def test_build_collector_and_analyst_workflows_return_remote_clients_when_
     finally:
         await collector.close()
         await analyst.close()
+
+
+@pytest.mark.asyncio
+async def test_build_distributor_workflow_returns_remote_client_when_configured():
+    workflow = build_distributor_workflow(
+        _make_settings(distributor_service_url="http://distributor.internal:8086")
+    )
+    try:
+        assert isinstance(workflow, RemoteDistributorClient)
+    finally:
+        await workflow.close()

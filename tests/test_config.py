@@ -3,6 +3,8 @@ from __future__ import annotations
 from pydantic import ValidationError
 import pytest
 
+from bcn.common.component_settings import CollectorServiceSettings
+from bcn.common.component_settings import load_component_service_settings
 from bcn.common.config import Settings
 
 
@@ -21,6 +23,7 @@ class TestSettings:
         assert s.briefing_novelty_title_similarity_threshold == 0.78
         assert s.service_request_timeout_seconds == 900
         assert s.writer_service_url == ""
+        assert s.distributor_service_url == ""
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")
@@ -89,9 +92,26 @@ class TestSettings:
     def test_service_url_validation_and_normalization(self):
         settings = Settings(writer_service_url="http://writer.internal:8081/")
         assert settings.writer_service_url == "http://writer.internal:8081"
+        distributor_settings = Settings(
+            distributor_service_url="http://distributor.internal:8086/"
+        )
+        assert (
+            distributor_settings.distributor_service_url
+            == "http://distributor.internal:8086"
+        )
         with pytest.raises(ValidationError):
             Settings(critic_service_url="writer.internal:8082")
 
     def test_service_request_timeout_must_be_positive(self):
         with pytest.raises(ValidationError):
             Settings(service_request_timeout_seconds=0)
+
+    def test_component_settings_loader_returns_narrow_service_model(self, monkeypatch):
+        monkeypatch.setenv("BCN_SERVICE_AUTH_TOKEN", "shared-token")
+        monkeypatch.setenv("BCN_RSS_FEEDS", "[\"https://example.com/feed.xml\"]")
+        settings = load_component_service_settings("collector")
+
+        assert isinstance(settings, CollectorServiceSettings)
+        assert settings.service_auth_token == "shared-token"
+        assert settings.rss_feeds == ["https://example.com/feed.xml"]
+        assert not hasattr(settings, "writer_service_url")

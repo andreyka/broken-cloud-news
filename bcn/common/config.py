@@ -199,6 +199,7 @@ class Settings(BaseSettings):
         "verifier_service_url",
         "collector_service_url",
         "analyst_service_url",
+        "distributor_service_url",
     )
     @classmethod
     def _validate_service_url(cls, v: str) -> str:
@@ -260,6 +261,7 @@ class Settings(BaseSettings):
     verifier_service_url: str = ""
     collector_service_url: str = ""
     analyst_service_url: str = ""
+    distributor_service_url: str = ""
     service_request_timeout_seconds: int = 900
     service_auth_token: str = ""
 

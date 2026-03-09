@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 import httpx
 import pytest
 import respx
+from uuid import uuid4
 
 from bcn.common.config import Settings
+from bcn.contracts.distributor import DeliveryRequest
 from bcn.contracts.review import CritiqueRequest
 from bcn.transports.http.analyst import RemoteAnalystClient
 from bcn.transports.http.collector import RemoteCollectorClient
+from bcn.transports.http.distributor import RemoteDistributorClient
 from bcn.transports.http.server import _headers_authorized
 from bcn.transports.http.review import RemoteCriticClient
 from bcn.transports.http.server import _build_routes
@@ -184,6 +189,54 @@ async def test_remote_collector_and_analyst_clients_post_json_requests():
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_remote_distributor_client_posts_json_request():
+    deliver_route = respx.post("http://distributor.internal/v1/deliver").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "mode": "regular_daily_briefing",
+                "results": {"telegram": "ok"},
+                "attempts": [
+                    {
+                        "channel": "telegram",
+                        "status": "ok",
+                        "external_message_id": "42",
+                        "metadata": {"primary_message_id": "42"},
+                    }
+                ],
+                "all_ok": True,
+                "message": "Distributed",
+            },
+        )
+    )
+    client = RemoteDistributorClient(
+        base_url="http://distributor.internal",
+        timeout_seconds=30,
+        auth_token="shared-token",
+    )
+
+    try:
+        result = await client.deliver(
+            DeliveryRequest(
+                briefing={
+                    "id": uuid4(),
+                    "created_at": datetime.now(timezone.utc),
+                    "content_markdown": "**Draft**",
+                },
+                mode="regular_daily_briefing",
+            )
+        )
+    finally:
+        await client.close()
+
+    assert deliver_route.called
+    assert result.all_ok is True
+    assert result.results == {"telegram": "ok"}
+    assert deliver_route.calls.last.request.headers["X-BCN-Service-Token"] == "shared-token"
+
+
+@pytest.mark.asyncio
 async def test_component_http_server_serves_critic_requests(monkeypatch):
     class _Critic:
         async def evaluate(self, request):
@@ -221,6 +274,10 @@ def test_component_http_routes_include_versioned_and_legacy_aliases():
     _, analyst_post_routes = _build_routes("analyst", _make_settings())
     assert "/v1/analyze-item" in analyst_post_routes
     assert "/analyze-item" in analyst_post_routes
+
+    _, distributor_post_routes = _build_routes("distributor", _make_settings())
+    assert "/v1/deliver" in distributor_post_routes
+    assert "/deliver" in distributor_post_routes
 
 
 def test_headers_authorized_accepts_service_token_and_bearer():

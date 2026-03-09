@@ -8,11 +8,11 @@ from datetime import timezone
 import logging
 from uuid import UUID
 
-from bcn.services.distributor.service import DeliveryRequest
-from bcn.services.distributor.service import DistributorService
-from bcn.services.distributor.service import REGULAR_MONTHLY_NEWSLETTER_MODE
-from bcn.services.distributor.service import normalize_distribution_mode
 from bcn.common.config import Settings
+from bcn.contracts.distributor import DeliveryRequest
+from bcn.contracts.distributor import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.distributor import normalize_distribution_mode
+from bcn.contracts.services import DistributorWorkflow
 from bcn.persistence.briefings import claim_draft_briefing_by_id
 from bcn.persistence.briefings import claim_latest_draft_briefing
 from bcn.persistence.briefings import mark_briefing_distributed
@@ -98,12 +98,17 @@ async def execute_distribution(
     *,
     mode: str,
     briefing_id: UUID | None = None,
-    distributor_service: DistributorService | None = None,
+    distributor_service: DistributorWorkflow | None = None,
     manage_pool: bool = True,
 ) -> str:
     """Claim, deliver, and persist one distribution attempt."""
     await get_pool(settings)
-    active_service = distributor_service or DistributorService(settings)
+    if distributor_service is None:
+        from bcn.service_registry import build_distributor_workflow
+
+        active_service = build_distributor_workflow(settings)
+    else:
+        active_service = distributor_service
     owns_service = distributor_service is None
     claimed_briefing = None
 

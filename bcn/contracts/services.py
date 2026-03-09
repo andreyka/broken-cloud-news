@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from typing import TYPE_CHECKING
 from typing import Protocol
 
 from bcn.common.models import AnalyzedItemUpdate
 from bcn.common.models import CollectedNewsItem
 from bcn.contracts.review import CritiqueRequest
 from bcn.contracts.review import VerificationRequest
+
+if TYPE_CHECKING:
+    from bcn.contracts.distributor import DeliveryRequest
+    from bcn.contracts.distributor import DeliveryResult
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,16 @@ class AnalystWorkflow(Protocol):
 
     async def analyze_item(self, item: dict[str, Any]) -> AnalyzedItemUpdate:
         """Analyze one collected item and return the persistable update."""
+
+
+class DistributorWorkflow(Protocol):
+    """Distributor interface used by the control plane and remote adapters."""
+
+    async def close(self) -> None:
+        """Release any resources held by the distributor workflow service."""
+
+    async def deliver(self, request: "DeliveryRequest") -> "DeliveryResult":
+        """Deliver one briefing payload through the configured channels."""
 
 
 class WriterWorkflow(Protocol):
