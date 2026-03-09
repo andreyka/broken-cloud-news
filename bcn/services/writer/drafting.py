@@ -1,4 +1,4 @@
-"""Rewrite-loop helpers used by the writer domain service."""
+"""Draft-generation and rewrite-loop helpers for writer workflows."""
 
 from __future__ import annotations
 
@@ -233,7 +233,9 @@ async def simulate_briefing_body(
             feedback: list[str] = []
             feedback.extend(gate.get("issues", []))
             feedback.extend([str(issue) for issue in critique.get("issues", [])])
-            feedback.extend([str(issue) for issue in critique.get("recommendations", [])])
+            feedback.extend(
+                [str(issue) for issue in critique.get("recommendations", [])]
+            )
             missing_items = service.missing_items_for_markdown(briefing_body, active_items)
             feedback_context = service.build_rewrite_feedback_context(
                 gate=gate,
