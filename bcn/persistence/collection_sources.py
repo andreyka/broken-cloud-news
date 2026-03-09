@@ -61,8 +61,14 @@ async def upsert_collection_source(
             updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5::jsonb, $6, $7::jsonb,
-            CASE WHEN $4 = 'ACTIVE' THEN NOW() ELSE NULL END,
+            $1::text,
+            $2::varchar(32),
+            $3::text,
+            $4::varchar(20),
+            $5::jsonb,
+            $6::text,
+            $7::jsonb,
+            CASE WHEN $4::varchar(20) = 'ACTIVE' THEN NOW() ELSE NULL END,
             NOW(),
             NOW()
         )
@@ -199,4 +205,3 @@ async def collection_source_has_historical_items(
         )
 
     return False
-

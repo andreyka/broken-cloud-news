@@ -156,6 +156,36 @@ async def test_backfill_recent_story_identity_does_not_touch_updated_at():
 
 
 @pytest.mark.asyncio
+async def test_upsert_collection_source_casts_state_bind_types():
+    import bcn.persistence.collection_sources as collection_sources
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.collection_sources.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        await collection_sources.upsert_collection_source(
+            source_key="ghsa:default",
+            source_type="ghsa",
+            display_name="GitHub Security Advisories",
+            state="ACTIVE",
+            raw_config={"origin": "test"},
+            review_reason="preexisting_source",
+            review_payload={"decision": "promote"},
+        )
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "$2::varchar(32)" in sql
+    assert "$4::varchar(20)" in sql
+    assert "CASE WHEN $4::varchar(20) = 'ACTIVE'" in sql
+    assert "$6::text" in sql
+
+
+@pytest.mark.asyncio
 async def test_insert_evaluation_report_stores_lane_and_report():
     import bcn.persistence.evaluation as evaluation_db
 
