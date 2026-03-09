@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "configure_scheduler_runtime",
+    "execute_scheduled_analysis",
+    "execute_scheduled_collection",
+    "execute_shadow_regular_briefing",
     "job_collect_ghsa",
     "job_collect_rss",
     "job_collect_twitter",
@@ -59,48 +62,42 @@ def configure_scheduler_runtime(
     return build_workflow_runtime(settings=settings)
 
 
-async def job_collect_ghsa(runtime: WorkflowRuntime) -> None:
-    """Scheduled job: trigger GHSA collection."""
+async def execute_scheduled_collection(
+    runtime: WorkflowRuntime,
+    *,
+    source: str,
+) -> None:
+    """Run one scheduled collection step from typed workflow metadata."""
     await execute_collection(
         runtime.settings,
-        source="ghsa",
+        source=source,
         origin="scheduler",
         manage_pool=False,
     )
+
+
+async def job_collect_ghsa(runtime: WorkflowRuntime) -> None:
+    """Scheduled job: trigger GHSA collection."""
+    await execute_scheduled_collection(runtime, source="ghsa")
 
 
 async def job_collect_rss(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger RSS collection."""
-    await execute_collection(
-        runtime.settings,
-        source="rss",
-        origin="scheduler",
-        manage_pool=False,
-    )
+    await execute_scheduled_collection(runtime, source="rss")
 
 
 async def job_collect_twitter(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Twitter/X collection."""
-    await execute_collection(
-        runtime.settings,
-        source="twitter",
-        origin="scheduler",
-        manage_pool=False,
-    )
+    await execute_scheduled_collection(runtime, source="twitter")
 
 
 async def job_collect_reddit(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Reddit collection."""
-    await execute_collection(
-        runtime.settings,
-        source="reddit",
-        origin="scheduler",
-        manage_pool=False,
-    )
+    await execute_scheduled_collection(runtime, source="reddit")
 
 
-async def job_analyze_items(runtime: WorkflowRuntime) -> None:
-    """Scheduled job: trigger item analysis."""
+async def execute_scheduled_analysis(runtime: WorkflowRuntime) -> None:
+    """Run the scheduled analyst step from typed workflow metadata."""
     await execute_analysis(
         runtime.settings,
         source="scheduler",
@@ -108,8 +105,13 @@ async def job_analyze_items(runtime: WorkflowRuntime) -> None:
     )
 
 
-async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
-    """Scheduled job: run shadow evaluation before the regular briefing slot."""
+async def job_analyze_items(runtime: WorkflowRuntime) -> None:
+    """Scheduled job: trigger item analysis."""
+    await execute_scheduled_analysis(runtime)
+
+
+async def execute_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
+    """Run the scheduled shadow evaluation step from typed workflow metadata."""
     settings = runtime.settings
     if not bool(settings.shadow_enabled):
         logger.info("Shadow scheduler triggered while disabled; skipping.")
@@ -151,3 +153,8 @@ async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
         summary.get("confidence", "low"),
         report.get("item_pool_count", 0),
     )
+
+
+async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
+    """Scheduled job: run shadow evaluation before the regular briefing slot."""
+    await execute_shadow_regular_briefing(runtime)

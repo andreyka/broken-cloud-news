@@ -333,6 +333,49 @@ def test_iter_scheduled_workflows_skips_disabled_optional_jobs():
 
 
 @pytest.mark.asyncio
+async def test_catalog_definition_executes_typed_collect_step(monkeypatch):
+    settings = Settings()
+    runtime = configure_scheduler_runtime(settings)
+    collect_mock = AsyncMock()
+    monkeypatch.setattr(
+        "bcn.workflows.catalog.execute_scheduled_collection",
+        collect_mock,
+    )
+    definition = next(
+        item
+        for item in iter_scheduled_workflows(settings)
+        if item.workflow_id == "ghsa_collector"
+    )
+
+    await definition.execute(runtime)
+
+    collect_mock.assert_awaited_once_with(runtime, source="ghsa")
+
+
+@pytest.mark.asyncio
+async def test_catalog_definition_executes_typed_publish_pipeline(monkeypatch):
+    settings = Settings()
+    runtime = configure_scheduler_runtime(settings)
+    publish_mock = AsyncMock()
+    monkeypatch.setattr(
+        "bcn.workflows.catalog.run_generation_and_distribution",
+        publish_mock,
+    )
+    definition = next(
+        item
+        for item in iter_scheduled_workflows(settings)
+        if item.workflow_id == REGULAR_DAILY_BRIEFING_MODE
+    )
+
+    await definition.execute(runtime)
+
+    publish_mock.assert_awaited_once_with(
+        runtime=runtime,
+        mode=REGULAR_DAILY_BRIEFING_MODE,
+    )
+
+
+@pytest.mark.asyncio
 async def test_job_analyze_items_uses_control_plane(monkeypatch):
     settings = Settings()
     analysis_mock = AsyncMock(return_value="Analyzed 3/3 items")

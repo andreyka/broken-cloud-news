@@ -6,7 +6,6 @@ from datetime import datetime
 import logging
 from typing import Any
 
-from bcn.common.config import Settings
 from bcn.common.secrets import redact_sensitive_value
 from bcn.common.url_policy import trusted_hosts_from_urls
 from bcn.contracts.distributor import ChannelDeliveryResult
@@ -27,24 +26,33 @@ from bcn.distributors.telegram import TelegramDistributor
 logger = logging.getLogger(__name__)
 
 
-def _distribution_redaction_secrets(settings: Settings) -> tuple[str, ...]:
+def _distribution_redaction_secrets(settings: object) -> tuple[str, ...]:
     """Return configured secrets that must never reach logs or DB metadata."""
     return tuple(
         value.strip()
         for value in (
-            settings.telegram_bot_token,
-            settings.discord_bot_token,
-            settings.slack_webhook_url,
-            settings.smtp_password,
+            getattr(settings, "telegram_bot_token", ""),
+            getattr(settings, "discord_bot_token", ""),
+            getattr(settings, "slack_webhook_url", ""),
+            getattr(settings, "smtp_password", ""),
         )
         if str(value or "").strip()
     )
 
 
+def _trusted_image_hosts(settings: object) -> list[str]:
+    """Return the distributor allowlist for externally hosted cover images."""
+    configured_urls = list(getattr(settings, "trusted_image_source_urls", []) or [])
+    comfyui_url = str(getattr(settings, "comfyui_url", "") or "").strip()
+    if comfyui_url and comfyui_url not in configured_urls:
+        configured_urls.append(comfyui_url)
+    return trusted_hosts_from_urls(configured_urls)
+
+
 class DistributorService:
     """Domain service for pure briefing delivery without workflow DB mutations."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: object) -> None:
         self.settings = settings
         self._redaction_secrets = _distribution_redaction_secrets(settings)
 
@@ -58,7 +66,7 @@ class DistributorService:
         newsletter_recipients: list[str] | None = None,
     ) -> list[tuple[str, Distributor]]:
         """Build channel clients for one delivery mode."""
-        trusted_image_hosts = trusted_hosts_from_urls([self.settings.comfyui_url])
+        trusted_image_hosts = _trusted_image_hosts(self.settings)
         channels: list[tuple[str, Distributor]] = []
         normalized_mode = normalize_distribution_mode(mode)
         if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:

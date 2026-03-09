@@ -4,7 +4,9 @@ from pydantic import ValidationError
 import pytest
 
 from bcn.common.component_settings import CollectorServiceSettings
+from bcn.common.component_settings import DistributorServiceSettings
 from bcn.common.component_settings import load_component_service_settings
+from bcn.common.component_settings import WriterServiceSettings
 from bcn.common.config import Settings
 
 
@@ -115,3 +117,23 @@ class TestSettings:
         assert settings.service_auth_token == "shared-token"
         assert settings.rss_feeds == ["https://example.com/feed.xml"]
         assert not hasattr(settings, "writer_service_url")
+
+    def test_writer_component_settings_do_not_expose_control_plane_db(self):
+        settings = load_component_service_settings("writer")
+
+        assert isinstance(settings, WriterServiceSettings)
+        assert not hasattr(settings, "database_url")
+
+    def test_distributor_component_settings_use_trusted_image_sources(self, monkeypatch):
+        monkeypatch.setenv(
+            "BCN_TRUSTED_IMAGE_SOURCE_URLS",
+            "[\"https://images.internal\", \"https://cdn.internal\"]",
+        )
+        settings = load_component_service_settings("distributor")
+
+        assert isinstance(settings, DistributorServiceSettings)
+        assert settings.trusted_image_source_urls == [
+            "https://images.internal",
+            "https://cdn.internal",
+        ]
+        assert not hasattr(settings, "comfyui_url")

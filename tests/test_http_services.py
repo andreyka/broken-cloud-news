@@ -325,22 +325,22 @@ async def test_component_http_server_passes_recent_published_to_writer(monkeypat
     assert captured["recent_published"] == [{"id": "prior-1"}]
 
 
-def test_component_http_routes_include_versioned_and_legacy_aliases():
+def test_component_http_routes_are_v1_only():
     _, post_routes = _build_routes("critic", _make_settings())
     assert "/v1/evaluate" in post_routes
-    assert "/evaluate" in post_routes
+    assert "/evaluate" not in post_routes
 
     _, collector_post_routes = _build_routes("collector", _make_settings())
     assert "/v1/collect" in collector_post_routes
-    assert "/collect" in collector_post_routes
+    assert "/collect" not in collector_post_routes
 
     _, analyst_post_routes = _build_routes("analyst", _make_settings())
     assert "/v1/analyze-item" in analyst_post_routes
-    assert "/analyze-item" in analyst_post_routes
+    assert "/analyze-item" not in analyst_post_routes
 
     _, distributor_post_routes = _build_routes("distributor", _make_settings())
     assert "/v1/deliver" in distributor_post_routes
-    assert "/deliver" in distributor_post_routes
+    assert "/deliver" not in distributor_post_routes
 
 
 def test_headers_authorized_accepts_service_token_and_bearer():

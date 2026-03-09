@@ -21,6 +21,16 @@ def _schema_ready_runtime():
 
 
 @pytest.mark.asyncio
+async def test_persistence_runtime_requires_explicit_bootstrap():
+    import bcn.persistence.runtime as runtime
+
+    await runtime.close_pool()
+
+    with pytest.raises(RuntimeError, match="Persistence runtime is not configured"):
+        await runtime.get_pool()
+
+
+@pytest.mark.asyncio
 async def test_get_analyzed_items_excludes_items_already_in_live_briefings():
     import bcn.persistence.news_items as db
 

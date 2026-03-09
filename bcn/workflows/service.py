@@ -80,7 +80,7 @@ async def run_daemon(
         async with AsyncScheduler() as scheduler:
             for definition in iter_scheduled_workflows(settings):
                 await scheduler.add_schedule(
-                    partial(definition.run, runtime),
+                    partial(definition.execute, runtime),
                     definition.build_trigger(settings),
                     id=definition.workflow_id,
                 )

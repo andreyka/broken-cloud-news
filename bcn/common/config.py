@@ -13,6 +13,7 @@ from bcn.common.settings_sections import SchedulingSettingsMixin
 from bcn.common.settings_sections import ScrapingSettingsMixin
 from bcn.common.settings_sections import ServiceTransportSettingsMixin
 from bcn.common.settings_sections import SharedLLMSettingsMixin
+from bcn.common.settings_sections import TrustedImageSourceSettingsMixin
 from bcn.common.settings_sections import WriterPolicySettingsMixin
 
 
@@ -23,6 +24,7 @@ class Settings(
     RemoteComponentEndpointSettingsMixin,
     ServiceTransportSettingsMixin,
     ComfyUISettingsMixin,
+    TrustedImageSourceSettingsMixin,
     CollectionSourceSettingsMixin,
     SchedulingSettingsMixin,
     ScrapingSettingsMixin,

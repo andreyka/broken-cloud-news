@@ -55,17 +55,6 @@ JsonHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 GetHandler = Callable[[], Awaitable[dict[str, Any]]]
 
 
-def _route_aliases(path: str) -> tuple[str, ...]:
-    """Return canonical and compatibility aliases for one API path."""
-    normalized = str(path or "").strip()
-    if not normalized:
-        return ("",)
-    if normalized.startswith("/v1/"):
-        legacy = normalized[len("/v1") :]
-        return (normalized, legacy or "/")
-    return (normalized,)
-
-
 def _headers_authorized(
     *,
     expected_token: str,
@@ -189,20 +178,14 @@ def _writer_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, J
         }
 
     get_routes: dict[str, GetHandler] = {}
-    for path in _route_aliases(WRITER_TRACE_METADATA_PATH):
-        get_routes[path] = _trace_metadata
+    get_routes[WRITER_TRACE_METADATA_PATH] = _trace_metadata
 
     post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(WRITER_SELECT_ITEMS_PATH):
-        post_routes[path] = _select_items
-    for path in _route_aliases(WRITER_EVALUATE_EXISTING_PATH):
-        post_routes[path] = _evaluate_existing
-    for path in _route_aliases(WRITER_GENERATE_CANDIDATE_PATH):
-        post_routes[path] = _generate_candidate
-    for path in _route_aliases(WRITER_BUILD_ARTIFACT_PATH):
-        post_routes[path] = _build_artifact
-    for path in _route_aliases(WRITER_SIMULATE_PATH):
-        post_routes[path] = _simulate
+    post_routes[WRITER_SELECT_ITEMS_PATH] = _select_items
+    post_routes[WRITER_EVALUATE_EXISTING_PATH] = _evaluate_existing
+    post_routes[WRITER_GENERATE_CANDIDATE_PATH] = _generate_candidate
+    post_routes[WRITER_BUILD_ARTIFACT_PATH] = _build_artifact
+    post_routes[WRITER_SIMULATE_PATH] = _simulate
     return get_routes, post_routes
 
 
@@ -219,10 +202,7 @@ def _critic_routes(settings: object) -> tuple[dict[str, GetHandler], dict[str, J
         finally:
             await service.close()
 
-    post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(CRITIC_EVALUATE_PATH):
-        post_routes[path] = _evaluate
-    return {}, post_routes
+    return {}, {CRITIC_EVALUATE_PATH: _evaluate}
 
 
 def _verifier_routes(
@@ -240,10 +220,7 @@ def _verifier_routes(
         finally:
             await service.close()
 
-    post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(VERIFIER_EVALUATE_PATH):
-        post_routes[path] = _evaluate
-    return {}, post_routes
+    return {}, {VERIFIER_EVALUATE_PATH: _evaluate}
 
 
 def _collector_routes(
@@ -261,10 +238,7 @@ def _collector_routes(
             await service.close()
         return collector_items_to_payload(items)
 
-    post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(COLLECTOR_COLLECT_PATH):
-        post_routes[path] = _collect
-    return {}, post_routes
+    return {}, {COLLECTOR_COLLECT_PATH: _collect}
 
 
 def _analyst_routes(
@@ -283,10 +257,7 @@ def _analyst_routes(
             await service.close()
         return analyzed_item_to_payload(update)
 
-    post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(ANALYST_ANALYZE_ITEM_PATH):
-        post_routes[path] = _analyze_item
-    return {}, post_routes
+    return {}, {ANALYST_ANALYZE_ITEM_PATH: _analyze_item}
 
 
 def _distributor_routes(
@@ -305,10 +276,7 @@ def _distributor_routes(
             await service.close()
         return delivery_result_to_payload(result)
 
-    post_routes: dict[str, JsonHandler] = {}
-    for path in _route_aliases(DISTRIBUTOR_DELIVER_PATH):
-        post_routes[path] = _deliver
-    return {}, post_routes
+    return {}, {DISTRIBUTOR_DELIVER_PATH: _deliver}
 
 
 async def _read_json_body(request: Request) -> dict[str, Any]:
@@ -401,7 +369,7 @@ def create_component_http_app(
             return JSONResponse({"error": "internal server error"}, status_code=500)
         return JSONResponse(body)
 
-    routes = [Route(path, _health, methods=["GET"]) for path in _route_aliases(HEALTH_PATH)]
+    routes = [Route(HEALTH_PATH, _health, methods=["GET"])]
     routes.extend(Route(path, _handle_get, methods=["GET"]) for path in get_routes)
     routes.extend(Route(path, _handle_post, methods=["POST"]) for path in post_routes)
     return Starlette(routes=routes, lifespan=_lifespan)

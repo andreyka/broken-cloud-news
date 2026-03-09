@@ -63,6 +63,7 @@ class BCNSettingsBase(BaseSettings):
         "ghsa_keywords",
         "email_recipients",
         "reddit_subreddits",
+        "trusted_image_source_urls",
         "twitter_required_keywords",
         "distribute_hours",
         mode="before",
@@ -292,6 +293,12 @@ class ComfyUISettingsMixin:
     comfyui_url: str = "http://host.docker.internal:8188"
     comfyui_timeout: int = 300
     comfyui_poll_interval: int = 2
+
+
+class TrustedImageSourceSettingsMixin:
+    """Trusted upstream image hosts used by distribution clients."""
+
+    trusted_image_source_urls: list[str] = []
 
 
 class CollectionSourceSettingsMixin:
@@ -559,6 +566,7 @@ __all__ = [
     "ScrapingSettingsMixin",
     "ServiceTransportSettingsMixin",
     "SharedLLMSettingsMixin",
+    "TrustedImageSourceSettingsMixin",
     "VerifierPolicySettingsMixin",
     "WriterPolicySettingsMixin",
 ]

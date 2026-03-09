@@ -16,24 +16,44 @@ from bcn.common.migrations import get_migration_status
 logger = logging.getLogger(__name__)
 
 _pool: Optional[asyncpg.Pool] = None
+_pool_database_url: str | None = None
 _pool_lock: asyncio.Lock = asyncio.Lock()
 _schema_ready: bool = False
 _schema_lock: asyncio.Lock = asyncio.Lock()
 
 
+def _pool_not_configured_error() -> RuntimeError:
+    """Return the shared explicit-bootstrap error used by persistence gateways."""
+    return RuntimeError(
+        "Persistence runtime is not configured. Call get_pool(settings) before using "
+        "persistence gateways."
+    )
+
+
 async def _get_or_create_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     """Return pool instance without enforcing schema migrations."""
     global _pool
+    global _pool_database_url
     if _pool is not None:
+        if (
+            settings is not None
+            and _pool_database_url is not None
+            and str(settings.database_url) != _pool_database_url
+        ):
+            raise RuntimeError(
+                "Persistence runtime is already configured for a different database_url."
+            )
         return _pool
+    if settings is None:
+        raise _pool_not_configured_error()
     async with _pool_lock:
         if _pool is None:
-            active_settings = settings or Settings()
             _pool = await asyncpg.create_pool(
-                active_settings.database_url,
+                settings.database_url,
                 min_size=2,
                 max_size=10,
             )
+            _pool_database_url = str(settings.database_url)
     return _pool
 
 
@@ -43,7 +63,9 @@ async def ensure_schema_ready(pool: Optional[asyncpg.Pool] = None) -> None:
     if _schema_ready:
         return
 
-    active_pool = pool or await _get_or_create_pool()
+    active_pool = pool or _pool
+    if active_pool is None:
+        raise _pool_not_configured_error()
     async with _schema_lock:
         if _schema_ready:
             return
@@ -80,10 +102,11 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
 async def close_pool() -> None:
     """Close the shared connection pool if it is open."""
     global _pool
+    global _pool_database_url
     global _schema_ready
     async with _pool_lock:
         if _pool is not None:
             await _pool.close()
             _pool = None
+            _pool_database_url = None
     _schema_ready = False
-
