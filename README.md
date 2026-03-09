@@ -70,9 +70,9 @@ flowchart LR
     Workflows --> Collector
     Workflows --> Analyst
     Workflows --> Writer
-    Workflows --> Critic
-    Workflows --> Verifier
     Workflows --> Distributor
+    Writer --> Critic
+    Writer --> Verifier
 
     Collector --> Postgres
     Analyst --> Postgres
@@ -130,9 +130,9 @@ flowchart TB
     LocalWorkflow --> CollectorPool
     LocalWorkflow --> AnalystPool
     LocalWorkflow --> WriterPool
-    LocalWorkflow --> CriticPool
-    LocalWorkflow --> VerifierPool
     LocalWorkflow --> DistributorPool
+    WriterPool --> CriticPool
+    WriterPool --> VerifierPool
 
     LocalWorkflow --> PG
     Dash --> PG
@@ -224,9 +224,13 @@ Scheduled jobs are defined through a small workflow catalog in `bcn/workflows/ca
 
 - workflow id
 - trigger builder
-- executor binding
-- logical steps and component ownership
+- logical steps
+  - component
+  - operation
+  - args
 - optional enablement predicate
+
+Execution is step-driven through `bcn/workflows/execution.py`, which dispatches typed workflow steps instead of hardcoding one executor per scheduled workflow.
 
 ### Deployable services
 
@@ -242,11 +246,17 @@ Current service set:
 | `writer` | `8081` | `/v1/trace-metadata`, `/v1/select-items-for-workflow`, `/v1/evaluate-existing-markdown`, `/v1/generate-release-candidate`, `/v1/build-release-artifact`, `/v1/simulate-briefing-body` | selection planning, novelty-aware draft generation, artifact rendering, simulation |
 | `critic` | `8082` | `/v1/evaluate` | editorial and quality evaluation |
 | `verifier` | `8083` | `/v1/evaluate` | deterministic and LLM-backed factual verification |
-| `collector` | `8084` | `/v1/collect` | source collection and normalization |
+| `collector` | `8084` | `/v1/collect` | source collection, normalization, and bounded enrichment |
 | `analyst` | `8085` | `/v1/analyze-item` | scoring, summarization, tagging, canonicalization |
 | `distributor` | `8086` | `/v1/deliver` | outbound delivery to Telegram, Discord, and email |
 
 Every service also exposes `/v1/healthz`.
+
+Internal service structure:
+
+- `writer` is a facade over `selection`, `drafting`, `review`, `postprocess`, `rendering`, and `covers`
+- `collector` is a facade over source adapters in `bcn/services/collector/{ghsa,rss,reddit,twitter}.py`
+- `critic` and `verifier` are review services typically called by the writer, not directly by the workflow layer
 
 Service boundary rule:
 
@@ -257,6 +267,7 @@ Service boundary rule:
 Transport characteristics:
 
 - ASGI HTTP server
+- one app-scoped component instance per process, created at startup and closed at shutdown
 - JSON request/response payloads
 - optional shared auth token via `X-BCN-Service-Token` or `Authorization: Bearer ...`
 - service contracts defined in `bcn/contracts`
