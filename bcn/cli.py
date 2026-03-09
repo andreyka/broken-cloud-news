@@ -28,9 +28,6 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 
-# Backward-compatible aliases kept for tests and external imports.
-_build_daily_digest_trigger = build_regular_briefing_trigger
-_build_monthly_newsletter_trigger = build_regular_monthly_newsletter_trigger
 _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
 
 
@@ -48,8 +45,6 @@ register_ops_commands(cli)
 
 __all__ = [
     "_WORKFLOW_MODE_CHOICES",
-    "_build_daily_digest_trigger",
-    "_build_monthly_newsletter_trigger",
     "cli",
     "critique_briefing",
     "execute_analysis",

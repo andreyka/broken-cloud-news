@@ -16,9 +16,7 @@ from bcn.workflows.automation import job_collect_ghsa
 from bcn.workflows.automation import job_collect_reddit
 from bcn.workflows.automation import job_collect_rss
 from bcn.workflows.automation import job_collect_twitter
-from bcn.workflows.automation import (
-    job_publish_regular_briefing as job_publish_daily_digest,
-)
+from bcn.workflows.automation import job_publish_regular_briefing
 from bcn.workflows.automation import (
     job_publish_regular_monthly_newsletter as job_publish_monthly_newsletter,
 )
@@ -129,7 +127,7 @@ async def run_daemon(
                 )
 
             await scheduler.add_schedule(
-                partial(job_publish_daily_digest, runtime),
+                partial(job_publish_regular_briefing, runtime),
                 build_regular_briefing_trigger(settings),
                 id=REGULAR_DAILY_BRIEFING_MODE,
             )

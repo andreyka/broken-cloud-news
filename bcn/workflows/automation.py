@@ -3,7 +3,6 @@
 This module provides:
 - Core recurring collection/analyze jobs.
 - Mode-driven publication jobs (daily, monthly, ad-hoc).
-- Backward-compatible symbols used by existing imports/tests.
 """
 
 from __future__ import annotations
@@ -46,7 +45,6 @@ __all__ = [
     "job_publish_regular_briefing",
     "job_publish_regular_monthly_newsletter",
     "job_shadow_regular_briefing",
-    "job_publish_daily_digest",
     "build_regular_briefing_trigger",
     "build_shadow_regular_briefing_trigger",
     "build_regular_monthly_newsletter_trigger",
@@ -153,7 +151,3 @@ async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
         summary.get("confidence", "low"),
         report.get("item_pool_count", 0),
     )
-
-
-# Backward-compatible alias for older imports/tests.
-job_publish_daily_digest = job_publish_regular_briefing
