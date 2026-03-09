@@ -4,6 +4,8 @@ import pytest
 
 from bcn.common.models import AnalyzedItemUpdate
 from bcn.common.models import CollectedNewsItem
+from bcn.services.critic.service import CriticService
+from bcn.services.verifier.service import VerifierService
 from bcn.services.writer.service import WriterService
 from bcn.common.config import Settings
 from bcn.service_registry import build_analyst_workflow
@@ -69,6 +71,15 @@ async def test_build_local_writer_workflow_injects_remote_review_clients():
     assert isinstance(workflow, WriterService)
     assert isinstance(workflow.critic_evaluator, RemoteCriticClient)
     assert isinstance(workflow.verifier_evaluator, RemoteVerifierClient)
+    await workflow.close()
+
+
+@pytest.mark.asyncio
+async def test_build_local_writer_workflow_injects_local_review_services_by_default():
+    workflow = build_local_writer_workflow(_make_settings())
+    assert isinstance(workflow, WriterService)
+    assert isinstance(workflow.critic_evaluator, CriticService)
+    assert isinstance(workflow.verifier_evaluator, VerifierService)
     await workflow.close()
 
 

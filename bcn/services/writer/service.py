@@ -7,8 +7,6 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from bcn.services.critic.service import CriticService
-from bcn.services.verifier.service import VerifierService
 from bcn.services.writer.llm import WriterLLM
 from bcn.services.writer.models import PostprocessedBriefing
 from bcn.services.writer.orchestration import (
@@ -85,6 +83,8 @@ def _default_verifier() -> dict[str, object]:
         "issues": [],
         "recommendations": [],
     }
+
+
 class WriterService:
     """Domain service for item selection, release checks, and draft generation."""
 
@@ -101,12 +101,12 @@ class WriterService:
         self.settings = settings
         self._owns_llm_client = llm_client is None
         self._owns_critic_evaluator = (
-            critic_evaluator is None
+            critic_evaluator is not None
             if owns_critic_evaluator is None
             else bool(owns_critic_evaluator)
         )
         self._owns_verifier_evaluator = (
-            verifier_evaluator is None
+            verifier_evaluator is not None
             if owns_verifier_evaluator is None
             else bool(owns_verifier_evaluator)
         )
@@ -125,11 +125,8 @@ class WriterService:
                 selected_count=selected_count,
             ),
         )
-        self.critic_evaluator = critic_evaluator or CriticService(
-            settings,
-            llm_client=self.llm_client,
-        )
-        self.verifier_evaluator = verifier_evaluator or VerifierService(settings)
+        self.critic_evaluator = critic_evaluator
+        self.verifier_evaluator = verifier_evaluator
         self.comfyui = ComfyUIClient(
             base_url=settings.comfyui_url,
             timeout=settings.comfyui_timeout,
@@ -139,9 +136,9 @@ class WriterService:
     async def close(self) -> None:
         """Release resources owned by this writer service."""
         await self.writer_llm.close()
-        if self._owns_critic_evaluator:
+        if self._owns_critic_evaluator and self.critic_evaluator is not None:
             await self.critic_evaluator.close()
-        if self._owns_verifier_evaluator:
+        if self._owns_verifier_evaluator and self.verifier_evaluator is not None:
             await self.verifier_evaluator.close()
         await self.comfyui.close()
         if self._owns_llm_client:
@@ -249,6 +246,10 @@ class WriterService:
         """Run the critic or return a permissive default payload."""
         if not self.settings.briefing_critique_enabled:
             return _default_critique()
+        if self.critic_evaluator is None:
+            raise RuntimeError(
+                "WriterService requires a critic_evaluator when critique is enabled."
+            )
         return await self.critic_evaluator.evaluate(
             CritiqueRequest(
                 draft_markdown=draft_markdown,
@@ -271,6 +272,10 @@ class WriterService:
         """Run factual verification or return a permissive default payload."""
         if not self.settings.briefing_verifier_enabled:
             return _default_verifier()
+        if self.verifier_evaluator is None:
+            raise RuntimeError(
+                "WriterService requires a verifier_evaluator when verification is enabled."
+            )
         return await self.verifier_evaluator.evaluate(
             VerificationRequest(
                 draft_markdown=markdown,

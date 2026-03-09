@@ -49,21 +49,18 @@ def build_verifier_evaluator(settings: Settings) -> VerificationEvaluator:
 
 
 def build_local_writer_workflow(settings: Settings) -> WriterWorkflow:
-    """Build a local writer workflow while still honoring remote review services."""
-    if (
-        str(getattr(settings, "critic_service_url", "") or "").strip()
-        or str(getattr(settings, "verifier_service_url", "") or "").strip()
-    ):
-        critic_evaluator = build_critic_evaluator(settings)
-        verifier_evaluator = build_verifier_evaluator(settings)
-        return WriterService(
-            settings,
-            critic_evaluator=critic_evaluator,
-            verifier_evaluator=verifier_evaluator,
-            owns_critic_evaluator=True,
-            owns_verifier_evaluator=True,
-        )
-    return WriterService(settings)
+    """Build a local writer workflow with injected review evaluators."""
+    critique_enabled = bool(getattr(settings, "briefing_critique_enabled", True))
+    verifier_enabled = bool(getattr(settings, "briefing_verifier_enabled", True))
+    critic_evaluator = build_critic_evaluator(settings) if critique_enabled else None
+    verifier_evaluator = build_verifier_evaluator(settings) if verifier_enabled else None
+    return WriterService(
+        settings,
+        critic_evaluator=critic_evaluator,
+        verifier_evaluator=verifier_evaluator,
+        owns_critic_evaluator=critic_evaluator is not None,
+        owns_verifier_evaluator=verifier_evaluator is not None,
+    )
 
 
 def build_writer_workflow(settings: Settings) -> WriterWorkflow:

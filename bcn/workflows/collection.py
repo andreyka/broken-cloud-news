@@ -33,14 +33,6 @@ _SOURCE_LABELS = {
     "reddit": "Reddit",
 }
 
-_LEGACY_COLLECT_METHODS = {
-    "ghsa": "collect_ghsa_items",
-    "rss": "collect_rss_items",
-    "twitter": "collect_twitter_items",
-    "reddit": "collect_reddit_items",
-}
-
-
 @dataclass(frozen=True)
 class CollectionRunResult:
     """Structured collection outcome returned by the control plane."""
@@ -390,18 +382,8 @@ async def _collect_from_service(
     collector_service: CollectorWorkflow,
     source: Literal["ghsa", "rss", "twitter", "reddit"],
 ) -> list[CollectedNewsItem]:
-    """Collect from protocol-first or legacy source-specific collector surfaces."""
-    method_name = _LEGACY_COLLECT_METHODS[source]
-    legacy = getattr(collector_service, method_name, None)
-    if callable(legacy):
-        return await legacy()
-
-    collect = getattr(collector_service, "collect", None)
-    if callable(collect):
-        return await collect(source)
-    raise AttributeError(
-        f"Collector service does not support collect('{source}') or {method_name}()"
-    )
+    """Collect from one source through the typed collector workflow contract."""
+    return await collector_service.collect(source)
 
 
 async def execute_collection(

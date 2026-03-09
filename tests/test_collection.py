@@ -27,6 +27,19 @@ def _make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
+def _make_collector_service(**source_results) -> AsyncMock:
+    collector_service = AsyncMock()
+
+    async def _collect(source: str):
+        result = source_results.get(source, [])
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    collector_service.collect.side_effect = _collect
+    return collector_service
+
+
 @pytest.mark.asyncio
 async def test_execute_collection_persists_single_source(monkeypatch):
     settings = _make_settings()
@@ -39,8 +52,7 @@ async def test_execute_collection_persists_single_source(monkeypatch):
         raw_data={"ghsaId": "GHSA-test-0001"},
         full_content="Advisory details",
     )
-    collector_service = AsyncMock()
-    collector_service.collect_ghsa_items.return_value = [collected_item]
+    collector_service = _make_collector_service(ghsa=[collected_item])
 
     insert_mock = AsyncMock(return_value=uuid4())
     monkeypatch.setattr("bcn.workflows.collection.get_pool", AsyncMock())
@@ -119,8 +131,7 @@ async def test_execute_collection_promotes_new_source_after_review(monkeypatch):
         raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
         full_content="Details",
     )
-    collector_service = AsyncMock()
-    collector_service.collect_rss_items.return_value = [collected_item]
+    collector_service = _make_collector_service(rss=[collected_item])
 
     insert_mock = AsyncMock(return_value=uuid4())
     upsert_mock = AsyncMock()
@@ -186,8 +197,7 @@ async def test_execute_collection_quarantines_new_source_when_review_rejects(
         raw_data={"feed_url": "https://example.com/feed.xml", "summary": "marketing"},
         full_content="Details",
     )
-    collector_service = AsyncMock()
-    collector_service.collect_rss_items.return_value = [collected_item]
+    collector_service = _make_collector_service(rss=[collected_item])
 
     insert_mock = AsyncMock(return_value=uuid4())
     upsert_mock = AsyncMock()
@@ -255,8 +265,7 @@ async def test_execute_collection_keeps_new_source_pending_when_review_errors(
         raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
         full_content="Details",
     )
-    collector_service = AsyncMock()
-    collector_service.collect_rss_items.return_value = [collected_item]
+    collector_service = _make_collector_service(rss=[collected_item])
 
     insert_mock = AsyncMock(return_value=uuid4())
     upsert_mock = AsyncMock()
@@ -317,8 +326,7 @@ async def test_execute_collection_honors_quarantined_source_when_review_disabled
         raw_data={"feed_url": "https://example.com/feed.xml", "summary": "technical"},
         full_content="Details",
     )
-    collector_service = AsyncMock()
-    collector_service.collect_rss_items.return_value = [collected_item]
+    collector_service = _make_collector_service(rss=[collected_item])
 
     insert_mock = AsyncMock(return_value=uuid4())
 

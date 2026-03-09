@@ -21,16 +21,30 @@ def _make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
+def _make_collector_service(**source_results) -> AsyncMock:
+    collector_service = AsyncMock()
+
+    async def _collect(source: str):
+        result = source_results.get(source, [])
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    collector_service.collect.side_effect = _collect
+    return collector_service
+
+
 @pytest.mark.asyncio
 async def test_execute_collection_reports_failed_sources_in_collect_all():
     from bcn.workflows.collection import execute_collection
 
     settings = _make_settings()
-    collector_service = AsyncMock()
-    collector_service.collect_ghsa_items.return_value = []
-    collector_service.collect_rss_items.side_effect = RuntimeError("rss failure")
-    collector_service.collect_twitter_items.return_value = []
-    collector_service.collect_reddit_items.return_value = []
+    collector_service = _make_collector_service(
+        ghsa=[],
+        rss=RuntimeError("rss failure"),
+        twitter=[],
+        reddit=[],
+    )
 
     with patch("bcn.workflows.collection.get_pool", new_callable=AsyncMock), patch(
         "bcn.workflows.collection._persist_collected_items",
