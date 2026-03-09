@@ -415,6 +415,10 @@ class Settings(BaseSettings):
     scrape_content_limit: int = 10000
     scrape_min_content_length: int = 100
     scrape_playwright_fetch_fallback: bool = True
+    collector_rss_max_entries_per_feed: int = 40
+    collector_rss_max_item_age_days: int = 45
+    collector_rss_full_content_limit_per_feed: int = 5
+    collector_rss_scrape_timeout_ms: int = 20000
 
     # Analysis
     relevance_threshold: int = 7
