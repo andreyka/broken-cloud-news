@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import json
@@ -47,6 +48,7 @@ class Scraper:
         self.content_limit = content_limit
         self.min_content_length = min_content_length
         self.trusted_hosts = normalize_trusted_hosts(trusted_hosts)
+        self._lifecycle_lock = asyncio.Lock()
         self._pw: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
@@ -55,35 +57,60 @@ class Scraper:
         """Lazily start Playwright and return a reusable browser context."""
         if self._context is not None:
             return self._context
-        self._pw = await async_playwright().start()
-        launch_kwargs: dict[str, object] = {"headless": True}
-        proxy_server = self._playwright_proxy_server()
-        if proxy_server:
-            launch_kwargs["proxy"] = {"server": proxy_server}
-        self._browser = await self._pw.chromium.launch(**launch_kwargs)
-        self._context = await self._browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            java_script_enabled=True,
-        )
-        # Enforce SSRF policy on every browser-level request, including redirects
-        # and secondary fetches triggered while loading a page.
-        await self._context.route("**/*", self._guard_request)
-        return self._context
+        async with self._lifecycle_lock:
+            if self._context is not None:
+                return self._context
+
+            pw: Optional[Playwright] = None
+            browser: Optional[Browser] = None
+            context: Optional[BrowserContext] = None
+            try:
+                pw = await async_playwright().start()
+                launch_kwargs: dict[str, object] = {"headless": True}
+                proxy_server = self._playwright_proxy_server()
+                if proxy_server:
+                    launch_kwargs["proxy"] = {"server": proxy_server}
+                browser = await pw.chromium.launch(**launch_kwargs)
+                context = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    java_script_enabled=True,
+                )
+                # Enforce SSRF policy on every browser-level request, including redirects
+                # and secondary fetches triggered while loading a page.
+                await context.route("**/*", self._guard_request)
+            except Exception:
+                if context is not None:
+                    await context.close()
+                if browser is not None:
+                    await browser.close()
+                if pw is not None:
+                    await pw.stop()
+                raise
+
+            self._pw = pw
+            self._browser = browser
+            self._context = context
+            return self._context
 
     async def close(self) -> None:
         """Shut down the browser and Playwright runtime."""
-        if self._context:
-            await self._context.close()
+        async with self._lifecycle_lock:
+            context = self._context
+            browser = self._browser
+            pw = self._pw
             self._context = None
-        if self._browser:
-            await self._browser.close()
             self._browser = None
-        if self._pw:
-            await self._pw.stop()
             self._pw = None
+
+            if context:
+                await context.close()
+            if browser:
+                await browser.close()
+            if pw:
+                await pw.stop()
 
     async def __aenter__(self) -> "Scraper":
         return self

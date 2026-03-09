@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
 from email.utils import parsedate_to_datetime
+import inspect
 import json
 import logging
 import random
@@ -86,6 +87,7 @@ class LLMClient:
             if resolved:
                 self._role_endpoints[role] = resolved
         self._client = httpx.AsyncClient(timeout=timeout)
+        self._genai_client_lock = asyncio.Lock()
         self._genai_clients: dict[str, Any] = {}
         self._url_status_cache: dict[str, bool] = {}
 
@@ -171,6 +173,27 @@ class LLMClient:
 
     async def close(self) -> None:
         """Release the underlying HTTP connection pool."""
+        async with self._genai_client_lock:
+            genai_clients = tuple(self._genai_clients.values())
+            self._genai_clients.clear()
+
+        for client in genai_clients:
+            try:
+                async_client = getattr(client, "aio", None)
+                async_close = getattr(async_client, "aclose", None)
+                if callable(async_close):
+                    result = async_close()
+                    if inspect.isawaitable(result):
+                        await result
+                    continue
+
+                close = getattr(client, "close", None)
+                if callable(close):
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+            except Exception:
+                logger.warning("Failed to close cached Gemini client cleanly", exc_info=True)
         await self._client.aclose()
 
     async def __aenter__(self) -> "LLMClient":
@@ -303,11 +326,18 @@ class LLMClient:
         response.raise_for_status()
         return str(response.json()["choices"][0]["message"]["content"])
 
-    def _get_genai_client(self, endpoint: _EndpointConfig) -> Any:
+    async def _get_genai_client(self, endpoint: _EndpointConfig) -> Any:
         from google import genai
 
         key = f"{endpoint.base_url}_{endpoint.api_key}"
-        if key not in self._genai_clients:
+        existing = self._genai_clients.get(key)
+        if existing is not None:
+            return existing
+
+        async with self._genai_client_lock:
+            existing = self._genai_clients.get(key)
+            if existing is not None:
+                return existing
             http_options = {}
             if endpoint.base_url and "generativelanguage" not in endpoint.base_url:
                 if endpoint.base_url.rstrip("/").endswith("/v1"):
@@ -318,11 +348,12 @@ class LLMClient:
                     }
                 else:
                     http_options = {"base_url": endpoint.base_url}
-            self._genai_clients[key] = genai.Client(
+            client = genai.Client(
                 api_key=endpoint.api_key or "NO_KEY",
                 http_options=http_options if http_options else None,
             )
-        return self._genai_clients[key]
+            self._genai_clients[key] = client
+            return client
 
     async def _chat_gemini(
         self,
@@ -335,7 +366,7 @@ class LLMClient:
     ) -> str:
         from google.genai import types
 
-        client = self._get_genai_client(endpoint)
+        client = await self._get_genai_client(endpoint)
         response_mime_type = "application/json" if json_response else "text/plain"
 
         # Determine if we should merge prompts to bypass potential Vertex Express issues
@@ -372,7 +403,7 @@ class LLMClient:
     ) -> tuple[str, bytes]:
         from google.genai import types
 
-        client = self._get_genai_client(endpoint)
+        client = await self._get_genai_client(endpoint)
 
         config = types.GenerateImagesConfig(
             number_of_images=1,

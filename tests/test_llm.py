@@ -389,3 +389,43 @@ class TestProviderRouting:
         result = await AnalystLLM(llm).analyze_item("Title", "Body", "url")
         assert result.relevance_score == 8
         assert route.called
+
+
+@pytest.mark.asyncio
+async def test_llm_close_closes_cached_genai_clients(monkeypatch):
+    import google.genai
+
+    closed: list[str] = []
+
+    class _FakeAio:
+        async def aclose(self):
+            closed.append("aio")
+
+    class _FakeGenAIClient:
+        def __init__(self, **_kwargs):
+            self.aio = _FakeAio()
+
+        def close(self):
+            closed.append("sync")
+
+    monkeypatch.setattr(google.genai, "Client", _FakeGenAIClient)
+
+    llm = LLMClient(
+        base_url="https://aiplatform.googleapis.com/v1",
+        model="gemini-3.1-pro-preview",
+        timeout=5,
+        provider="vertexai",
+        api_key="test-key",
+    )
+
+    endpoint = llm._endpoint(None)
+    first = await llm._get_genai_client(endpoint)
+    second = await llm._get_genai_client(endpoint)
+
+    assert first is second
+    assert len(llm._genai_clients) == 1
+
+    await llm.close()
+
+    assert closed == ["aio"]
+    assert llm._genai_clients == {}

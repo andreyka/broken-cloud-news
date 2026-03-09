@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 from unittest.mock import AsyncMock
 from unittest.mock import patch
@@ -157,6 +158,28 @@ class TestScraper:
             assert status == 200
             assert body == "feed body"
             mock_context.request.fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ensure_browser_initializes_playwright_once_under_concurrency(self, scraper):
+        with patch("bcn.common.scraper.async_playwright") as mock_pw_start:
+            mock_pw = AsyncMock()
+            mock_pw_start.return_value.start = AsyncMock(return_value=mock_pw)
+
+            mock_browser = AsyncMock()
+            mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
+
+            mock_context = AsyncMock()
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+            first, second = await asyncio.gather(
+                scraper._ensure_browser(),
+                scraper._ensure_browser(),
+            )
+
+            assert first is second
+            mock_pw_start.return_value.start.assert_awaited_once()
+            mock_pw.chromium.launch.assert_awaited_once()
+            mock_browser.new_context.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_guard_request_blocks_private_subrequest(self, scraper):
