@@ -218,10 +218,12 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql://broken_cloud_news:cloud_security@localhost:5432/broken_cloud_news"
+    database_pool_min_size: int = 2
+    database_pool_max_size: int = 20
 
     # LLM
     llm_provider: str = "openai_compat"  # openai_compat, gemini, vertexai
-    llm_base_url: str = "http://192.168.0.9:8000/v1"
+    llm_base_url: str = ""
     llm_model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
     llm_api_key: str = ""
     llm_timeout: int = 180
@@ -260,7 +262,7 @@ class Settings(BaseSettings):
     service_auth_token: str = ""
 
     # ComfyUI (Flux on DGX Spark)
-    comfyui_url: str = "http://192.168.0.9:8188"
+    comfyui_url: str = ""
     comfyui_timeout: int = 300
     comfyui_poll_interval: int = 2
 
@@ -392,6 +394,7 @@ class Settings(BaseSettings):
     reddit_interval_hours: int = 3
     twitter_interval_hours: int = 6
     analyst_interval_minutes: int = 15
+    health_check_port: int = 8080
     distribute_hour: int = 9
     distribute_minute: int = 0
     distribute_hours: list[int] = []
@@ -421,6 +424,7 @@ class Settings(BaseSettings):
     collector_rss_scrape_timeout_ms: int = 20000
 
     # Analysis
+    analysis_concurrency: int = 5
     relevance_threshold: int = 7
     briefing_lookback_hours: int = 24
     briefing_max_items: int = 5

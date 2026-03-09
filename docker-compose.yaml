@@ -69,6 +69,18 @@ services:
       - "9004:9004"
       - "9005:9005"
       - "9006:9006"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+          cpus: "2.0"
     depends_on:
       postgres:
         condition: service_healthy

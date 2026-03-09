@@ -31,8 +31,8 @@ async def _get_or_create_pool(settings: Optional[Settings] = None) -> asyncpg.Po
             active_settings = settings or Settings()
             _pool = await asyncpg.create_pool(
                 active_settings.database_url,
-                min_size=2,
-                max_size=10,
+                min_size=active_settings.database_pool_min_size,
+                max_size=active_settings.database_pool_max_size,
             )
     return _pool
 

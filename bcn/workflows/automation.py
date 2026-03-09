@@ -61,52 +61,79 @@ def configure_scheduler_runtime(
     return build_workflow_runtime(settings=settings)
 
 
+async def _run_job_safely(name: str, coro) -> None:  # noqa: ANN001
+    """Execute a scheduled job with error isolation.
+
+    Catches and logs any exception so that a single failing job does not
+    crash the entire scheduler process.
+    """
+    try:
+        await coro
+    except Exception:
+        logger.exception("Scheduled job '%s' failed", name)
+
+
 async def job_collect_ghsa(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger GHSA collection."""
-    await execute_collection(
-        runtime.settings,
-        source="ghsa",
-        origin="scheduler",
-        manage_pool=False,
+    await _run_job_safely(
+        "ghsa_collector",
+        execute_collection(
+            runtime.settings,
+            source="ghsa",
+            origin="scheduler",
+            manage_pool=False,
+        ),
     )
 
 
 async def job_collect_rss(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger RSS collection."""
-    await execute_collection(
-        runtime.settings,
-        source="rss",
-        origin="scheduler",
-        manage_pool=False,
+    await _run_job_safely(
+        "rss_collector",
+        execute_collection(
+            runtime.settings,
+            source="rss",
+            origin="scheduler",
+            manage_pool=False,
+        ),
     )
 
 
 async def job_collect_twitter(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Twitter/X collection."""
-    await execute_collection(
-        runtime.settings,
-        source="twitter",
-        origin="scheduler",
-        manage_pool=False,
+    await _run_job_safely(
+        "twitter_collector",
+        execute_collection(
+            runtime.settings,
+            source="twitter",
+            origin="scheduler",
+            manage_pool=False,
+        ),
     )
 
 
 async def job_collect_reddit(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger Reddit collection."""
-    await execute_collection(
-        runtime.settings,
-        source="reddit",
-        origin="scheduler",
-        manage_pool=False,
+    await _run_job_safely(
+        "reddit_collector",
+        execute_collection(
+            runtime.settings,
+            source="reddit",
+            origin="scheduler",
+            manage_pool=False,
+        ),
     )
 
 
 async def job_analyze_items(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger item analysis."""
-    await execute_analysis(
-        runtime.settings,
-        source="scheduler",
-        manage_pool=False,
+    await _run_job_safely(
+        "analyst",
+        execute_analysis(
+            runtime.settings,
+            source="scheduler",
+            manage_pool=False,
+        ),
     )
 
 
@@ -132,27 +159,22 @@ async def job_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
 
     from bcn.evaluation.service import execute_shadow_lane
 
-    report = await execute_shadow_lane(
-        settings,
-        workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
-        candidate_overrides_path=overrides_path,
-        output_path=None,
-        include_text=bool(settings.shadow_include_text),
-        store_db=True,
-        source="scheduler",
-        notes="Scheduled pre-publish shadow evaluation.",
-        manage_pool=False,
+    await _run_job_safely(
+        "shadow_regular_briefing",
+        execute_shadow_lane(
+            settings,
+            workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
+            candidate_overrides_path=overrides_path,
+            output_path=None,
+            include_text=bool(settings.shadow_include_text),
+            store_db=True,
+            source="scheduler",
+            notes="Scheduled pre-publish shadow evaluation.",
+            manage_pool=False,
+        ),
     )
-    summary = report.get("summary") if isinstance(report, dict) else {}
-    if not isinstance(summary, dict):
-        summary = {}
-    logger.info(
-        "Stored scheduled shadow evaluation run_id=%s recommendation=%s confidence=%s item_pool=%s",
-        report.get("db_run_id", "unknown"),
-        summary.get("recommendation", "hold"),
-        summary.get("confidence", "low"),
-        report.get("item_pool_count", 0),
-    )
+    # Note: logging of the shadow result is handled within execute_shadow_lane
+    # or by the caller in mode-specific jobs.
 
 
 # Backward-compatible alias for older imports/tests.

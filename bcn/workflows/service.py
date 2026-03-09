@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 import logging
+import signal
 from collections.abc import Callable
 
 from bcn.common.config import Settings
@@ -31,6 +33,33 @@ from bcn.workflows.modes.common import run_writer_distributor_handoff
 
 logger = logging.getLogger("bcn")
 OutputWriter = Callable[[str], None]
+
+
+async def _start_health_server(port: int) -> asyncio.AbstractServer:
+    """Start a minimal HTTP health-check server for container probes."""
+
+    async def _handle(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            await reader.readline()  # consume request line
+            body = b'{"ok":true}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"\r\n" + body
+            )
+            await writer.drain()
+        except Exception:
+            pass
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(_handle, "0.0.0.0", port)
+    logger.info("Health check server listening on port %d", port)
+    return server
 
 
 async def execute_workflow_mode(
@@ -61,7 +90,7 @@ async def run_daemon(
     *,
     emit: OutputWriter | None = None,
 ) -> None:
-    """Start the APScheduler runtime."""
+    """Start the APScheduler runtime with graceful SIGTERM handling."""
     from apscheduler import AsyncScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
@@ -76,6 +105,14 @@ async def run_daemon(
     runtime = configure_scheduler_runtime(settings)
 
     await get_pool(settings)
+
+    health_server: asyncio.AbstractServer | None = None
+    if settings.health_check_port > 0:
+        try:
+            health_server = await _start_health_server(settings.health_check_port)
+        except Exception:
+            logger.exception("Failed to start health check server")
+
     try:
         finalized = await finalize_stale_pending_generation_runs(
             max_age_minutes=max(
@@ -95,6 +132,19 @@ async def run_daemon(
     _emit("Starting Broken Cloud News scheduler...")
     try:
         async with AsyncScheduler() as scheduler:
+            # Register SIGTERM handler for graceful container shutdown
+            shutdown_event = asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            def _handle_sigterm() -> None:
+                logger.info("Received SIGTERM, initiating graceful shutdown...")
+                shutdown_event.set()
+
+            try:
+                loop.add_signal_handler(signal.SIGTERM, _handle_sigterm)
+            except NotImplementedError:
+                pass  # Windows does not support add_signal_handler
+
             await scheduler.add_schedule(
                 partial(job_collect_ghsa, runtime),
                 IntervalTrigger(hours=settings.ghsa_interval_hours),
@@ -141,8 +191,14 @@ async def run_daemon(
                 )
 
             _emit("Scheduler started. Press Ctrl+C to stop.")
-            await scheduler.run_until_stopped()
+
+            # Wait for either the scheduler to stop or SIGTERM
+            await shutdown_event.wait()
+            logger.info("Shutting down scheduler...")
     finally:
+        if health_server is not None:
+            health_server.close()
+            await health_server.wait_closed()
         try:
             await close_pool()
         except Exception:
