@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from bcn.agents.verifier.llm import VerifierLLM
+from bcn.services.verifier.llm import VerifierLLM
 from bcn.briefing.text import canonical_url_key
 from bcn.briefing.text import extract_urls_in_order as extract_urls_in_order_from_text
 from bcn.briefing.text import normalize_url

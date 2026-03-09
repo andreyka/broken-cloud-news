@@ -8,8 +8,8 @@ from uuid import uuid4
 
 import pytest
 
-from bcn.agents.distributor.service import ChannelDeliveryResult
-from bcn.agents.distributor.service import DeliveryResult
+from bcn.services.distributor.service import ChannelDeliveryResult
+from bcn.services.distributor.service import DeliveryResult
 from bcn.common.config import Settings
 from bcn.workflows.distribution import execute_distribution
 

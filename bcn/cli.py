@@ -45,7 +45,7 @@ _WORKFLOW_MODE_CHOICES = click.Choice(list(ALL_MODES), case_sensitive=True)
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 def cli(verbose: bool) -> None:
-    """Broken Cloud News - Cloud Security Briefing Agent."""
+    """Broken Cloud News cloud security briefing services."""
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
@@ -61,9 +61,9 @@ def db_migrate(dry_run: bool) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_schema_migration_status
-        from bcn.common.db import migrate_schema
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_schema_migration_status
+        from bcn.persistence.runtime import migrate_schema
 
         try:
             if dry_run:
@@ -579,9 +579,9 @@ def evaluation_runs(lane: str | None, limit: int) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.common.db import list_recent_evaluation_runs
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.evaluation import list_recent_evaluation_runs
 
         await get_pool(settings)
         rows = await list_recent_evaluation_runs(lane=lane, limit=max(1, int(limit)))
@@ -657,9 +657,9 @@ def newsletter_subscribers_list(include_inactive: bool) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_newsletter_subscribers
-        from bcn.common.db import get_pool
+        from bcn.persistence.newsletter import get_newsletter_subscribers
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
 
         await get_pool(settings)
         rows = await get_newsletter_subscribers(active_only=not include_inactive)
@@ -687,9 +687,9 @@ def newsletter_subscribers_add(email: str) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import add_newsletter_subscriber
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
+        from bcn.persistence.newsletter import add_newsletter_subscriber
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
 
         await get_pool(settings)
         try:
@@ -712,9 +712,9 @@ def newsletter_subscribers_remove(email: str) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.common.db import remove_newsletter_subscriber
+        from bcn.persistence.newsletter import remove_newsletter_subscriber
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
 
         await get_pool(settings)
         removed = await remove_newsletter_subscriber(email)
@@ -759,12 +759,12 @@ def review(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_briefing_by_id
-        from bcn.common.db import get_latest_any_briefing
-        from bcn.common.db import get_latest_generation_run_for_briefing
-        from bcn.common.db import get_pool
-        from bcn.common.db import insert_human_review
+        from bcn.persistence.briefings import get_briefing_by_id
+        from bcn.persistence.briefings import get_latest_any_briefing
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.training import get_latest_generation_run_for_briefing
+        from bcn.persistence.training import insert_human_review
 
         if edited_file and edited_text:
             raise click.ClickException(
@@ -826,9 +826,9 @@ def review_queue(limit: int, only_unreviewed: bool) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.common.db import get_review_queue
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.training import get_review_queue
 
         await get_pool(settings)
         rows = await get_review_queue(
@@ -884,9 +884,9 @@ def record_outcome(
     async def _run() -> None:
         from uuid import UUID
 
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.common.db import upsert_distribution_outcome
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.training import upsert_distribution_outcome
 
         try:
             parsed_id = UUID(briefing_id)
@@ -973,11 +973,11 @@ def import_history(
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_pool
-        from bcn.common.db import import_channel_history_posts
         from bcn.history import extract_unique_post_urls
         from bcn.history import parse_channel_history_text
+        from bcn.persistence.history import import_channel_history_posts
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
 
         tz_name = (timezone or settings.distribute_timezone or "UTC").strip()
         try:
@@ -1086,15 +1086,15 @@ def export_training(
         from datetime import timezone
         from uuid import UUID
 
-        from bcn.common.db import close_pool
-        from bcn.common.db import get_distribution_outcomes
-        from bcn.common.db import get_evaluation_runs_for_export
-        from bcn.common.db import get_generation_preference_pairs_for_runs
-        from bcn.common.db import get_generation_rounds_for_runs
-        from bcn.common.db import get_generation_runs_for_export
-        from bcn.common.db import get_human_reviews
-        from bcn.common.db import get_pool
         from bcn.evaluation import build_shadow_preference_pair
+        from bcn.persistence.evaluation import get_evaluation_runs_for_export
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.training import get_distribution_outcomes
+        from bcn.persistence.training import get_generation_preference_pairs_for_runs
+        from bcn.persistence.training import get_generation_rounds_for_runs
+        from bcn.persistence.training import get_generation_runs_for_export
+        from bcn.persistence.training import get_human_reviews
 
         def _iso(value: Any) -> str | None:
             if isinstance(value, UUID):
@@ -1496,9 +1496,9 @@ def finalize_pending_runs(max_age_minutes: int, decision: str) -> None:
     settings = Settings()
 
     async def _run() -> None:
-        from bcn.common.db import close_pool
-        from bcn.common.db import finalize_stale_pending_generation_runs
-        from bcn.common.db import get_pool
+        from bcn.persistence.runtime import close_pool
+        from bcn.persistence.runtime import get_pool
+        from bcn.persistence.training import finalize_stale_pending_generation_runs
 
         await get_pool(settings)
         updated = await finalize_stale_pending_generation_runs(
@@ -1564,6 +1564,40 @@ def workflow_run(mode: str) -> None:
         click.echo(distribute_result)
 
     asyncio.run(_run())
+
+
+@cli.command("serve")
+@click.argument("component", type=click.Choice(["writer", "critic", "verifier"]))
+@click.option("--host", default="0.0.0.0", show_default=True)
+@click.option(
+    "--port",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Port to bind (0 selects the component default port).",
+)
+def serve(component: str, host: str, port: int) -> None:
+    """Serve one BCN component over JSON/HTTP for remote deployment."""
+    settings = Settings()
+
+    default_ports = {
+        "writer": 8081,
+        "critic": 8082,
+        "verifier": 8083,
+    }
+    bind_port = int(port) if int(port) > 0 else default_ports[component]
+
+    from bcn.transports.http.server import serve_component_http
+
+    try:
+        serve_component_http(
+            settings,
+            component=component,
+            host=host,
+            port=bind_port,
+        )
+    except KeyboardInterrupt:
+        click.echo("\nShutting down...")
 
 
 @cli.command()

@@ -9,8 +9,9 @@ from uuid import uuid4
 
 import pytest
 
-from bcn.agents.writer.service import WriterService
+from bcn.services.writer.service import WriterService
 from bcn.common.config import Settings
+from bcn.contracts.services import WriterTraceMetadata
 from bcn.workflows.generation import execute_generation
 from bcn.workflows.generation import execute_generation_result
 from bcn.workflows.modes.common import parse_writer_handoff_payload
@@ -55,11 +56,13 @@ def _make_writer_service(
     )
     service.generate_release_candidate = AsyncMock(return_value=candidate)
     service.build_release_artifact = AsyncMock(return_value=artifact or {})
-    service.passes_critic_thresholds = lambda critique: bool(
-        critique.get("passed", False)
+    service.get_trace_metadata = AsyncMock(
+        return_value=WriterTraceMetadata(
+            llm_model="writer:model@v1",
+            llm_model_version="v1",
+            prompts={"writer": "v1"},
+        )
     )
-    service.llm_client = SimpleNamespace(model_for_role=lambda role: "writer:model@v1")
-    service.writer_llm = SimpleNamespace(prompt_versions=lambda: {"writer": "v1"})
     service.close = AsyncMock()
     return service
 

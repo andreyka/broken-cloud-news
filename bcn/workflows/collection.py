@@ -10,18 +10,18 @@ from typing import Awaitable
 from typing import Callable
 from typing import Literal
 
-from bcn.agents.collector.review import SourceReviewLLM
-from bcn.agents.collector.service import CollectorService
+from bcn.services.collector.review import SourceReviewLLM
+from bcn.services.collector.service import CollectorService
 from bcn.common.config import Settings
-from bcn.common.db import close_pool
-from bcn.common.db import collection_source_has_historical_items
-from bcn.common.db import get_pool
-from bcn.common.db import get_collection_source
-from bcn.common.db import insert_news_item
-from bcn.common.db import record_collection_source_review
-from bcn.common.db import upsert_collection_source
 from bcn.common.llm import LLMClient
 from bcn.common.models import CollectedNewsItem
+from bcn.persistence.collection_sources import collection_source_has_historical_items
+from bcn.persistence.collection_sources import get_collection_source
+from bcn.persistence.collection_sources import record_collection_source_review
+from bcn.persistence.collection_sources import upsert_collection_source
+from bcn.persistence.news_items import insert_news_item
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
 
 logger = logging.getLogger(__name__)
 

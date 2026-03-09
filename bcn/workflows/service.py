@@ -65,9 +65,9 @@ async def run_daemon(
     from apscheduler import AsyncScheduler
     from apscheduler.triggers.interval import IntervalTrigger
 
-    from bcn.common.db import close_pool
-    from bcn.common.db import finalize_stale_pending_generation_runs
-    from bcn.common.db import get_pool
+    from bcn.persistence.runtime import close_pool
+    from bcn.persistence.runtime import get_pool
+    from bcn.persistence.training import finalize_stale_pending_generation_runs
 
     def _emit(message: str) -> None:
         if emit is not None:

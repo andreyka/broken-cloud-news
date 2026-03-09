@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bcn.agents.analyst.llm import AnalystLLM
+from bcn.services.analyst.llm import AnalystLLM
 from bcn.common.llm import LLMClient
 
 sys.path.insert(0, os.path.abspath("."))

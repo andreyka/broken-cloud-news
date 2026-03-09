@@ -33,9 +33,9 @@ class VerificationRequest:
     source: str = "input"
 
 
-def render_critique_request_payload(request: CritiqueRequest) -> str:
-    """Render a structured critique request for adapter transport."""
-    payload = {
+def critique_request_to_payload(request: CritiqueRequest) -> dict[str, Any]:
+    """Render a critique request as a JSON-safe payload."""
+    return {
         "draft_markdown": request.draft_markdown,
         "gate_hard_issues": list(request.gate_hard_issues),
         "gate_soft_issues": list(request.gate_soft_issues),
@@ -44,6 +44,72 @@ def render_critique_request_payload(request: CritiqueRequest) -> str:
         "recent_briefings": list(request.recent_briefings),
         "source": str(request.source or "input"),
     }
+
+
+def critique_request_from_payload(payload: dict[str, Any] | None) -> CritiqueRequest | None:
+    """Parse a structured critique request from a decoded payload."""
+    decoded = payload or {}
+    if not isinstance(decoded, dict):
+        return None
+
+    draft_markdown = str(decoded.get("draft_markdown") or "").strip()
+    if not draft_markdown:
+        return None
+
+    items_raw = decoded.get("items", [])
+    recent_raw = decoded.get("recent_briefings", [])
+    gate_hard_raw = decoded.get("gate_hard_issues", [])
+    gate_soft_raw = decoded.get("gate_soft_issues", [])
+
+    return CritiqueRequest(
+        draft_markdown=draft_markdown,
+        items=tuple(item for item in items_raw if isinstance(item, dict)),
+        mode=str(decoded.get("mode") or "standard").strip() or "standard",
+        source=str(decoded.get("source") or "input").strip() or "input",
+        recent_briefings=tuple(item for item in recent_raw if isinstance(item, dict)),
+        gate_hard_issues=tuple(
+            str(item).strip() for item in gate_hard_raw if str(item).strip()
+        ),
+        gate_soft_issues=tuple(
+            str(item).strip() for item in gate_soft_raw if str(item).strip()
+        ),
+    )
+
+
+def verification_request_to_payload(request: VerificationRequest) -> dict[str, Any]:
+    """Render a verification request as a JSON-safe payload."""
+    return {
+        "draft_markdown": request.draft_markdown,
+        "items": list(request.items),
+        "mode": str(request.mode or "standard"),
+        "source": str(request.source or "input"),
+    }
+
+
+def verification_request_from_payload(
+    payload: dict[str, Any] | None,
+) -> VerificationRequest | None:
+    """Parse a structured verification request from a decoded payload."""
+    decoded = payload or {}
+    if not isinstance(decoded, dict):
+        return None
+
+    draft_markdown = str(decoded.get("draft_markdown") or "").strip()
+    if not draft_markdown:
+        return None
+
+    items_raw = decoded.get("items", [])
+    return VerificationRequest(
+        draft_markdown=draft_markdown,
+        items=tuple(item for item in items_raw if isinstance(item, dict)),
+        mode=str(decoded.get("mode") or "standard").strip() or "standard",
+        source=str(decoded.get("source") or "input").strip() or "input",
+    )
+
+
+def render_critique_request_payload(request: CritiqueRequest) -> str:
+    """Render a structured critique request for adapter transport."""
+    payload = critique_request_to_payload(request)
     return _CRITIQUE_REQUEST_PREFIX + json.dumps(
         payload,
         ensure_ascii=True,
@@ -73,41 +139,12 @@ def parse_critique_request_payload(text: str) -> CritiqueRequest | None:
         decoded = json.loads(raw_payload)
     except json.JSONDecodeError:
         return None
-    if not isinstance(decoded, dict):
-        return None
-
-    draft_markdown = str(decoded.get("draft_markdown") or "").strip()
-    if not draft_markdown:
-        return None
-
-    items_raw = decoded.get("items", [])
-    recent_raw = decoded.get("recent_briefings", [])
-    gate_hard_raw = decoded.get("gate_hard_issues", [])
-    gate_soft_raw = decoded.get("gate_soft_issues", [])
-
-    return CritiqueRequest(
-        draft_markdown=draft_markdown,
-        items=tuple(item for item in items_raw if isinstance(item, dict)),
-        mode=str(decoded.get("mode") or "standard").strip() or "standard",
-        source=str(decoded.get("source") or "input").strip() or "input",
-        recent_briefings=tuple(item for item in recent_raw if isinstance(item, dict)),
-        gate_hard_issues=tuple(
-            str(item).strip() for item in gate_hard_raw if str(item).strip()
-        ),
-        gate_soft_issues=tuple(
-            str(item).strip() for item in gate_soft_raw if str(item).strip()
-        ),
-    )
+    return critique_request_from_payload(decoded)
 
 
 def render_verification_request_payload(request: VerificationRequest) -> str:
     """Render a structured verification request for adapter transport."""
-    payload = {
-        "draft_markdown": request.draft_markdown,
-        "items": list(request.items),
-        "mode": str(request.mode or "standard"),
-        "source": str(request.source or "input"),
-    }
+    payload = verification_request_to_payload(request)
     return _VERIFICATION_REQUEST_PREFIX + json.dumps(
         payload,
         ensure_ascii=True,
@@ -137,27 +174,18 @@ def parse_verification_request_payload(text: str) -> VerificationRequest | None:
         decoded = json.loads(raw_payload)
     except json.JSONDecodeError:
         return None
-    if not isinstance(decoded, dict):
-        return None
-
-    draft_markdown = str(decoded.get("draft_markdown") or "").strip()
-    if not draft_markdown:
-        return None
-
-    items_raw = decoded.get("items", [])
-    return VerificationRequest(
-        draft_markdown=draft_markdown,
-        items=tuple(item for item in items_raw if isinstance(item, dict)),
-        mode=str(decoded.get("mode") or "standard").strip() or "standard",
-        source=str(decoded.get("source") or "input").strip() or "input",
-    )
+    return verification_request_from_payload(decoded)
 
 
 __all__ = [
     "CritiqueRequest",
     "VerificationRequest",
+    "critique_request_from_payload",
+    "critique_request_to_payload",
     "parse_critique_request_payload",
     "parse_verification_request_payload",
     "render_critique_request_payload",
     "render_verification_request_payload",
+    "verification_request_from_payload",
+    "verification_request_to_payload",
 ]

@@ -19,6 +19,8 @@ class TestSettings:
         assert s.briefing_history_items == 10
         assert s.briefing_novelty_lookback_hours == 24 * 21
         assert s.briefing_novelty_title_similarity_threshold == 0.78
+        assert s.service_request_timeout_seconds == 900
+        assert s.writer_service_url == ""
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")
@@ -83,3 +85,13 @@ class TestSettings:
         assert Settings(shadow_minutes_before_publish=45).shadow_minutes_before_publish == 45
         with pytest.raises(ValidationError):
             Settings(shadow_minutes_before_publish=1440)
+
+    def test_service_url_validation_and_normalization(self):
+        settings = Settings(writer_service_url="http://writer.internal:8081/")
+        assert settings.writer_service_url == "http://writer.internal:8081"
+        with pytest.raises(ValidationError):
+            Settings(critic_service_url="writer.internal:8082")
+
+    def test_service_request_timeout_must_be_positive(self):
+        with pytest.raises(ValidationError):
+            Settings(service_request_timeout_seconds=0)

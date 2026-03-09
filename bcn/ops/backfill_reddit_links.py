@@ -8,11 +8,11 @@ import json
 import logging
 from typing import Any
 
-from bcn.agents.collector.service import CollectorService
+from bcn.services.collector.service import CollectorService
 from bcn.common.config import Settings
-from bcn.common.db import close_pool
-from bcn.common.db import get_pool
 from bcn.common.scraper import Scraper
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
 
 LOGGER = logging.getLogger("backfill_reddit_links")
 USER_AGENT = "BrokenCloudNews/1.0 (cloud-security digest bot)"

@@ -9,15 +9,15 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from bcn.agents.writer.service import WriterService
-from bcn.agents.writer.service import WriterWorkflowProtocol
 from bcn.common.config import Settings
-from bcn.common.db import get_distributed_briefings
-from bcn.common.db import get_generation_runs_for_export
-from bcn.common.db import get_human_reviews
-from bcn.common.db import get_recent_briefings
-from bcn.common.db import get_top_items_for_period
-from bcn.common.db import preview_analyzed_items
+from bcn.persistence.briefings import get_distributed_briefings
+from bcn.persistence.briefings import get_recent_briefings
+from bcn.persistence.news_items import get_top_items_for_period
+from bcn.persistence.news_items import preview_analyzed_items
+from bcn.persistence.training import get_generation_runs_for_export
+from bcn.persistence.training import get_human_reviews
+from bcn.contracts.services import WriterWorkflow
+from bcn.service_registry import build_writer_workflow
 from bcn.workflows.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
@@ -72,7 +72,7 @@ def load_settings_with_overrides(
 
 
 async def _select_items_for_workflow(
-    writer: WriterWorkflowProtocol,
+    writer: WriterWorkflow,
     item_dicts: list[dict[str, Any]],
     workflow_mode: str,
 ) -> dict[str, Any]:
@@ -81,7 +81,7 @@ async def _select_items_for_workflow(
 
 
 async def _evaluate_existing_markdown(
-    writer: WriterWorkflowProtocol,
+    writer: WriterWorkflow,
     *,
     markdown: str,
     selected_items: list[dict[str, Any]],
@@ -107,7 +107,7 @@ async def _evaluate_existing_markdown(
 
 
 async def _generate_release_candidate(
-    writer: WriterWorkflowProtocol,
+    writer: WriterWorkflow,
     *,
     selected_items: list[dict[str, Any]],
     history: list[dict[str, Any]],
@@ -119,9 +119,10 @@ async def _generate_release_candidate(
         history=history,
         mode=mode,
     )
+    final_selected_items = list(evaluation.get("selected_items") or selected_items)
     rubric = score_feedback_rubric(
         str(evaluation["markdown"]),
-        selected_items,
+        final_selected_items,
         evaluation["gate"],
         min_chars=int(evaluation["min_chars"]),
         hard_max_chars=int(evaluation["hard_max_chars"]),
@@ -528,10 +529,10 @@ async def run_benchmark_pack(
         settings,
         candidate_overrides_path,
     )
-    champion_writer = WriterService(settings)
+    champion_writer = build_writer_workflow(settings)
     candidate_writer = champion_writer
     if candidate_settings.model_dump() != settings.model_dump():
-        candidate_writer = WriterService(candidate_settings)
+        candidate_writer = build_writer_workflow(candidate_settings)
 
     try:
         results: list[dict[str, Any]] = []
@@ -636,10 +637,10 @@ async def run_shadow_lane(
         settings,
         candidate_overrides_path,
     )
-    champion_writer = WriterService(settings)
+    champion_writer = build_writer_workflow(settings)
     candidate_writer = champion_writer
     if candidate_settings.model_dump() != settings.model_dump():
-        candidate_writer = WriterService(candidate_settings)
+        candidate_writer = build_writer_workflow(candidate_settings)
 
     try:
         if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 from zoneinfo import ZoneInfoNotFoundError
 
@@ -192,8 +193,31 @@ class Settings(BaseSettings):
             return ""
         return aliases.get(value, "openai_compat")
 
+    @field_validator(
+        "writer_service_url",
+        "critic_service_url",
+        "verifier_service_url",
+    )
+    @classmethod
+    def _validate_service_url(cls, v: str) -> str:
+        value = str(v or "").strip()
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"Invalid service URL '{value}'")
+        return value.rstrip("/")
+
+    @field_validator("service_request_timeout_seconds")
+    @classmethod
+    def _validate_service_request_timeout(cls, v: int) -> int:
+        timeout = int(v)
+        if timeout <= 0:
+            raise ValueError("service_request_timeout_seconds must be > 0")
+        return timeout
+
     # Database
-    database_url: str = "postgresql://broken_cloud_news_agent_db:cloud_security_agent@localhost:5432/broken_cloud_news"
+    database_url: str = "postgresql://broken_cloud_news:cloud_security@localhost:5432/broken_cloud_news"
 
     # LLM
     llm_provider: str = "openai_compat"  # openai_compat, gemini, vertexai
@@ -227,6 +251,13 @@ class Settings(BaseSettings):
     llm_api_key_critic: str = ""
     llm_api_key_verifier: str = ""
     llm_api_key_cover: str = ""
+
+    # Deployable service endpoints (optional; blank uses local in-process services)
+    writer_service_url: str = ""
+    critic_service_url: str = ""
+    verifier_service_url: str = ""
+    service_request_timeout_seconds: int = 900
+    service_auth_token: str = ""
 
     # ComfyUI (Flux on DGX Spark)
     comfyui_url: str = "http://192.168.0.9:8188"
