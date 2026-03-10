@@ -98,6 +98,7 @@ def normalize_critique_payload(payload: dict[str, object] | None) -> dict[str, o
     critique.setdefault("recommendations", [])
     critique.setdefault("issues", [])
     critique.setdefault("dimension_scores", {})
+    critique.setdefault("threshold_failures", {})
     return critique
 
 
@@ -515,18 +516,50 @@ def build_rewrite_feedback_context(
         "actionability": int(service.settings.briefing_critic_min_actionability),
         "link_hygiene": int(service.settings.briefing_critic_min_link_hygiene),
     }
+    threshold_failures = critique.get("threshold_failures", {})
+    if not isinstance(threshold_failures, dict):
+        threshold_failures = {}
+    normalized_threshold_failures: dict[str, dict[str, int | bool]] = {}
+    for name, payload in threshold_failures.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if isinstance(payload, dict):
+            normalized_payload: dict[str, int | bool] = {}
+            actual = payload.get("actual")
+            required = payload.get("required")
+            if isinstance(actual, bool):
+                normalized_payload["actual"] = actual
+            elif actual is not None:
+                normalized_payload["actual"] = int(actual or 0)
+            if isinstance(required, bool):
+                normalized_payload["required"] = required
+            elif required is not None:
+                normalized_payload["required"] = int(required or 0)
+            normalized_threshold_failures[name.strip()] = normalized_payload
+    if not normalized_threshold_failures:
+        critic_score = int(critique.get("score", 0) or 0)
+        if critic_score < min_thresholds["score"]:
+            normalized_threshold_failures["score"] = {
+                "required": min_thresholds["score"]
+            }
+        for dimension in ("actionability", "link_hygiene"):
+            dim_score = int(critic_dims.get(dimension, 0) or 0)
+            if dim_score < min_thresholds[dimension]:
+                normalized_threshold_failures[dimension] = {
+                    "actual": dim_score,
+                    "required": min_thresholds[dimension],
+                }
     failed_critic_thresholds: list[str] = []
-    critic_score = int(critique.get("score", 0) or 0)
-    if critic_score < min_thresholds["score"]:
-        failed_critic_thresholds.append(
-            f"score {critic_score} < {min_thresholds['score']}"
-        )
-    for dimension in ("actionability", "link_hygiene"):
-        dim_score = int(critic_dims.get(dimension, 0) or 0)
-        if dim_score < min_thresholds[dimension]:
-            failed_critic_thresholds.append(
-                f"{dimension} {dim_score} < {min_thresholds[dimension]}"
-            )
+    if "score" in normalized_threshold_failures:
+        failed_critic_thresholds.append("overall critic threshold")
+    if "actionability" in normalized_threshold_failures:
+        failed_critic_thresholds.append("actionability")
+    if "link_hygiene" in normalized_threshold_failures:
+        failed_critic_thresholds.append("link hygiene")
+    for name in normalized_threshold_failures:
+        if name in {"score", "actionability", "link_hygiene"}:
+            continue
+        failed_critic_thresholds.append(name.replace("_", " "))
 
     compact_items: list[dict[str, Any]] = []
     for item in selected_items[:12]:
@@ -588,7 +621,6 @@ def build_rewrite_feedback_context(
         },
         "critic": {
             "passed": bool(critique.get("passed", False)),
-            "score": critic_score,
             "dimension_scores": {
                 "actionability": int(critic_dims.get("actionability", 0) or 0),
                 "source_diversity": int(
@@ -599,6 +631,7 @@ def build_rewrite_feedback_context(
                 "style": int(critic_dims.get("style", 0) or 0),
             },
             "thresholds": min_thresholds,
+            "threshold_failures": normalized_threshold_failures,
             "failed_thresholds": failed_critic_thresholds,
             "issues": critic_issues,
             "recommendations": critic_recommendations,

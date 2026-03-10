@@ -53,7 +53,8 @@ class CriticService:
             or [str(item) for item in gate.get("soft_issues", [])],
             recent_briefings=list(request.recent_briefings),
         )
-        threshold_passed = self._passes_thresholds(critique)
+        threshold_failures = self._threshold_failures(critique)
+        threshold_passed = not threshold_failures
         result = {
             "source": request.source,
             "gate_passed": bool(gate.get("passed", False)),
@@ -61,6 +62,7 @@ class CriticService:
             "critic_score": int(critique.get("score", 0) or 0),
             "critic_dimension_scores": critique.get("dimension_scores", {}),
             "threshold_passed": threshold_passed,
+            "threshold_failures": threshold_failures,
             "thresholds": {
                 "min_score": int(self.settings.briefing_critic_min_score),
                 "min_actionability": int(
@@ -78,29 +80,49 @@ class CriticService:
             ],
         }
         logger.info(
-            "Critique done for %s: gate=%s critic=%s score=%s",
+            "Critique done for %s: gate=%s critic=%s threshold=%s score=%s failures=%s",
             request.source,
             result["gate_passed"],
             result["critic_passed"],
+            result["threshold_passed"],
             result["critic_score"],
+            result["threshold_failures"],
         )
         return result
 
     def _passes_thresholds(self, critique: dict[str, object]) -> bool:
         """Return whether critique output meets configured release thresholds."""
+        return not self._threshold_failures(critique)
+
+    def _threshold_failures(
+        self, critique: dict[str, object]
+    ) -> dict[str, dict[str, int | bool]]:
+        """Return the configured critic thresholds that the critique missed."""
+        failures: dict[str, dict[str, int | bool]] = {}
         if not bool(critique.get("passed", False)):
-            return False
+            failures["critic_passed"] = {"actual": False, "required": True}
         score = int(critique.get("score", 0) or 0)
         dims = critique.get("dimension_scores", {}) or {}
         if not isinstance(dims, dict):
             dims = {}
         actionability = int(dims.get("actionability", 0) or 0)
         link_hygiene = int(dims.get("link_hygiene", 0) or 0)
-        return (
-            score >= int(self.settings.briefing_critic_min_score)
-            and actionability >= int(self.settings.briefing_critic_min_actionability)
-            and link_hygiene >= int(self.settings.briefing_critic_min_link_hygiene)
-        )
+        min_score = int(self.settings.briefing_critic_min_score)
+        min_actionability = int(self.settings.briefing_critic_min_actionability)
+        min_link_hygiene = int(self.settings.briefing_critic_min_link_hygiene)
+        if score < min_score:
+            failures["score"] = {"actual": score, "required": min_score}
+        if actionability < min_actionability:
+            failures["actionability"] = {
+                "actual": actionability,
+                "required": min_actionability,
+            }
+        if link_hygiene < min_link_hygiene:
+            failures["link_hygiene"] = {
+                "actual": link_hygiene,
+                "required": min_link_hygiene,
+            }
+        return failures
 
     async def close(self) -> None:
         """Release resources owned by this critic service."""

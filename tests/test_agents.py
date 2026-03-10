@@ -1382,6 +1382,48 @@ class TestWriterService:
         assert context["sticky_constraints"] == [
             "Do not claim active exploitation unless the source explicitly says it.",
         ]
+        assert "score" not in context["critic"]
+        assert context["critic"]["threshold_failures"] == {}
+
+    def test_build_rewrite_feedback_context_exposes_structured_threshold_failures(self):
+        from bcn.services.writer.service import WriterService
+
+        service = WriterService(_make_settings())
+        context = service.build_rewrite_feedback_context(
+            gate={"passed": True, "issues": [], "hard_issues": [], "soft_issues": []},
+            critique={
+                "passed": True,
+                "score": 96,
+                "issues": [],
+                "recommendations": [],
+                "dimension_scores": {
+                    "actionability": 60,
+                    "source_diversity": 90,
+                    "link_hygiene": 92,
+                    "clarity": 90,
+                    "style": 90,
+                },
+                "threshold_failures": {
+                    "actionability": {"actual": 60, "required": 70}
+                },
+            },
+            verification={"passed": True, "score": 95, "issues": [], "recommendations": []},
+            mode="standard",
+            min_chars=800,
+            target_chars=1100,
+            hard_max_chars=1500,
+            rewrite_attempt=2,
+            max_rewrites=7,
+            selected_items=[],
+        )
+
+        assert context["critic"]["threshold_failures"] == {
+            "actionability": {"actual": 60, "required": 70}
+        }
+        assert context["critic"]["failed_thresholds"] == ["actionability"]
+        assert any(
+            "actionability" in item for item in context["priority_order"]
+        )
 
     def test_normalize_review_payloads_accept_service_shapes(self):
         from bcn.services.writer.review import normalize_critique_payload
@@ -1411,6 +1453,7 @@ class TestWriterService:
             "actionability": 88,
             "link_hygiene": 90,
         }
+        assert critique["threshold_failures"] == {}
         assert critique["issues"] == ["issue a"]
         assert verifier["passed"] is True
         assert verifier["score"] == 95

@@ -12,6 +12,7 @@ from bcn.contracts.review import CritiqueRequest
 from bcn.contracts.review import VerificationRequest
 from bcn.contracts.review import render_critique_request_payload
 from bcn.contracts.review import render_verification_request_payload
+from bcn.services.critic.service import CriticService
 from bcn.workflows.review import execute_critique
 from bcn.workflows.review import execute_verification
 
@@ -115,3 +116,38 @@ async def test_execute_verification_with_explicit_markdown_skips_latest_lookup()
     assert request.source == "cli"
     payload = json.loads(result)
     assert payload["verifier_score"] == 95
+
+
+@pytest.mark.asyncio
+async def test_critic_service_reports_threshold_failures_in_result_and_logs(caplog):
+    settings = _make_settings(
+        briefing_critic_min_score=80,
+        briefing_critic_min_actionability=70,
+        briefing_critic_min_link_hygiene=80,
+    )
+    service = CriticService(settings, llm_client=AsyncMock())
+    service.critic_llm = AsyncMock()
+    service.critic_llm.critique_briefing.return_value = {
+        "passed": True,
+        "score": 96,
+        "dimension_scores": {"actionability": 60, "link_hygiene": 92},
+        "issues": ["Needs stronger remediation"],
+        "recommendations": ["Be more explicit"],
+    }
+    request = CritiqueRequest(
+        source="briefing:test",
+        draft_markdown="**Draft**",
+        items=[{"url": "https://example.com/one", "title": "One"}],
+        mode="regular_daily_briefing",
+    )
+
+    with caplog.at_level("INFO"):
+        result = await service.evaluate(request)
+
+    assert result["critic_passed"] is True
+    assert result["threshold_passed"] is False
+    assert result["threshold_failures"] == {
+        "actionability": {"actual": 60, "required": 70}
+    }
+    assert "threshold=False" in caplog.text
+    assert "actionability" in caplog.text
