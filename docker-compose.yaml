@@ -3,8 +3,8 @@ services:
     image: postgres:16-alpine
     restart: always
     environment:
-      - POSTGRES_USER=postgres_agent_db
-      - POSTGRES_PASSWORD=cloud_security_agent
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB=broken_cloud_news
     volumes:
       - broken_cloud_news_db:/var/lib/postgresql/data
@@ -13,7 +13,7 @@ services:
       - "5432:5432"
     healthcheck:
       test:
-        ["CMD-SHELL", "pg_isready -U postgres_agent_db -d broken_cloud_news"]
+        ["CMD-SHELL", "pg_isready -U postgres -d broken_cloud_news"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -45,6 +45,8 @@ services:
     restart: always
     volumes:
       - ./infra/nginx/spark_bridge.conf:/etc/nginx/conf.d/default.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app_internal
       - egress_public
@@ -85,7 +87,7 @@ services:
     build: ./dashboard
     restart: always
     environment:
-      - DATABASE_URL=${DASHBOARD_DATABASE_URL:-postgresql://broken_cloud_news_agent_db:cloud_security_agent@postgres:5432/broken_cloud_news}
+      - DATABASE_URL=${DASHBOARD_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/broken_cloud_news}
       - HOSTNAME=0.0.0.0
       - PORT=3000
     ports:

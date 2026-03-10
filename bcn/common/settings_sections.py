@@ -225,7 +225,7 @@ class BCNSettingsBase(BaseSettings):
 class DatabaseSettingsMixin:
     """Database connectivity settings."""
 
-    database_url: str = "postgresql://broken_cloud_news:cloud_security@localhost:5432/broken_cloud_news"
+    database_url: str = "postgresql://postgres:postgres@localhost:5432/broken_cloud_news"
 
 
 class ServiceTransportSettingsMixin:
@@ -257,8 +257,8 @@ class SharedLLMSettingsMixin:
     """Shared LLM and role-override settings."""
 
     llm_provider: str = "openai_compat"
-    llm_base_url: str = "http://host.docker.internal:8000/v1"
-    llm_model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+    llm_base_url: str = "http://localhost:8000/v1"
+    llm_model: str = "Qwen/Qwen3-VL-30B-A3B-Instruct"
     llm_api_key: str = ""
     llm_timeout: int = 180
     llm_chat_retries: int = 16
@@ -290,7 +290,7 @@ class SharedLLMSettingsMixin:
 class ComfyUISettingsMixin:
     """Image-generation endpoint settings."""
 
-    comfyui_url: str = "http://host.docker.internal:8188"
+    comfyui_url: str = "http://localhost:8188"
     comfyui_timeout: int = 300
     comfyui_poll_interval: int = 2
 
@@ -316,7 +316,6 @@ class CollectionSourceSettingsMixin:
         "Steph3nSims",
         "KimZetter",
         "argvee",
-        "avkovaleff",
         "tom_doerr",
         "gadievron",
         "Dinosn",

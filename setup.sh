@@ -521,19 +521,19 @@ cmd_setup() {
         DB_MODE="docker"
         info "Using docker-compose PostgreSQL service. Host must be 'postgres' for in-container app access."
         prompt_value BCN_DATABASE_URL "PostgreSQL connection URL (docker mode)" \
-            "postgresql://broken_cloud_news_agent_db:cloud_security_agent@postgres:5432/broken_cloud_news"
+            "postgresql://postgres:postgres@postgres:5432/broken_cloud_news"
         DB_URL="$REPLY_VALUE"
     fi
 
-    header "LLM Configuration (Qwen on DGX Spark)"
-    info "OpenAI-compatible API endpoint for the analysis LLM."
-    prompt_value BCN_LLM_BASE_URL "LLM API base URL" "http://host.docker.internal:8000/v1"
+    header "LLM Configuration"
+    info "OpenAI-compatible or hosted LLM endpoint used by analyst/writer/critic/verifier."
+    prompt_value BCN_LLM_BASE_URL "LLM API base URL" "http://localhost:8000/v1"
     LLM_URL="$REPLY_VALUE"
-    prompt_value BCN_LLM_MODEL "Model name" "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+    prompt_value BCN_LLM_MODEL "Model name" "Qwen/Qwen3-VL-30B-A3B-Instruct"
     LLM_MODEL="$REPLY_VALUE"
 
-    header "ComfyUI Configuration (Flux image generation)"
-    prompt_value BCN_COMFYUI_URL "ComfyUI API URL" "http://host.docker.internal:8188"
+    header "ComfyUI Configuration"
+    prompt_value BCN_COMFYUI_URL "ComfyUI API URL" "http://localhost:8188"
     COMFYUI_URL="$REPLY_VALUE"
 
     header "GitHub Token (for GHSA advisory collection)"
@@ -703,7 +703,7 @@ start_services() {
         info "Waiting for PostgreSQL to be ready..."
         local retries=30
         while [[ $retries -gt 0 ]]; do
-            if compose_run exec -T postgres pg_isready -U postgres_agent_db -d broken_cloud_news >/dev/null 2>&1; then
+            if compose_run exec -T postgres pg_isready -U postgres -d broken_cloud_news >/dev/null 2>&1; then
                 ok "PostgreSQL is ready!"
                 break
             fi
