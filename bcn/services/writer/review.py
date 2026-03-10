@@ -24,6 +24,10 @@ _REPEATED_TOPIC_RE = re.compile(
     r"^\s*repeated topic:\s*(.+?)(?:\s*\(.*\))?\.?\s*$",
     flags=re.IGNORECASE,
 )
+_REPEATED_TOPIC_RECOMMENDATION_RE = re.compile(
+    r"^\s*(?:drop|remove)\s+(?:the\s+)?(.+?)(?:\s+(?:segment|reference|item|section))?(?:[;,.].*(?:already covered|covered in briefing).*)$",
+    flags=re.IGNORECASE,
+)
 _REPEAT_TOPIC_STOPWORDS = frozenset(
     {
         "a",
@@ -293,6 +297,13 @@ def extract_repeated_topics(critique: dict[str, object]) -> list[str]:
     topics: list[str] = []
     for issue in string_list(critique.get("issues"), limit=24):
         match = _REPEATED_TOPIC_RE.match(issue)
+        if not match:
+            continue
+        topic = match.group(1).strip(" .")
+        if topic and topic not in topics:
+            topics.append(topic)
+    for recommendation in string_list(critique.get("recommendations"), limit=24):
+        match = _REPEATED_TOPIC_RECOMMENDATION_RE.match(recommendation)
         if not match:
             continue
         topic = match.group(1).strip(" .")
