@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Copy project files and install
 COPY pyproject.toml .
+COPY LICENSE .
 COPY bcn/ bcn/
 COPY postgres/ postgres/
 RUN pip install --no-cache-dir --pre .
