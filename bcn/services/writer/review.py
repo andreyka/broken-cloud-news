@@ -84,6 +84,35 @@ def default_verifier() -> dict[str, object]:
     }
 
 
+def normalize_critique_payload(payload: dict[str, object] | None) -> dict[str, object]:
+    """Normalize critic-service outputs into the writer's internal shape."""
+    critique = dict(payload or {})
+    if "score" not in critique and "critic_score" in critique:
+        critique["score"] = critique.get("critic_score")
+    if "passed" not in critique and "critic_passed" in critique:
+        critique["passed"] = critique.get("critic_passed")
+    if "dimension_scores" not in critique and "critic_dimension_scores" in critique:
+        critique["dimension_scores"] = critique.get("critic_dimension_scores")
+    if "issues" not in critique and "critic_issues" in critique:
+        critique["issues"] = critique.get("critic_issues")
+    critique.setdefault("recommendations", [])
+    critique.setdefault("issues", [])
+    critique.setdefault("dimension_scores", {})
+    return critique
+
+
+def normalize_verifier_payload(payload: dict[str, object] | None) -> dict[str, object]:
+    """Normalize verifier-service outputs into the writer's internal shape."""
+    verifier = dict(payload or {})
+    if "score" not in verifier and "verifier_score" in verifier:
+        verifier["score"] = verifier.get("verifier_score")
+    if "passed" not in verifier and "verifier_passed" in verifier:
+        verifier["passed"] = verifier.get("verifier_passed")
+    verifier.setdefault("issues", [])
+    verifier.setdefault("recommendations", [])
+    return verifier
+
+
 async def critique_markdown(
     service: Any,
     draft_markdown: str,
@@ -101,7 +130,7 @@ async def critique_markdown(
         raise RuntimeError(
             "WriterService requires a critic_evaluator when critique is enabled."
         )
-    return await service.critic_evaluator.evaluate(
+    raw = await service.critic_evaluator.evaluate(
         CritiqueRequest(
             draft_markdown=draft_markdown,
             items=tuple(items),
@@ -112,6 +141,7 @@ async def critique_markdown(
             gate_soft_issues=tuple(gate_soft_issues or []),
         )
     )
+    return normalize_critique_payload(raw)
 
 
 async def verify_markdown(
@@ -128,7 +158,7 @@ async def verify_markdown(
         raise RuntimeError(
             "WriterService requires a verifier_evaluator when verification is enabled."
         )
-    return await service.verifier_evaluator.evaluate(
+    raw = await service.verifier_evaluator.evaluate(
         VerificationRequest(
             draft_markdown=markdown,
             items=tuple(selected_items),
@@ -136,6 +166,7 @@ async def verify_markdown(
             source="writer_service",
         )
     )
+    return normalize_verifier_payload(raw)
 
 
 async def evaluate_existing_markdown(
@@ -312,6 +343,55 @@ def extract_repeated_topics(critique: dict[str, object]) -> list[str]:
     return topics
 
 
+def extract_sticky_rewrite_constraints(
+    critique: dict[str, object],
+    verification: dict[str, object],
+) -> list[str]:
+    """Derive rewrite constraints that must persist across later rounds."""
+    texts: list[str] = []
+    texts.extend(string_list(critique.get("issues"), limit=24))
+    texts.extend(string_list(critique.get("recommendations"), limit=24))
+    texts.extend(string_list(verification.get("issues"), limit=24))
+    texts.extend(string_list(verification.get("hard_issues"), limit=24))
+    texts.extend(string_list(verification.get("blocking_hard_issues"), limit=24))
+    texts.extend(string_list(verification.get("soft_issues"), limit=24))
+    texts.extend(string_list(verification.get("recommendations"), limit=24))
+
+    constraints: list[str] = []
+
+    def add_constraint(text: str) -> None:
+        normalized = text.strip()
+        if normalized and normalized not in constraints:
+            constraints.append(normalized)
+
+    for text in texts:
+        lowered = text.lower()
+        if "factual overreach" in lowered:
+            add_constraint(
+                "Do not claim active exploitation, attacker usage, or in-the-wild abuse unless the selected source explicitly says so. If the source only proves capability, write 'can', 'lets an attacker', or 'could'."
+            )
+        if "assumption:" in lowered or (
+            "source" in lowered
+            and ("not provided" in lowered or "not in the source" in lowered)
+            and ("payload" in lowered or "field" in lowered or "semicolon" in lowered)
+        ):
+            add_constraint(
+                "Do not invent exploit payload mechanics, punctuation, field names, or step-by-step details unless the selected source explicitly states them. Keep exploit descriptions at the supported level."
+            )
+        if (
+            "boilerplate" in lowered
+            or "start directly" in lowered
+            or "opener" in lowered
+            or "welcome to another week" in lowered
+            or "another day" in lowered
+        ):
+            add_constraint(
+                "Do not use recurring opener boilerplate like 'Welcome to another week' or 'Another day'. Start directly with a factual thesis sentence."
+            )
+
+    return constraints
+
+
 def trim_repeated_selected_items(
     service: Any,
     *,
@@ -405,6 +485,7 @@ def build_rewrite_feedback_context(
     max_rewrites: int,
     selected_items: list[dict[str, Any]],
     missing_selected_urls: list[str] | None = None,
+    sticky_constraints: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build compact structured rewrite guidance for the LLM."""
     gate_hard = string_list(gate.get("hard_issues"), limit=16)
@@ -536,6 +617,11 @@ def build_rewrite_feedback_context(
             ][:16],
             "selected_items": compact_items,
         },
+        "sticky_constraints": [
+            str(item).strip()
+            for item in (sticky_constraints or [])
+            if str(item).strip()
+        ][:12],
     }
 
 
@@ -582,6 +668,9 @@ __all__ = [
     "default_verifier",
     "evaluate_existing_markdown",
     "has_critical_critic_issue",
+    "extract_sticky_rewrite_constraints",
+    "normalize_critique_payload",
+    "normalize_verifier_payload",
     "passes_critic_thresholds",
     "quality_gate",
     "string_list",

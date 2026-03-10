@@ -100,6 +100,7 @@ BRIEFING_REWRITE_PROMPT = (
     "Apply all feedback. \n\n"
     "Rules:\n"
     "- Markdown only.\n"
+    "- Treat any `sticky_constraints` in the structured feedback context as permanent rules for this draft. Once verifier/critic feedback rejects wording or opener scaffolds, never reintroduce them in later rewrites.\n"
     "- EVERY selected URL must be present exactly once. This is life or death.\n"
     "- DO NOT introduce any URL or topic that is not in the selected items.\n"
     "- If feedback says a URL/topic was already covered, delete it completely. Do not add editorial notes about skipping it.\n"

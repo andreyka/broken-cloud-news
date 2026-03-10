@@ -1324,6 +1324,98 @@ class TestWriterService:
         assert [item["id"] for item in trimmed["selected_items"]] == [budibase["id"]]
         assert [item["id"] for item in trimmed["dropped_items"]] == [cisco["id"]]
 
+    def test_extract_sticky_rewrite_constraints_from_review_findings(self):
+        from bcn.services.writer.service import WriterService
+
+        service = WriterService(_make_settings())
+        critique = {
+            "issues": [],
+            "recommendations": [
+                "Drop the 'Welcome to another week' boilerplate. Start directly with the punchy summary.",
+            ],
+        }
+        verifier = {
+            "issues": [
+                "Factual overreach: The draft claims active attacker use, but the source only proves capability.",
+                "Assumption: The draft specifies a semicolon payload detail that is not provided in the source summary.",
+            ]
+        }
+
+        constraints = service.extract_sticky_rewrite_constraints(critique, verifier)
+
+        assert any("active exploitation" in item for item in constraints)
+        assert any("payload mechanics" in item for item in constraints)
+        assert any("opener boilerplate" in item for item in constraints)
+
+    def test_build_rewrite_feedback_context_includes_sticky_constraints(self):
+        from bcn.services.writer.service import WriterService
+
+        service = WriterService(_make_settings())
+        context = service.build_rewrite_feedback_context(
+            gate={"passed": True, "issues": [], "hard_issues": [], "soft_issues": []},
+            critique={
+                "passed": True,
+                "score": 90,
+                "issues": [],
+                "recommendations": [],
+                "dimension_scores": {
+                    "actionability": 90,
+                    "source_diversity": 90,
+                    "link_hygiene": 90,
+                    "clarity": 90,
+                    "style": 90,
+                },
+            },
+            verification={"passed": True, "score": 95, "issues": [], "recommendations": []},
+            mode="standard",
+            min_chars=800,
+            target_chars=1100,
+            hard_max_chars=1500,
+            rewrite_attempt=2,
+            max_rewrites=7,
+            selected_items=[],
+            sticky_constraints=[
+                "Do not claim active exploitation unless the source explicitly says it.",
+            ],
+        )
+
+        assert context["sticky_constraints"] == [
+            "Do not claim active exploitation unless the source explicitly says it.",
+        ]
+
+    def test_normalize_review_payloads_accept_service_shapes(self):
+        from bcn.services.writer.review import normalize_critique_payload
+        from bcn.services.writer.review import normalize_verifier_payload
+
+        critique = normalize_critique_payload(
+            {
+                "critic_passed": True,
+                "critic_score": 91,
+                "critic_dimension_scores": {"actionability": 88, "link_hygiene": 90},
+                "critic_issues": ["issue a"],
+                "recommendations": ["rec a"],
+            }
+        )
+        verifier = normalize_verifier_payload(
+            {
+                "verifier_passed": True,
+                "verifier_score": 95,
+                "issues": ["issue b"],
+                "recommendations": ["rec b"],
+            }
+        )
+
+        assert critique["passed"] is True
+        assert critique["score"] == 91
+        assert critique["dimension_scores"] == {
+            "actionability": 88,
+            "link_hygiene": 90,
+        }
+        assert critique["issues"] == ["issue a"]
+        assert verifier["passed"] is True
+        assert verifier["score"] == 95
+        assert verifier["issues"] == ["issue b"]
+
     @pytest.mark.asyncio
     async def test_generate_release_candidate_redrafts_after_dropping_repeated_items(self):
         settings = _make_settings(briefing_critique_max_rounds=2)

@@ -492,7 +492,7 @@ class WriterPolicySettingsMixin(
     briefing_max_items_per_domain: int = 2
     briefing_history_items: int = 10
     briefing_critique_enabled: bool = True
-    briefing_critique_max_rounds: int = 5
+    briefing_critique_max_rounds: int = 7
     briefing_novelty_lookback_hours: int = 24 * 21
     briefing_novelty_max_items: int = 250
     briefing_novelty_title_similarity_threshold: float = 0.78

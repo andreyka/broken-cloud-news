@@ -5,6 +5,19 @@ from __future__ import annotations
 from typing import Any
 
 
+def _merge_sticky_constraints(
+    current: list[str],
+    new_constraints: list[str],
+) -> list[str]:
+    """Keep rewrite constraints stable across later rounds without duplicates."""
+    merged = list(current)
+    for item in new_constraints:
+        text = str(item).strip()
+        if text and text not in merged:
+            merged.append(text)
+    return merged
+
+
 async def generate_release_candidate(
     service: Any,
     *,
@@ -38,12 +51,20 @@ async def generate_release_candidate(
     max_rewrites = max(0, int(service.settings.briefing_critique_max_rounds))
     trace_rounds: list[dict[str, Any]] = []
     preference_pairs: list[dict[str, Any]] = []
+    sticky_constraints: list[str] = []
     while True:
         evaluation = await service.evaluate_existing_markdown(
             markdown=draft,
             selected_items=active_selected_items,
             history=history,
             mode=mode,
+        )
+        sticky_constraints = _merge_sticky_constraints(
+            sticky_constraints,
+            service.extract_sticky_rewrite_constraints(
+                evaluation["critique"],
+                evaluation["verifier"],
+            ),
         )
         round_input = str(evaluation["markdown"] or "")
         evaluation["rewrites"] = rewrites
@@ -187,6 +208,7 @@ async def generate_release_candidate(
             max_rewrites=max_rewrites,
             selected_items=active_selected_items,
             missing_selected_urls=missing_urls,
+            sticky_constraints=sticky_constraints,
         )
 
         rewrites += 1
@@ -275,6 +297,7 @@ async def simulate_briefing_body(
     rewrites = 0
     if apply_critic_rewrites and service.settings.briefing_critique_enabled:
         max_rewrites = max(0, int(service.settings.briefing_critique_max_rounds))
+        sticky_constraints: list[str] = []
         while True:
             min_chars, target_chars, hard_max_chars = service.char_limits(
                 mode,
@@ -294,6 +317,13 @@ async def simulate_briefing_body(
                 gate_hard_issues=[str(issue) for issue in gate.get("hard_issues", [])],
                 gate_soft_issues=[str(issue) for issue in gate.get("soft_issues", [])],
                 recent_briefings=recent_briefings,
+            )
+            sticky_constraints = _merge_sticky_constraints(
+                sticky_constraints,
+                service.extract_sticky_rewrite_constraints(
+                    critique,
+                    service._default_verifier(),
+                ),
             )
             gate_passed = bool(gate.get("passed", False))
             critic_passed = bool(critique.get("passed", False))
@@ -348,6 +378,7 @@ async def simulate_briefing_body(
                 missing_selected_urls=[
                     str(item.get("url", "")) for item in missing_items if item.get("url")
                 ],
+                sticky_constraints=sticky_constraints,
             )
 
             rewrites += 1

@@ -40,6 +40,7 @@ from bcn.services.writer.review import critique_markdown
 from bcn.services.writer.review import default_verifier
 from bcn.services.writer.review import evaluate_existing_markdown
 from bcn.services.writer.review import extract_repeated_topics
+from bcn.services.writer.review import extract_sticky_rewrite_constraints
 from bcn.services.writer.review import has_critical_critic_issue
 from bcn.services.writer.review import passes_critic_thresholds
 from bcn.services.writer.review import quality_gate
@@ -430,6 +431,7 @@ class WriterService:
         max_rewrites: int,
         selected_items: list[dict[str, Any]],
         missing_selected_urls: list[str] | None = None,
+        sticky_constraints: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build compact structured rewrite guidance for the LLM."""
         return build_rewrite_feedback_context(
@@ -445,6 +447,7 @@ class WriterService:
             max_rewrites=max_rewrites,
             selected_items=selected_items,
             missing_selected_urls=missing_selected_urls,
+            sticky_constraints=sticky_constraints,
         )
 
     @staticmethod
@@ -466,6 +469,14 @@ class WriterService:
             critique=critique,
             history=history,
         )
+
+    @staticmethod
+    def extract_sticky_rewrite_constraints(
+        critique: dict[str, object],
+        verification: dict[str, object],
+    ) -> list[str]:
+        """Extract persistent rewrite constraints from review findings."""
+        return extract_sticky_rewrite_constraints(critique, verification)
 
     @staticmethod
     def build_preference_rationale(feedback: list[str] | None) -> str:
