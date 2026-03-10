@@ -31,6 +31,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx"]
 
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "respx"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["bcn"]
 
