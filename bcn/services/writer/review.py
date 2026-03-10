@@ -373,14 +373,6 @@ def trim_repeated_selected_items(
             "matched_topics": {},
         }
 
-    min_selected_items = max(1, int(service.settings.briefing_min_selected_items))
-    if len(kept_items) < min_selected_items:
-        return {
-            "selected_items": list(selected_items),
-            "dropped_items": [],
-            "matched_topics": {},
-        }
-
     return {
         "selected_items": kept_items,
         "dropped_items": dropped_items,

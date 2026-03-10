@@ -1221,6 +1221,68 @@ class TestWriterService:
             cisco["id"],
         }
 
+    def test_trim_repeated_selected_items_can_drop_below_minimum_when_needed(self):
+        from bcn.services.writer.service import WriterService
+
+        settings = _make_settings(briefing_min_selected_items=5)
+        service = WriterService(settings)
+        cisco = {
+            "id": str(uuid4()),
+            "title": "CVE-2026-20127 (Cisco SD-WAN, CVSS 10) has been actively exploited since 2023",
+            "summary": "PatchIntel breakdown of the active exploitation campaign.",
+            "url": "https://patchintel.substack.com/p/patchintel-issue-1-week-of-march?r=7v8ayn",
+        }
+        kept_items = [
+            {
+                "id": str(uuid4()),
+                "title": "Nextcloud's Key Under the Mat Moment",
+                "summary": "Path traversal exposes environment secrets.",
+                "url": "https://threatroad.substack.com/p/nextclouds-key-under-the-mat-moment",
+            },
+            {
+                "id": str(uuid4()),
+                "title": "ShinyHunters claims more high-profile victims in latest Salesforce customers data heist",
+                "summary": "Guest IAM profiles expose Salesforce data.",
+                "url": "https://www.theregister.com/2026/03/09/shinyhunters_claims_more_highprofile_victims/",
+            },
+            {
+                "id": str(uuid4()),
+                "title": "Glances Exposes Unauthenticated Configuration Secrets",
+                "summary": "Glances dumps config without auth.",
+                "url": "https://github.com/nicolargo/glances/security/advisories/GHSA-gh4x-f7cq-wwx6",
+            },
+            {
+                "id": str(uuid4()),
+                "title": "@budibase/server: Command Injection in PostgreSQL Dump Command",
+                "summary": "GHSA-726g-59wr-cj4c impacts backup export handling.",
+                "url": "https://github.com/advisories/GHSA-726g-59wr-cj4c",
+            },
+        ]
+        history = [
+            {
+                "content_markdown": (
+                    "[Cisco flags more SD-WAN flaws as actively exploited in attacks]"
+                    "(https://www.bleepingcomputer.com/news/security/cisco-flags-more-sd-wan-flaws-as-actively-exploited-in-attacks/)"
+                )
+            }
+        ]
+        critique = {
+            "issues": [
+                "Repeated topic: Cisco SD-WAN active exploitation (already covered in briefing 5)",
+            ]
+        }
+
+        trimmed = service.trim_repeated_selected_items(
+            selected_items=[cisco, *kept_items],
+            critique=critique,
+            history=history,
+        )
+
+        assert [item["id"] for item in trimmed["selected_items"]] == [
+            item["id"] for item in kept_items
+        ]
+        assert [item["id"] for item in trimmed["dropped_items"]] == [cisco["id"]]
+
     @pytest.mark.asyncio
     async def test_generate_release_candidate_redrafts_after_dropping_repeated_items(self):
         settings = _make_settings(briefing_critique_max_rounds=2)
