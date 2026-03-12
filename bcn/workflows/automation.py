@@ -7,10 +7,19 @@ This module provides:
 
 from __future__ import annotations
 
+from datetime import datetime
+from datetime import timezone
 import logging
 from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
+
+import httpx
 
 from bcn.common.config import Settings
+from bcn.evaluation.lanes import load_settings_with_overrides
+from bcn.persistence.evaluation import complete_evaluation_run
+from bcn.persistence.evaluation import create_evaluation_run
 from bcn.workflows.analysis import execute_analysis
 from bcn.workflows.collection import execute_collection
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -53,6 +62,93 @@ __all__ = [
     "build_regular_monthly_newsletter_trigger",
     "extract_briefing_id",
 ]
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _llm_provider_for_role(settings: Settings, role: str) -> str:
+    override = str(getattr(settings, f"llm_provider_{role}", "") or "").strip()
+    return override or str(settings.llm_provider or "").strip()
+
+
+def _llm_base_url_for_role(settings: Settings, role: str) -> str:
+    override = str(getattr(settings, f"llm_base_url_{role}", "") or "").strip()
+    return override or str(settings.llm_base_url or "").strip()
+
+
+async def _probe_openai_compat_endpoint(base_url: str) -> str | None:
+    target = urljoin(base_url.rstrip("/") + "/", "models")
+    try:
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            response = await client.get(target)
+    except Exception as exc:
+        return f"{target} unreachable ({type(exc).__name__}: {exc})"
+
+    if response.status_code >= 500:
+        return f"{target} returned {response.status_code}"
+    return None
+
+
+async def _shadow_candidate_endpoint_error(
+    candidate_settings: Settings,
+) -> str | None:
+    checked_urls: set[str] = set()
+    for role in ("writer", "critic", "verifier"):
+        if _llm_provider_for_role(candidate_settings, role) != "openai_compat":
+            continue
+        base_url = _llm_base_url_for_role(candidate_settings, role)
+        if not base_url or base_url in checked_urls:
+            continue
+        checked_urls.add(base_url)
+        error = await _probe_openai_compat_endpoint(base_url)
+        if error:
+            return error
+    return None
+
+
+async def _store_shadow_unavailable_run(
+    *,
+    workflow_mode: str,
+    candidate_overrides: dict[str, Any],
+    notes: str,
+    reason: str,
+) -> None:
+    run_id = await create_evaluation_run(
+        lane="shadow",
+        source="scheduler",
+        workflow_mode=workflow_mode,
+        candidate_overrides=candidate_overrides,
+        notes=notes,
+    )
+    report = {
+        "generated_at": _now_iso(),
+        "lane": "shadow",
+        "workflow_mode": workflow_mode,
+        "candidate_overrides": candidate_overrides,
+        "item_pool_count": 0,
+        "selection_overlap_ratio": 0.0,
+        "champion": {
+            "decision": "skipped",
+            "reason": "shadow_candidate_unavailable",
+        },
+        "candidate": {
+            "decision": "unavailable",
+            "reason": reason,
+        },
+        "summary": {
+            "recommendation": "unavailable",
+            "confidence": "low",
+            "selection_overlap_ratio": 0.0,
+            "reason": reason,
+        },
+    }
+    await complete_evaluation_run(run_id, report, report_path=None, notes=notes)
+    logger.info(
+        "Stored scheduled shadow evaluation run_id=%s recommendation=unavailable confidence=low item_pool=0",
+        run_id,
+    )
 
 
 def configure_scheduler_runtime(
@@ -127,6 +223,22 @@ async def execute_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
         logger.warning(
             "Shadow evaluation skipped: candidate overrides file not found: %s",
             overrides_path,
+        )
+        return
+
+    candidate_settings, candidate_overrides = load_settings_with_overrides(
+        settings,
+        overrides_path,
+    )
+    endpoint_error = await _shadow_candidate_endpoint_error(candidate_settings)
+    if endpoint_error:
+        reason = f"candidate_endpoint_unavailable: {endpoint_error}"
+        logger.warning("Shadow evaluation skipped: %s", reason)
+        await _store_shadow_unavailable_run(
+            workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
+            candidate_overrides=candidate_overrides,
+            notes="Scheduled pre-publish shadow evaluation.",
+            reason=reason,
         )
         return
 

@@ -536,10 +536,16 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
             "summary": {"recommendation": "promote", "confidence": "medium"},
         }
     )
+    probe_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "bcn.workflows.automation._shadow_candidate_endpoint_error",
+        probe_mock,
+    )
     monkeypatch.setattr("bcn.evaluation.service.execute_shadow_lane", run_mock)
 
     await job_shadow_regular_briefing(runtime)
 
+    probe_mock.assert_awaited_once()
     run_mock.assert_awaited_once_with(
         settings,
         workflow_mode=REGULAR_DAILY_BRIEFING_MODE,
@@ -551,6 +557,49 @@ async def test_job_shadow_regular_briefing_persists_report(monkeypatch, tmp_path
         notes="Scheduled pre-publish shadow evaluation.",
         manage_pool=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_job_shadow_regular_briefing_stores_unavailable_when_candidate_endpoint_is_down(
+    monkeypatch, tmp_path
+):
+    overrides_path = tmp_path / "candidate.json"
+    overrides_path.write_text(
+        '{"llm_provider_writer":"openai_compat","llm_base_url_writer":"http://spark_bridge:8000/v1"}',
+        encoding="utf-8",
+    )
+    settings = Settings(
+        shadow_enabled=True,
+        shadow_candidate_overrides_path=str(overrides_path),
+    )
+    runtime = configure_scheduler_runtime(settings)
+
+    probe_mock = AsyncMock(return_value="http://spark_bridge:8000/v1/models returned 502")
+    store_mock = AsyncMock()
+    run_mock = AsyncMock()
+    monkeypatch.setattr(
+        "bcn.workflows.automation._shadow_candidate_endpoint_error",
+        probe_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.workflows.automation._store_shadow_unavailable_run",
+        store_mock,
+    )
+    monkeypatch.setattr("bcn.evaluation.service.execute_shadow_lane", run_mock)
+
+    await job_shadow_regular_briefing(runtime)
+
+    probe_mock.assert_awaited_once()
+    store_mock.assert_awaited_once()
+    store_kwargs = store_mock.await_args.kwargs
+    assert store_kwargs["workflow_mode"] == REGULAR_DAILY_BRIEFING_MODE
+    assert store_kwargs["candidate_overrides"] == {
+        "llm_provider_writer": "openai_compat",
+        "llm_base_url_writer": "http://spark_bridge:8000/v1",
+    }
+    assert store_kwargs["notes"] == "Scheduled pre-publish shadow evaluation."
+    assert "candidate_endpoint_unavailable" in store_kwargs["reason"]
+    run_mock.assert_not_awaited()
 
 
 def test_distribute_command_delegates_to_distribution_service(monkeypatch):
