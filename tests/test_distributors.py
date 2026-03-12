@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from bcn.distributors.slack import SlackDistributor
+from bcn.distributors.substack import SubstackDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
 
@@ -270,3 +271,137 @@ class TestSlackDistributor:
 
         ok = await dist.send({"content_markdown": "content"})
         assert ok is False
+
+
+class TestSubstackDistributor:
+    PUB_URL = "https://testpub.substack.com"
+
+    def _make_dist(self, sid: str = "fake-sid") -> SubstackDistributor:
+        return SubstackDistributor(publication_url=self.PUB_URL, sid=sid)
+
+    @staticmethod
+    def _patch_page(dist, evaluate_results):
+        """Inject a mock page so Playwright is never launched.
+
+        ``evaluate_results`` is a list of return values consumed in order
+        by successive ``page.evaluate()`` calls.
+        """
+        call_index = {"i": 0}
+
+        async def _fake_evaluate(_expr, _arg=None):
+            idx = call_index["i"]
+            call_index["i"] += 1
+            return evaluate_results[idx]
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(side_effect=_fake_evaluate)
+        dist._page = mock_page
+        return mock_page
+
+    @pytest.mark.asyncio
+    async def test_send_creates_draft_and_publishes(self):
+        dist = self._make_dist()
+        self._patch_page(dist, [
+            {"id": 42},  # draft creation
+            {"slug": "broken-cloud-news-2026-03-11"},  # publish
+        ])
+
+        ok = await dist.send(
+            {
+                "content_html": "<p>Briefing body</p>",
+                "content_markdown": "Briefing body",
+                "email_subject": "BCN Daily - 2026-03-11",
+            }
+        )
+        assert ok is True
+        assert dist.last_result["draft_id"] == 42
+        assert dist.last_result["post_url"] == (
+            f"{self.PUB_URL}/p/broken-cloud-news-2026-03-11"
+        )
+        assert dist.last_result["primary_message_id"] == dist.last_result["post_url"]
+
+    @pytest.mark.asyncio
+    async def test_send_prefers_html_over_markdown(self):
+        dist = self._make_dist()
+        mock_page = self._patch_page(dist, [
+            {"id": 1},
+            {"slug": "test"},
+        ])
+
+        await dist.send(
+            {
+                "content_html": "<h1>HTML version</h1>",
+                "content_markdown": "# Markdown version",
+            }
+        )
+
+        # First evaluate call is draft creation; check the body arg
+        call_args = mock_page.evaluate.call_args_list[0]
+        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
+        assert payload["body"] == "<h1>HTML version</h1>"
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_markdown(self):
+        dist = self._make_dist()
+        mock_page = self._patch_page(dist, [
+            {"id": 1},
+            {"slug": "test"},
+        ])
+
+        await dist.send({"content_markdown": "# Markdown only"})
+
+        call_args = mock_page.evaluate.call_args_list[0]
+        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
+        assert payload["body"] == "# Markdown only"
+
+    @pytest.mark.asyncio
+    async def test_send_failure_on_draft_creation(self):
+        dist = self._make_dist()
+        self._patch_page(dist, [
+            {"error": True, "status": 401, "body": "Unauthorized"},
+        ])
+
+        ok = await dist.send({"content_markdown": "content"})
+        assert ok is False
+        assert "error" in dist.last_result
+
+    @pytest.mark.asyncio
+    async def test_send_failure_on_publish(self):
+        dist = self._make_dist()
+        self._patch_page(dist, [
+            {"id": 99},
+            {"error": True, "status": 500, "body": "Server Error"},
+        ])
+
+        ok = await dist.send({"content_markdown": "content"})
+        assert ok is False
+        assert "error" in dist.last_result
+
+    def test_extract_title_from_email_subject(self):
+        dist = self._make_dist(sid="x")
+        title = dist._extract_title({"email_subject": "Custom Title"})
+        assert title == "Custom Title"
+
+    def test_extract_title_from_created_at(self):
+        from datetime import datetime
+
+        dist = self._make_dist(sid="x")
+        title = dist._extract_title({"created_at": datetime(2026, 3, 11)})
+        assert title == "Broken Cloud News - 2026-03-11"
+
+    def test_extract_title_fallback(self):
+        dist = self._make_dist(sid="x")
+        title = dist._extract_title({})
+        assert title == "Broken Cloud News Daily Briefing"
+
+    @pytest.mark.asyncio
+    async def test_sid_redacted_in_error(self):
+        sid = "super-secret-session-id"
+        dist = self._make_dist(sid=sid)
+        self._patch_page(dist, [
+            {"error": True, "status": 401, "body": f"Invalid session: {sid}"},
+        ])
+
+        ok = await dist.send({"content_markdown": "content"})
+        assert ok is False
+        assert sid not in str(dist.last_result.get("error", ""))
