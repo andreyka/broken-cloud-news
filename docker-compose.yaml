@@ -86,8 +86,9 @@ services:
   dashboard:
     build: ./dashboard
     restart: always
+    env_file: .env
     environment:
-      - DATABASE_URL=${DASHBOARD_DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/broken_cloud_news}
+      - DATABASE_URL=${DASHBOARD_DATABASE_URL:-${BCN_DATABASE_URL:-}}
       - HOSTNAME=0.0.0.0
       - PORT=3000
     ports:

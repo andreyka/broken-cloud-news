@@ -41,10 +41,13 @@ function getPool(): Pool {
     return globalForPg.__bcnDashboardPool;
   }
   const databaseUrl =
-    process.env.DASHBOARD_DATABASE_URL || process.env.DATABASE_URL || "";
+    process.env.DASHBOARD_DATABASE_URL ||
+    process.env.DATABASE_URL ||
+    process.env.BCN_DATABASE_URL ||
+    "";
   if (!databaseUrl) {
     throw new Error(
-      "DATABASE_URL or DASHBOARD_DATABASE_URL must be set for the dashboard.",
+      "DATABASE_URL, DASHBOARD_DATABASE_URL, or BCN_DATABASE_URL must be set for the dashboard.",
     );
   }
   const pool = new Pool({
