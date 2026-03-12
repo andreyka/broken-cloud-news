@@ -43,8 +43,12 @@ services:
   spark_bridge:
     image: nginx:1.27-alpine
     restart: always
+    environment:
+      - SPARK_BRIDGE_UPSTREAM=${SPARK_BRIDGE_UPSTREAM:-http://host.docker.internal:8000}
     volumes:
-      - ./infra/nginx/spark_bridge.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./infra/nginx/spark_bridge.conf.template:/etc/nginx/templates/default.conf.template:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - app_internal
       - egress_public

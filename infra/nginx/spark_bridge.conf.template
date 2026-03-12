@@ -3,7 +3,7 @@ server {
     server_name _;
 
     location / {
-        proxy_pass http://host.docker.internal:8000;
+        proxy_pass ${SPARK_BRIDGE_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host $proxy_host;
         proxy_set_header Connection "";
