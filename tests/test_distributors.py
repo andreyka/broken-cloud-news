@@ -398,6 +398,28 @@ class TestSubstackDistributor:
         assert body["content"][1]["type"] == "paragraph"
 
     @pytest.mark.asyncio
+    async def test_send_skips_data_url_cover_image_node(self):
+        dist = self._make_dist()
+        mock_page = self._patch_page(dist, [
+            {"id": 1},
+            {"slug": "test"},
+        ])
+
+        data_url = "data:image/png;base64," + base64.b64encode(b"fake").decode("ascii")
+        await dist.send(
+            {
+                "content_markdown": "Body text here",
+                "cover_image_url": data_url,
+            }
+        )
+
+        call_args = mock_page.evaluate.call_args_list[0]
+        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
+        body = json.loads(payload["body"])
+        assert body["content"][0]["type"] == "paragraph"
+        assert body["content"][0]["content"][0]["text"] == "Body text here"
+
+    @pytest.mark.asyncio
     async def test_send_failure_on_draft_creation(self):
         dist = self._make_dist()
         self._patch_page(dist, [

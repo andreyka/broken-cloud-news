@@ -81,6 +81,9 @@ def _build_substack_body(briefing: Any) -> str:
     """Render BCN markdown into Substack's ProseMirror-style document JSON."""
     markdown = str(briefing.get("content_markdown") or "").strip()
     cover_url = str(briefing.get("cover_image_url") or "").strip()
+    if cover_url and not cover_url.startswith(("http://", "https://")):
+        logger.info("Skipping unsupported Substack cover source")
+        cover_url = ""
     if cover_url and not markdown.startswith("!["):
         markdown = f"![Daily Cover]({cover_url})\n\n{markdown}".strip()
 
@@ -125,10 +128,13 @@ def _parse_image_block(block: str) -> dict[str, Any] | None:
     match = _IMAGE_BLOCK_RE.match(block.strip())
     if not match:
         return None
+    src = match.group("src").strip()
+    if not src.startswith(("http://", "https://")):
+        return None
     return {
         "type": "image",
         "attrs": {
-            "src": match.group("src").strip(),
+            "src": src,
             "alt": match.group("alt").strip(),
         },
     }
