@@ -8,6 +8,8 @@ import pytest
 import respx
 
 from bcn.distributors.slack import SlackDistributor
+import json
+
 from bcn.distributors.substack import SubstackDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
@@ -321,7 +323,7 @@ class TestSubstackDistributor:
         assert dist.last_result["primary_message_id"] == dist.last_result["post_url"]
 
     @pytest.mark.asyncio
-    async def test_send_prefers_html_over_markdown(self):
+    async def test_send_prefers_markdown_over_email_html(self):
         dist = self._make_dist()
         mock_page = self._patch_page(dist, [
             {"id": 1},
@@ -330,15 +332,26 @@ class TestSubstackDistributor:
 
         await dist.send(
             {
-                "content_html": "<h1>HTML version</h1>",
-                "content_markdown": "# Markdown version",
+                "content_html": "<html><body><h1>Email Wrapper</h1><p>Wrong payload</p></body></html>",
+                "content_markdown": "**Section Title**\n\nBody with **bold** and [link](https://example.com).",
             }
         )
 
         # First evaluate call is draft creation; check the body arg
         call_args = mock_page.evaluate.call_args_list[0]
         payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        assert payload["body"] == "<h1>HTML version</h1>"
+        body = json.loads(payload["body"])
+        assert body["type"] == "doc"
+        assert body["content"][0]["type"] == "heading"
+        assert body["content"][0]["attrs"]["level"] == 3
+        assert body["content"][0]["content"][0]["text"] == "Section Title"
+        paragraph = body["content"][1]["content"]
+        assert any(node.get("text") == "bold" for node in paragraph)
+        assert any(
+            node.get("marks", [{}])[0].get("type") == "link"
+            for node in paragraph
+            if node.get("text") == "link"
+        )
 
     @pytest.mark.asyncio
     async def test_send_falls_back_to_markdown(self):
@@ -352,7 +365,37 @@ class TestSubstackDistributor:
 
         call_args = mock_page.evaluate.call_args_list[0]
         payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        assert payload["body"] == "# Markdown only"
+        body = json.loads(payload["body"])
+        assert body["type"] == "doc"
+        assert body["content"][0]["type"] == "paragraph"
+        assert body["content"][0]["content"][0]["text"] == "# Markdown only"
+
+    @pytest.mark.asyncio
+    async def test_send_prepends_cover_image_node(self):
+        dist = self._make_dist()
+        mock_page = self._patch_page(dist, [
+            {"id": 1},
+            {"slug": "test"},
+        ])
+
+        await dist.send(
+            {
+                "content_markdown": "Body text here",
+                "cover_image_url": "https://img.example/cover.png",
+            }
+        )
+
+        call_args = mock_page.evaluate.call_args_list[0]
+        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
+        body = json.loads(payload["body"])
+        assert body["content"][0] == {
+            "type": "image",
+            "attrs": {
+                "src": "https://img.example/cover.png",
+                "alt": "Daily Cover",
+            },
+        }
+        assert body["content"][1]["type"] == "paragraph"
 
     @pytest.mark.asyncio
     async def test_send_failure_on_draft_creation(self):

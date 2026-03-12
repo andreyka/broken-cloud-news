@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
@@ -16,6 +18,15 @@ from playwright.async_api import Playwright
 from bcn.common.secrets import redact_error_text
 
 logger = logging.getLogger(__name__)
+
+_IMAGE_BLOCK_RE = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<src>[^)]+)\)$")
+_BOLD_HEADING_RE = re.compile(r"^\*\*(?P<text>.+?)\*\*$")
+_INLINE_TOKEN_RE = re.compile(
+    r"\[(?P<link_text>[^\]]+)\]\((?P<link_href>[^)]+)\)"
+    r"|(?P<bold>\*\*[^*].+?\*\*)"
+    r"|(?P<code>`[^`]+`)"
+    r"|(?P<italic>\*[^*\n][^*\n]*\*)"
+)
 
 # JavaScript executed inside the page context to call the Substack API.
 # Using page.evaluate() routes requests through the real browser session,
@@ -64,6 +75,130 @@ async (draftId) => {
     return await resp.json();
 }
 """
+
+
+def _build_substack_body(briefing: Any) -> str:
+    """Render BCN markdown into Substack's ProseMirror-style document JSON."""
+    markdown = str(briefing.get("content_markdown") or "").strip()
+    cover_url = str(briefing.get("cover_image_url") or "").strip()
+    if cover_url and not markdown.startswith("!["):
+        markdown = f"![Daily Cover]({cover_url})\n\n{markdown}".strip()
+
+    if not markdown:
+        fallback = str(briefing.get("content_html") or "").strip()
+        markdown = _strip_html(fallback)
+
+    blocks = [block.strip() for block in markdown.split("\n\n") if block.strip()]
+    content: list[dict[str, Any]] = []
+    for block in blocks:
+        image = _parse_image_block(block)
+        if image:
+            content.append(image)
+            continue
+
+        heading = _parse_heading_block(block)
+        if heading:
+            content.append(heading)
+            continue
+
+        content.append(_paragraph_node(_parse_inline_nodes(block.replace("\n", " "))))
+
+    if not content:
+        content.append(_paragraph_node([{"type": "text", "text": "Broken Cloud News"}]))
+
+    return json.dumps({"type": "doc", "content": content}, separators=(",", ":"))
+
+
+def _strip_html(html_text: str) -> str:
+    """Fallback HTML simplifier when markdown is unavailable."""
+    if not html_text:
+        return ""
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\\1>", "", html_text)
+    text = re.sub(r"(?i)<br\\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\\s*>", "\n\n", text)
+    text = re.sub(r"(?i)</h[1-6]\\s*>", "\n\n", text)
+    text = re.sub(r"(?is)<[^>]+>", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _parse_image_block(block: str) -> dict[str, Any] | None:
+    match = _IMAGE_BLOCK_RE.match(block.strip())
+    if not match:
+        return None
+    return {
+        "type": "image",
+        "attrs": {
+            "src": match.group("src").strip(),
+            "alt": match.group("alt").strip(),
+        },
+    }
+
+
+def _parse_heading_block(block: str) -> dict[str, Any] | None:
+    match = _BOLD_HEADING_RE.match(block.strip())
+    if not match:
+        return None
+    return {
+        "type": "heading",
+        "attrs": {"level": 3},
+        "content": [{"type": "text", "text": match.group("text").strip()}],
+    }
+
+
+def _paragraph_node(content: list[dict[str, Any]]) -> dict[str, Any]:
+    if not content:
+        content = [{"type": "text", "text": ""}]
+    return {"type": "paragraph", "content": content}
+
+
+def _parse_inline_nodes(text: str) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    position = 0
+    for match in _INLINE_TOKEN_RE.finditer(text):
+        start, end = match.span()
+        if start > position:
+            nodes.append({"type": "text", "text": text[position:start]})
+        if match.group("link_text") is not None:
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": match.group("link_text"),
+                    "marks": [
+                        {
+                            "type": "link",
+                            "attrs": {"href": match.group("link_href")},
+                        }
+                    ],
+                }
+            )
+        elif match.group("bold") is not None:
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": match.group("bold")[2:-2],
+                    "marks": [{"type": "strong"}],
+                }
+            )
+        elif match.group("italic") is not None:
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": match.group("italic")[1:-1],
+                    "marks": [{"type": "em"}],
+                }
+            )
+        elif match.group("code") is not None:
+            nodes.append(
+                {
+                    "type": "text",
+                    "text": match.group("code")[1:-1],
+                    "marks": [{"type": "code"}],
+                }
+            )
+        position = end
+    if position < len(text):
+        nodes.append({"type": "text", "text": text[position:]})
+    return nodes
 
 
 class SubstackDistributor:
@@ -170,16 +305,12 @@ class SubstackDistributor:
             page = await self._ensure_page()
 
             title = self._extract_title(briefing)
-            body_html = str(
-                briefing.get("content_html")
-                or briefing.get("content_markdown")
-                or ""
-            )
+            body = _build_substack_body(briefing)
 
             # Step 1: Create a draft
             draft_data = await page.evaluate(
                 _CREATE_DRAFT_JS,
-                {"title": title, "subtitle": "", "body": body_html},
+                {"title": title, "subtitle": "", "body": body},
             )
             if isinstance(draft_data, dict) and draft_data.get("error"):
                 raise RuntimeError(
