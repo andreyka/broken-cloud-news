@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from datetime import timezone
 import json
 import logging
 import re
@@ -352,11 +354,15 @@ class SubstackDistributor:
     def _extract_title(self, briefing: Any) -> str:
         """Derive a post title from the briefing dict."""
         subject = str(briefing.get("email_subject") or "").strip()
-        if subject:
-            return subject
         created_at = briefing.get("created_at")
-        if created_at and hasattr(created_at, "strftime"):
-            return f"Broken Cloud News - {created_at.strftime('%Y-%m-%d')}"
+        briefing_id = str(briefing.get("id") or "").strip()
+        if subject:
+            suffix = self._title_uniqueness_suffix(created_at, briefing_id)
+            return f"{subject} ({suffix})" if suffix else subject
+        if isinstance(created_at, datetime):
+            return f"Broken Cloud News - {self._format_created_at(created_at)}"
+        if briefing_id:
+            return f"Broken Cloud News Daily Briefing #{briefing_id[:8]}"
         return "Broken Cloud News Daily Briefing"
 
     def _build_post_url(self, publish_data: dict) -> str | None:
@@ -368,3 +374,25 @@ class SubstackDistributor:
         if canonical:
             return str(canonical)
         return None
+
+    @staticmethod
+    def _title_uniqueness_suffix(
+        created_at: Any,
+        briefing_id: str,
+    ) -> str:
+        """Return a stable suffix that makes repeated daily titles unique."""
+        if isinstance(created_at, datetime):
+            return SubstackDistributor._format_created_time(created_at)
+        if briefing_id:
+            return briefing_id[:8]
+        return ""
+
+    @staticmethod
+    def _format_created_at(created_at: datetime) -> str:
+        """Render a human-readable date/time label for Substack titles."""
+        return created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    @staticmethod
+    def _format_created_time(created_at: datetime) -> str:
+        """Render the time-only suffix used when a subject already exists."""
+        return created_at.astimezone(timezone.utc).strftime("%H:%M UTC")

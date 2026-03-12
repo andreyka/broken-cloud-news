@@ -443,16 +443,32 @@ class TestSubstackDistributor:
         assert "error" in dist.last_result
 
     def test_extract_title_from_email_subject(self):
+        from datetime import datetime
+        from datetime import timezone
+
         dist = self._make_dist(sid="x")
-        title = dist._extract_title({"email_subject": "Custom Title"})
-        assert title == "Custom Title"
+        title = dist._extract_title(
+            {
+                "email_subject": "Custom Title",
+                "created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc),
+            }
+        )
+        assert title == "Custom Title (23:06 UTC)"
 
     def test_extract_title_from_created_at(self):
         from datetime import datetime
+        from datetime import timezone
 
         dist = self._make_dist(sid="x")
-        title = dist._extract_title({"created_at": datetime(2026, 3, 11)})
-        assert title == "Broken Cloud News - 2026-03-11"
+        title = dist._extract_title(
+            {"created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc)}
+        )
+        assert title == "Broken Cloud News - 2026-03-11 23:06 UTC"
+
+    def test_extract_title_falls_back_to_briefing_id(self):
+        dist = self._make_dist(sid="x")
+        title = dist._extract_title({"id": "4e59730e-1583-4dcb-82a8-98605478cfbb"})
+        assert title == "Broken Cloud News Daily Briefing #4e59730e"
 
     def test_extract_title_fallback(self):
         dist = self._make_dist(sid="x")
