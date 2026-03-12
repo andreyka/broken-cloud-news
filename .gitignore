@@ -5,6 +5,7 @@ __pycache__/
 # Local secrets/config
 .env
 .env.local
+.claude/
 
 # Dashboard build artifacts
 dashboard/.next/
