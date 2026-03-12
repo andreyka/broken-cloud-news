@@ -537,6 +537,7 @@ class DeliveryChannelSettingsMixin:
     slack_webhook_url: str = ""
     discord_bot_token: str = ""
     discord_channel_id: str = ""
+    substack_enabled: bool = False
     substack_sid: str = ""
     substack_publication_url: str = ""
 

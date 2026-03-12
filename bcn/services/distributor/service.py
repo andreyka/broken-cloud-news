@@ -131,6 +131,7 @@ class DistributorService:
 
         if (
             "substack" in channel_names
+            and getattr(self.settings, "substack_enabled", False)
             and self.settings.substack_sid
             and self.settings.substack_publication_url
         ):
