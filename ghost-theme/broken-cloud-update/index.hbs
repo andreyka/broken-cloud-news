@@ -1,0 +1,23 @@
+{{!< default}}
+
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">Broken Cloud Portal</p>
+        <h1>{{@site.title}}</h1>
+        <p class="hero-lede">{{#if @site.description}}{{@site.description}}{{else}}Cloud Security News{{/if}}</p>
+    </div>
+    <aside class="hero-note">
+        <span class="hero-note-label">About this site</span>
+        <p>This site provides Cloud Security News.</p>
+    </aside>
+</section>
+
+{{#if posts}}
+<section class="post-grid">
+    {{#foreach posts}}
+        {{> "post-card"}}
+    {{/foreach}}
+</section>
+{{/if}}
+
+{{pagination}}

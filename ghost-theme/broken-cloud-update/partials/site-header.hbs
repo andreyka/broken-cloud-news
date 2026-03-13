@@ -1,0 +1,13 @@
+<header class="site-header">
+    <a class="brand-lockup" href="{{@site.url}}">
+        {{#if @site.logo}}
+            <img class="brand-logo" src="{{@site.logo}}" alt="{{@site.title}}">
+        {{else}}
+            <img class="brand-logo" src="{{asset "images/logo.png"}}" alt="{{@site.title}}">
+        {{/if}}
+        <div class="brand-copy">
+            <span class="brand-kicker">Cloud Security News</span>
+            <strong>{{@site.title}}</strong>
+        </div>
+    </a>
+</header>

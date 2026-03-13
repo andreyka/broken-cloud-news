@@ -1,0 +1,16 @@
+<article class="post-card {{post_class}}">
+    <a class="post-card-link" href="{{url}}">
+        {{#if feature_image}}
+            <div class="post-card-cover">
+                <img src="{{img_url feature_image size="m"}}" alt="{{title}}">
+            </div>
+        {{/if}}
+        <div class="post-card-body">
+            <p class="post-card-date">{{date format="MMM D, YYYY"}}</p>
+            <h2>{{title}}</h2>
+            {{#if excerpt}}
+                <p>{{excerpt words="34"}}</p>
+            {{/if}}
+        </div>
+    </a>
+</article>

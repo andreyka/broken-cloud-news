@@ -1,0 +1,28 @@
+{
+  "name": "broken-cloud-update",
+  "description": "Ghost theme for Broken Cloud News with a BCN control-room visual language.",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Broken Cloud News",
+    "email": "news@brokencloud.ai"
+  },
+  "engines": {
+    "ghost": ">=6.0.0",
+    "ghost-api": "v6"
+  },
+  "config": {
+    "posts_per_page": 12,
+    "image_sizes": {
+      "s": {
+        "width": 480
+      },
+      "m": {
+        "width": 960
+      },
+      "l": {
+        "width": 1600
+      }
+    }
+  }
+}
