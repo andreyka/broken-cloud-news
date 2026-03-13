@@ -773,6 +773,9 @@ async def simulate_historical_briefings(
             if include_text:
                 entry["actual_markdown"] = actual_body
                 entry["simulated_markdown"] = simulated_body
+                entry["history"] = history
+                entry["selected_items"] = items
+                entry["simulated_selected_items"] = simulated_items
             results.append(entry)
             if (idx + 1) % 5 == 0:
                 logger.info(

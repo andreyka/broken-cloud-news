@@ -215,3 +215,64 @@ async def list_recent_optimization_runs(limit: int = 20) -> list[asyncpg.Record]
         """,
         max(1, int(limit)),
     )
+
+
+async def get_optimization_candidates_for_export(
+    *,
+    limit: int = 0,
+    since_days: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch completed optimization candidates and parent run metadata."""
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    sql = """
+        SELECT
+            c.id,
+            c.optimization_run_id,
+            c.variant_id,
+            c.base_variant,
+            c.variant_payload,
+            c.hard_reject,
+            c.recommendation,
+            c.composite_score,
+            c.summary,
+            c.created_at,
+            r.source,
+            r.git_sha,
+            r.benchmark_pack_path,
+            r.replay_limit,
+            r.replay_since_days
+        FROM optimization_candidates c
+        JOIN optimization_runs r
+          ON r.id = c.optimization_run_id
+        WHERE c.status = 'COMPLETED'
+          AND r.status = 'COMPLETED'
+    """
+    params: list[object] = []
+    if since_days > 0:
+        params.append(int(since_days))
+        sql += f" AND c.created_at >= NOW() - make_interval(days => ${len(params)})"
+    sql += " ORDER BY c.created_at DESC"
+    if limit > 0:
+        params.append(int(limit))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def get_optimization_candidate_lane_results(
+    candidate_ids: list[UUID],
+) -> list[asyncpg.Record]:
+    """Fetch lane result payloads for optimization candidates."""
+    if not candidate_ids:
+        return []
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT *
+        FROM optimization_candidate_lane_results
+        WHERE optimization_candidate_id = ANY($1::uuid[])
+        ORDER BY optimization_candidate_id, lane, created_at ASC
+        """,
+        candidate_ids,
+    )

@@ -60,6 +60,12 @@ def register_training_commands(cli: click.Group) -> None:
 
             from bcn.evaluation import build_shadow_preference_pair
             from bcn.persistence.evaluation import get_evaluation_runs_for_export
+            from bcn.persistence.optimization import (
+                get_optimization_candidate_lane_results,
+            )
+            from bcn.persistence.optimization import (
+                get_optimization_candidates_for_export,
+            )
             from bcn.persistence.runtime import close_pool
             from bcn.persistence.runtime import get_pool
             from bcn.persistence.training import get_distribution_outcomes
@@ -113,7 +119,21 @@ def register_training_commands(cli: click.Group) -> None:
                 if include_shadow_preferences
                 else []
             )
-            if not runs and not shadow_runs:
+            optimization_candidates = await get_optimization_candidates_for_export(
+                limit=max(0, int(limit)),
+                since_days=max(0, int(since_days)),
+            )
+            optimization_candidate_ids: list[UUID] = [
+                row["id"] for row in optimization_candidates
+            ]
+            optimization_lane_rows = (
+                await get_optimization_candidate_lane_results(
+                    optimization_candidate_ids
+                )
+                if optimization_candidate_ids
+                else []
+            )
+            if not runs and not shadow_runs and not optimization_candidates:
                 click.echo("No generation runs found for export")
                 await close_pool()
                 return
@@ -170,6 +190,7 @@ def register_training_commands(cli: click.Group) -> None:
             pref_path = out_dir / "preference.jsonl"
             trace_path = out_dir / "trace_runs.jsonl"
             shadow_trace_path = out_dir / "shadow_trace.jsonl"
+            optimization_trace_path = out_dir / "optimization_trace.jsonl"
             manifest_path = out_dir / "manifest.json"
 
             sft_rows: list[dict[str, Any]] = []
@@ -401,6 +422,198 @@ def register_training_commands(cli: click.Group) -> None:
                 )
                 shadow_preference_rows += 1
 
+            optimization_trace_rows: list[dict[str, Any]] = []
+            optimization_preference_rows = 0
+            lane_rows_by_candidate: dict[str, list[dict[str, Any]]] = {}
+            for row in optimization_lane_rows:
+                payload = dict(row)
+                key = str(payload.get("optimization_candidate_id") or "")
+                if key:
+                    lane_rows_by_candidate.setdefault(key, []).append(payload)
+
+            def _build_benchmark_pref_rows(
+                candidate_row: dict[str, Any],
+                benchmark_report: dict[str, Any],
+            ) -> list[dict[str, Any]]:
+                rows: list[dict[str, Any]] = []
+                results = benchmark_report.get("results", [])
+                if not isinstance(results, list):
+                    return rows
+                for idx, raw_case in enumerate(results):
+                    if not isinstance(raw_case, dict):
+                        continue
+                    champion = raw_case.get("champion", {})
+                    candidate = raw_case.get("candidate", {})
+                    if not isinstance(champion, dict) or not isinstance(candidate, dict):
+                        continue
+                    champion_text = str(champion.get("markdown") or "").strip()
+                    candidate_text = str(candidate.get("markdown") or "").strip()
+                    if not champion_text or not candidate_text or champion_text == candidate_text:
+                        continue
+                    champion_case_pass = bool(champion.get("case_pass"))
+                    candidate_case_pass = bool(candidate.get("case_pass"))
+                    champion_score = int(champion.get("rubric", {}).get("score", 0) or 0)
+                    candidate_score = int(candidate.get("rubric", {}).get("score", 0) or 0)
+                    prefer_candidate: bool | None = None
+                    rationale = ""
+                    if candidate_case_pass and not champion_case_pass:
+                        prefer_candidate = True
+                        rationale = "optimization_benchmark candidate passed case while champion failed"
+                    elif champion_case_pass and not candidate_case_pass:
+                        prefer_candidate = False
+                        rationale = "optimization_benchmark champion passed case while candidate failed"
+                    elif abs(candidate_score - champion_score) >= 3:
+                        prefer_candidate = candidate_score > champion_score
+                        rationale = (
+                            "optimization_benchmark "
+                            f"score_delta={candidate_score - champion_score}"
+                        )
+                    if prefer_candidate is None:
+                        continue
+                    chosen = candidate_text if prefer_candidate else champion_text
+                    rejected = champion_text if prefer_candidate else candidate_text
+                    rows.append(
+                        {
+                            "id": f"optimization-benchmark-{candidate_row['id']}-{idx}",
+                            "run_id": str(candidate_row["optimization_run_id"]),
+                            "source": "optimization_benchmark",
+                            "round_index": idx,
+                            "chosen": chosen,
+                            "rejected": rejected,
+                            "rationale": rationale,
+                            "context": {
+                                "variant_id": str(candidate_row.get("variant_id") or ""),
+                                "selected_items": _normalize_json(
+                                    raw_case.get("selected_items"), []
+                                ),
+                                "history": _normalize_json(raw_case.get("history"), []),
+                                "issue_tags": _normalize_json(raw_case.get("issue_tags"), []),
+                            },
+                            "metadata": {
+                                "candidate_id": str(candidate_row["id"]),
+                                "created_at": _iso(candidate_row.get("created_at")),
+                                "expected_decision": str(raw_case.get("expected_decision") or ""),
+                                "preferred_side": "candidate" if prefer_candidate else "champion",
+                                "champion_score": champion_score,
+                                "candidate_score": candidate_score,
+                            },
+                        }
+                    )
+                return rows
+
+            def _build_replay_pref_rows(
+                candidate_row: dict[str, Any],
+                champion_report: dict[str, Any],
+                candidate_report: dict[str, Any],
+            ) -> list[dict[str, Any]]:
+                rows: list[dict[str, Any]] = []
+                champion_results = champion_report.get("results", [])
+                candidate_results = candidate_report.get("results", [])
+                if not isinstance(champion_results, list) or not isinstance(candidate_results, list):
+                    return rows
+                champion_by_briefing = {
+                    str(row.get("briefing_id") or ""): row
+                    for row in champion_results
+                    if isinstance(row, dict) and str(row.get("briefing_id") or "")
+                }
+                for candidate_case in candidate_results:
+                    if not isinstance(candidate_case, dict):
+                        continue
+                    briefing_id = str(candidate_case.get("briefing_id") or "")
+                    if not briefing_id:
+                        continue
+                    champion_case = champion_by_briefing.get(briefing_id)
+                    if not isinstance(champion_case, dict):
+                        continue
+                    champion_text = str(champion_case.get("simulated_markdown") or "").strip()
+                    candidate_text = str(candidate_case.get("simulated_markdown") or "").strip()
+                    if not champion_text or not candidate_text or champion_text == candidate_text:
+                        continue
+                    champion_score = int(champion_case.get("simulated_score", 0) or 0)
+                    candidate_score = int(candidate_case.get("simulated_score", 0) or 0)
+                    if abs(candidate_score - champion_score) < 3:
+                        continue
+                    prefer_candidate = candidate_score > champion_score
+                    chosen = candidate_text if prefer_candidate else champion_text
+                    rejected = champion_text if prefer_candidate else candidate_text
+                    rows.append(
+                        {
+                            "id": f"optimization-replay-{candidate_row['id']}-{briefing_id}",
+                            "run_id": str(candidate_row["optimization_run_id"]),
+                            "source": "optimization_replay",
+                            "round_index": 0,
+                            "chosen": chosen,
+                            "rejected": rejected,
+                            "rationale": (
+                                "optimization_replay "
+                                f"score_delta={candidate_score - champion_score}"
+                            ),
+                            "context": {
+                                "variant_id": str(candidate_row.get("variant_id") or ""),
+                                "selected_items": _normalize_json(
+                                    candidate_case.get("selected_items"), []
+                                ),
+                                "history": _normalize_json(candidate_case.get("history"), []),
+                                "simulated_selected_items": _normalize_json(
+                                    candidate_case.get("simulated_selected_items"),
+                                    [],
+                                ),
+                            },
+                            "metadata": {
+                                "candidate_id": str(candidate_row["id"]),
+                                "briefing_id": briefing_id,
+                                "created_at": _iso(candidate_row.get("created_at")),
+                                "preferred_side": "candidate" if prefer_candidate else "champion",
+                                "champion_score": champion_score,
+                                "candidate_score": candidate_score,
+                            },
+                        }
+                    )
+                return rows
+
+            for row in optimization_candidates:
+                candidate_payload = dict(row)
+                candidate_key = str(candidate_payload["id"])
+                lane_rows = lane_rows_by_candidate.get(candidate_key, [])
+                lane_payloads = {
+                    str(item.get("lane") or ""): _normalize_json(item.get("report"), {})
+                    for item in lane_rows
+                }
+                trace_row = {
+                    "candidate_id": candidate_key,
+                    "optimization_run_id": str(candidate_payload["optimization_run_id"]),
+                    "variant_id": str(candidate_payload.get("variant_id") or ""),
+                    "base_variant": str(candidate_payload.get("base_variant") or ""),
+                    "created_at": _iso(candidate_payload.get("created_at")),
+                    "git_sha": str(candidate_payload.get("git_sha") or ""),
+                    "benchmark_pack_path": str(
+                        candidate_payload.get("benchmark_pack_path") or ""
+                    ),
+                    "variant_payload": _normalize_json(
+                        candidate_payload.get("variant_payload"), {}
+                    ),
+                    "summary": _normalize_json(candidate_payload.get("summary"), {}),
+                    "lane_reports": lane_payloads,
+                }
+                optimization_trace_rows.append(trace_row)
+
+                benchmark_report = lane_payloads.get("benchmark", {})
+                champion_report = lane_payloads.get("replay_champion", {})
+                candidate_report = lane_payloads.get("replay_candidate", {})
+                for pref_row in _build_benchmark_pref_rows(
+                    candidate_payload,
+                    benchmark_report if isinstance(benchmark_report, dict) else {},
+                ):
+                    pref_rows.append(pref_row)
+                    optimization_preference_rows += 1
+                for pref_row in _build_replay_pref_rows(
+                    candidate_payload,
+                    champion_report if isinstance(champion_report, dict) else {},
+                    candidate_report if isinstance(candidate_report, dict) else {},
+                ):
+                    pref_rows.append(pref_row)
+                    optimization_preference_rows += 1
+
             with sft_path.open("w", encoding="utf-8") as handle:
                 for row in sft_rows:
                     handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -413,6 +626,9 @@ def register_training_commands(cli: click.Group) -> None:
             with shadow_trace_path.open("w", encoding="utf-8") as handle:
                 for row in shadow_trace_rows:
                     handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+            with optimization_trace_path.open("w", encoding="utf-8") as handle:
+                for row in optimization_trace_rows:
+                    handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
             manifest = {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -422,6 +638,8 @@ def register_training_commands(cli: click.Group) -> None:
                 "trace_rows": len(trace_rows),
                 "shadow_trace_rows": len(shadow_trace_rows),
                 "shadow_preference_rows": shadow_preference_rows,
+                "optimization_trace_rows": len(optimization_trace_rows),
+                "optimization_preference_rows": optimization_preference_rows,
                 "filters": {
                     "limit": int(limit),
                     "since_days": int(since_days),
@@ -433,6 +651,7 @@ def register_training_commands(cli: click.Group) -> None:
                     "preference_jsonl": str(pref_path),
                     "trace_jsonl": str(trace_path),
                     "shadow_trace_jsonl": str(shadow_trace_path),
+                    "optimization_trace_jsonl": str(optimization_trace_path),
                 },
             }
             manifest_path.write_text(
@@ -442,12 +661,14 @@ def register_training_commands(cli: click.Group) -> None:
 
             click.echo(
                 f"Export complete: runs={len(runs)} sft_rows={len(sft_rows)} "
-                f"preference_rows={len(pref_rows)} shadow_preference_rows={shadow_preference_rows}"
+                f"preference_rows={len(pref_rows)} shadow_preference_rows={shadow_preference_rows} "
+                f"optimization_preference_rows={optimization_preference_rows}"
             )
             click.echo(f"  SFT: {sft_path}")
             click.echo(f"  Preference: {pref_path}")
             click.echo(f"  Traces: {trace_path}")
             click.echo(f"  Shadow Traces: {shadow_trace_path}")
+            click.echo(f"  Optimization Traces: {optimization_trace_path}")
             click.echo(f"  Manifest: {manifest_path}")
             await close_pool()
 
