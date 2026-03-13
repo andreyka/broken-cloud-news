@@ -6,6 +6,8 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY LICENSE .
 COPY bcn/ bcn/
+COPY benchmark_packs/ benchmark_packs/
+COPY optimization/ optimization/
 COPY postgres/ postgres/
 RUN pip install --no-cache-dir --pre .
 
