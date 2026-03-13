@@ -141,6 +141,7 @@ class DistributorService:
                     GhostDistributor(
                         admin_api_url=self.settings.ghost_admin_api_url,
                         admin_api_key=self.settings.ghost_admin_api_key,
+                        trusted_image_hosts=trusted_image_hosts,
                     ),
                 )
             )

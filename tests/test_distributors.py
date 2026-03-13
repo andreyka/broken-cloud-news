@@ -283,6 +283,7 @@ class TestGhostDistributor:
         return GhostDistributor(
             admin_api_url=self.API_URL,
             admin_api_key=admin_key or self.ADMIN_KEY,
+            trusted_image_hosts={"img.example"},
         )
 
     @respx.mock
@@ -331,8 +332,19 @@ class TestGhostDistributor:
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_send_uses_http_cover_as_feature_image(self):
+    async def test_send_uploads_http_cover_as_feature_image(self):
         dist = self._make_dist()
+        respx.get("https://img.example/cover.png").mock(
+            return_value=httpx.Response(200, content=b"fake", headers={"content-type": "image/png"})
+        )
+        upload_route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/images/upload/"
+        ).mock(
+            return_value=httpx.Response(
+                201,
+                json={"images": [{"url": "https://cdn.ghost.io/content/images/cover.png"}]},
+            )
+        )
         route = respx.post(
             "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
         ).mock(
@@ -349,13 +361,25 @@ class TestGhostDistributor:
         )
 
         assert ok is True
+        assert upload_route.called
         payload = json.loads(route.calls[0].request.content.decode("utf-8"))
-        assert payload["posts"][0]["feature_image"] == "https://img.example/cover.png"
+        assert (
+            payload["posts"][0]["feature_image"]
+            == "https://cdn.ghost.io/content/images/cover.png"
+        )
 
     @respx.mock
     @pytest.mark.asyncio
-    async def test_send_skips_data_url_cover(self):
+    async def test_send_uploads_data_url_cover(self):
         dist = self._make_dist()
+        upload_route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/images/upload/"
+        ).mock(
+            return_value=httpx.Response(
+                201,
+                json={"images": [{"url": "https://cdn.ghost.io/content/images/data-cover.png"}]},
+            )
+        )
         route = respx.post(
             "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
         ).mock(
@@ -373,8 +397,42 @@ class TestGhostDistributor:
         )
 
         assert ok is True
+        assert upload_route.called
+        payload = json.loads(route.calls[0].request.content.decode("utf-8"))
+        assert (
+            payload["posts"][0]["feature_image"]
+            == "https://cdn.ghost.io/content/images/data-cover.png"
+        )
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_skips_feature_image_when_upload_fails(self):
+        dist = self._make_dist()
+        respx.get("https://img.example/cover.png").mock(
+            return_value=httpx.Response(200, content=b"fake", headers={"content-type": "image/png"})
+        )
+        respx.post("https://testpub.ghost.io/ghost/api/admin/images/upload/").mock(
+            return_value=httpx.Response(500, text="nope")
+        )
+        route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
+        ).mock(
+            return_value=httpx.Response(
+                201, json={"posts": [{"id": "1", "status": "published"}]}
+            )
+        )
+
+        ok = await dist.send(
+            {
+                "content_markdown": "Body text here",
+                "cover_image_url": "https://img.example/cover.png",
+            }
+        )
+
+        assert ok is True
         payload = json.loads(route.calls[0].request.content.decode("utf-8"))
         assert "feature_image" not in payload["posts"][0]
+        assert "feature_image_error" in dist.last_result
 
     @respx.mock
     @pytest.mark.asyncio
@@ -409,17 +467,17 @@ class TestGhostDistributor:
         title = dist._extract_title(
             {"created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc)}
         )
-        assert title == "Broken Cloud News - 2026-03-11 23:06 UTC"
+        assert title == "Broken Cloud Update - 2026-03-11 23:06 UTC"
 
     def test_extract_title_falls_back_to_briefing_id(self):
         dist = self._make_dist()
         title = dist._extract_title({"id": "4e59730e-1583-4dcb-82a8-98605478cfbb"})
-        assert title == "Broken Cloud News Daily Briefing #4e59730e"
+        assert title == "Broken Cloud Update #4e59730e"
 
     def test_extract_title_fallback(self):
         dist = self._make_dist()
         title = dist._extract_title({})
-        assert title == "Broken Cloud News Daily Briefing"
+        assert title == "Broken Cloud Update"
 
     @pytest.mark.asyncio
     async def test_admin_key_redacted_in_error(self):
