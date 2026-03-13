@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: always
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=broken_cloud_news
+      - POSTGRES_USER=${BCN_POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${BCN_POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${BCN_POSTGRES_DB:-broken_cloud_news}
     volumes:
       - broken_cloud_news_db:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -13,7 +13,7 @@ services:
       - "5432:5432"
     healthcheck:
       test:
-        ["CMD-SHELL", "pg_isready -U postgres -d broken_cloud_news"]
+        ["CMD-SHELL", "pg_isready -U ${BCN_POSTGRES_USER:-postgres} -d ${BCN_POSTGRES_DB:-broken_cloud_news}"]
       interval: 5s
       timeout: 5s
       retries: 5
