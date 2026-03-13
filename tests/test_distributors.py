@@ -7,10 +7,10 @@ import httpx
 import pytest
 import respx
 
+from bcn.distributors.ghost import GhostDistributor
 from bcn.distributors.slack import SlackDistributor
 import json
 
-from bcn.distributors.substack import SubstackDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
 
@@ -275,168 +275,114 @@ class TestSlackDistributor:
         assert ok is False
 
 
-class TestSubstackDistributor:
-    PUB_URL = "https://testpub.substack.com"
+class TestGhostDistributor:
+    API_URL = "https://testpub.ghost.io"
+    ADMIN_KEY = "ghost-id:" + ("1f" * 32)
 
-    def _make_dist(self, sid: str = "fake-sid") -> SubstackDistributor:
-        return SubstackDistributor(publication_url=self.PUB_URL, sid=sid)
+    def _make_dist(self, admin_key: str | None = None) -> GhostDistributor:
+        return GhostDistributor(
+            admin_api_url=self.API_URL,
+            admin_api_key=admin_key or self.ADMIN_KEY,
+        )
 
-    @staticmethod
-    def _patch_page(dist, evaluate_results):
-        """Inject a mock page so Playwright is never launched.
-
-        ``evaluate_results`` is a list of return values consumed in order
-        by successive ``page.evaluate()`` calls.
-        """
-        call_index = {"i": 0}
-
-        async def _fake_evaluate(_expr, _arg=None):
-            idx = call_index["i"]
-            call_index["i"] += 1
-            return evaluate_results[idx]
-
-        mock_page = AsyncMock()
-        mock_page.evaluate = AsyncMock(side_effect=_fake_evaluate)
-        dist._page = mock_page
-        return mock_page
-
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_send_creates_draft_and_publishes(self):
+    async def test_send_publishes_html_post(self):
         dist = self._make_dist()
-        self._patch_page(dist, [
-            {"id": 42},  # draft creation
-            {"slug": "broken-cloud-news-2026-03-11"},  # publish
-        ])
+        route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
+        ).mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "posts": [
+                        {
+                            "id": "42",
+                            "url": "https://testpub.ghost.io/bcn-daily/",
+                            "status": "published",
+                        }
+                    ]
+                },
+            )
+        )
 
         ok = await dist.send(
             {
-                "content_html": "<p>Briefing body</p>",
-                "content_markdown": "Briefing body",
+                "content_markdown": "**Section Title**\n\nBody with **bold** and [link](https://example.com).",
                 "email_subject": "BCN Daily - 2026-03-11",
             }
         )
+
         assert ok is True
-        assert dist.last_result["draft_id"] == 42
-        assert dist.last_result["post_url"] == (
-            f"{self.PUB_URL}/p/broken-cloud-news-2026-03-11"
-        )
-        assert dist.last_result["primary_message_id"] == dist.last_result["post_url"]
+        assert dist.last_result["post_id"] == "42"
+        assert dist.last_result["post_url"] == "https://testpub.ghost.io/bcn-daily/"
+        assert dist.last_result["primary_message_id"] == "https://testpub.ghost.io/bcn-daily/"
 
+        request = route.calls[0].request
+        assert request.headers["Authorization"].startswith("Ghost ")
+        assert request.headers["Accept-Version"] == "v6.0"
+        payload = json.loads(request.content.decode("utf-8"))
+        post = payload["posts"][0]
+        assert post["title"] == "BCN Daily - 2026-03-11"
+        assert post["status"] == "published"
+        assert "<h3" in post["html"]
+        assert "Section Title" in post["html"]
+        assert "https://example.com" in post["html"]
+
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_send_prefers_markdown_over_email_html(self):
+    async def test_send_uses_http_cover_as_feature_image(self):
         dist = self._make_dist()
-        mock_page = self._patch_page(dist, [
-            {"id": 1},
-            {"slug": "test"},
-        ])
-
-        await dist.send(
-            {
-                "content_html": "<html><body><h1>Email Wrapper</h1><p>Wrong payload</p></body></html>",
-                "content_markdown": "**Section Title**\n\nBody with **bold** and [link](https://example.com).",
-            }
-        )
-
-        # First evaluate call is draft creation; check the body arg
-        call_args = mock_page.evaluate.call_args_list[0]
-        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        body = json.loads(payload["body"])
-        assert body["type"] == "doc"
-        assert body["content"][0]["type"] == "heading"
-        assert body["content"][0]["attrs"]["level"] == 3
-        assert body["content"][0]["content"][0]["text"] == "Section Title"
-        paragraph = body["content"][1]["content"]
-        assert any(node.get("text") == "bold" for node in paragraph)
-        assert any(
-            node.get("marks", [{}])[0].get("type") == "link"
-            for node in paragraph
-            if node.get("text") == "link"
+        route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
+        ).mock(
+            return_value=httpx.Response(
+                201, json={"posts": [{"id": "1", "status": "published"}]}
+            )
         )
 
-    @pytest.mark.asyncio
-    async def test_send_falls_back_to_markdown(self):
-        dist = self._make_dist()
-        mock_page = self._patch_page(dist, [
-            {"id": 1},
-            {"slug": "test"},
-        ])
-
-        await dist.send({"content_markdown": "# Markdown only"})
-
-        call_args = mock_page.evaluate.call_args_list[0]
-        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        body = json.loads(payload["body"])
-        assert body["type"] == "doc"
-        assert body["content"][0]["type"] == "paragraph"
-        assert body["content"][0]["content"][0]["text"] == "# Markdown only"
-
-    @pytest.mark.asyncio
-    async def test_send_prepends_cover_image_node(self):
-        dist = self._make_dist()
-        mock_page = self._patch_page(dist, [
-            {"id": 1},
-            {"slug": "test"},
-        ])
-
-        await dist.send(
+        ok = await dist.send(
             {
                 "content_markdown": "Body text here",
                 "cover_image_url": "https://img.example/cover.png",
             }
         )
 
-        call_args = mock_page.evaluate.call_args_list[0]
-        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        body = json.loads(payload["body"])
-        assert body["content"][0] == {
-            "type": "image",
-            "attrs": {
-                "src": "https://img.example/cover.png",
-                "alt": "Daily Cover",
-            },
-        }
-        assert body["content"][1]["type"] == "paragraph"
+        assert ok is True
+        payload = json.loads(route.calls[0].request.content.decode("utf-8"))
+        assert payload["posts"][0]["feature_image"] == "https://img.example/cover.png"
 
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_send_skips_data_url_cover_image_node(self):
+    async def test_send_skips_data_url_cover(self):
         dist = self._make_dist()
-        mock_page = self._patch_page(dist, [
-            {"id": 1},
-            {"slug": "test"},
-        ])
+        route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
+        ).mock(
+            return_value=httpx.Response(
+                201, json={"posts": [{"id": "1", "status": "published"}]}
+            )
+        )
 
         data_url = "data:image/png;base64," + base64.b64encode(b"fake").decode("ascii")
-        await dist.send(
+        ok = await dist.send(
             {
                 "content_markdown": "Body text here",
                 "cover_image_url": data_url,
             }
         )
 
-        call_args = mock_page.evaluate.call_args_list[0]
-        payload = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs.get("_arg")
-        body = json.loads(payload["body"])
-        assert body["content"][0]["type"] == "paragraph"
-        assert body["content"][0]["content"][0]["text"] == "Body text here"
+        assert ok is True
+        payload = json.loads(route.calls[0].request.content.decode("utf-8"))
+        assert "feature_image" not in payload["posts"][0]
 
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_send_failure_on_draft_creation(self):
+    async def test_send_failure_on_api_error(self):
         dist = self._make_dist()
-        self._patch_page(dist, [
-            {"error": True, "status": 401, "body": "Unauthorized"},
-        ])
-
-        ok = await dist.send({"content_markdown": "content"})
-        assert ok is False
-        assert "error" in dist.last_result
-
-    @pytest.mark.asyncio
-    async def test_send_failure_on_publish(self):
-        dist = self._make_dist()
-        self._patch_page(dist, [
-            {"id": 99},
-            {"error": True, "status": 500, "body": "Server Error"},
-        ])
+        respx.post("https://testpub.ghost.io/ghost/api/admin/posts/?source=html").mock(
+            return_value=httpx.Response(401, text="Unauthorized")
+        )
 
         ok = await dist.send({"content_markdown": "content"})
         assert ok is False
@@ -446,43 +392,43 @@ class TestSubstackDistributor:
         from datetime import datetime
         from datetime import timezone
 
-        dist = self._make_dist(sid="x")
+        dist = self._make_dist()
         title = dist._extract_title(
             {
                 "email_subject": "Custom Title",
                 "created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc),
             }
         )
-        assert title == "Custom Title (23:06 UTC)"
+        assert title == "Custom Title (2026-03-11 23:06 UTC)"
 
     def test_extract_title_from_created_at(self):
         from datetime import datetime
         from datetime import timezone
 
-        dist = self._make_dist(sid="x")
+        dist = self._make_dist()
         title = dist._extract_title(
             {"created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc)}
         )
         assert title == "Broken Cloud News - 2026-03-11 23:06 UTC"
 
     def test_extract_title_falls_back_to_briefing_id(self):
-        dist = self._make_dist(sid="x")
+        dist = self._make_dist()
         title = dist._extract_title({"id": "4e59730e-1583-4dcb-82a8-98605478cfbb"})
         assert title == "Broken Cloud News Daily Briefing #4e59730e"
 
     def test_extract_title_fallback(self):
-        dist = self._make_dist(sid="x")
+        dist = self._make_dist()
         title = dist._extract_title({})
         assert title == "Broken Cloud News Daily Briefing"
 
     @pytest.mark.asyncio
-    async def test_sid_redacted_in_error(self):
-        sid = "super-secret-session-id"
-        dist = self._make_dist(sid=sid)
-        self._patch_page(dist, [
-            {"error": True, "status": 401, "body": f"Invalid session: {sid}"},
-        ])
+    async def test_admin_key_redacted_in_error(self):
+        admin_key = "ghost-id:" + ("ab" * 32)
+        dist = self._make_dist(admin_key=admin_key)
+        dist._client.post = AsyncMock(
+            side_effect=RuntimeError(f"Invalid Ghost key {admin_key}")
+        )
 
         ok = await dist.send({"content_markdown": "content"})
         assert ok is False
-        assert sid not in str(dist.last_result.get("error", ""))
+        assert admin_key not in str(dist.last_result.get("error", ""))

@@ -2344,8 +2344,8 @@ class TestDistributorService:
             telegram_chat_id="@broken-cloud",
             discord_bot_token="discord-token",
             discord_channel_id="12345",
-            substack_sid="substack-session",
-            substack_publication_url="https://brokencloudnews.substack.com",
+            ghost_admin_api_key="ghost-id:" + ("1f" * 32),
+            ghost_admin_api_url="https://brokencloudnews.ghost.io",
             smtp_host="smtp.example.com",
             smtp_user="user",
             smtp_password="pass",
@@ -2358,7 +2358,7 @@ class TestDistributorService:
         names = [name for name, _channel in channels]
         assert names == ["telegram", "discord"]
 
-    def test_build_channels_daily_mode_includes_substack_when_enabled(self):
+    def test_build_channels_daily_mode_includes_ghost_when_enabled(self):
         from bcn.services.distributor.service import DistributorService
 
         settings = _make_settings(
@@ -2366,14 +2366,14 @@ class TestDistributorService:
             telegram_chat_id="@broken-cloud",
             discord_bot_token="discord-token",
             discord_channel_id="12345",
-            substack_enabled=True,
-            substack_sid="substack-session",
-            substack_publication_url="https://brokencloudnews.substack.com",
+            ghost_enabled=True,
+            ghost_admin_api_key="ghost-id:" + ("1f" * 32),
+            ghost_admin_api_url="https://brokencloudnews.ghost.io",
         )
         service = DistributorService(settings)
         channels = service._build_channels(mode="regular_daily_briefing")
         names = [name for name, _channel in channels]
-        assert names == ["telegram", "discord", "substack"]
+        assert names == ["telegram", "discord", "ghost"]
 
     def test_build_channels_monthly_mode_email_only(self):
         from bcn.services.distributor.service import DistributorService

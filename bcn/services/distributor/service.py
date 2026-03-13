@@ -21,7 +21,7 @@ from bcn.contracts.distributor import render_delivery_result_payload
 from bcn.distributors import Distributor
 from bcn.distributors.discord import DiscordDistributor
 from bcn.distributors.email import EmailDistributor
-from bcn.distributors.substack import SubstackDistributor
+from bcn.distributors.ghost import GhostDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ def _distribution_redaction_secrets(settings: object) -> tuple[str, ...]:
             getattr(settings, "discord_bot_token", ""),
             getattr(settings, "slack_webhook_url", ""),
             getattr(settings, "smtp_password", ""),
-            getattr(settings, "substack_sid", ""),
+            getattr(settings, "ghost_admin_api_key", ""),
         )
         if str(value or "").strip()
     )
@@ -74,7 +74,7 @@ class DistributorService:
         if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
             channel_names = {"email"}
         else:
-            channel_names = {"telegram", "discord", "substack"}
+            channel_names = {"telegram", "discord", "ghost"}
 
         if (
             "telegram" in channel_names
@@ -130,17 +130,17 @@ class DistributorService:
             )
 
         if (
-            "substack" in channel_names
-            and getattr(self.settings, "substack_enabled", False)
-            and self.settings.substack_sid
-            and self.settings.substack_publication_url
+            "ghost" in channel_names
+            and getattr(self.settings, "ghost_enabled", False)
+            and self.settings.ghost_admin_api_url
+            and self.settings.ghost_admin_api_key
         ):
             channels.append(
                 (
-                    "substack",
-                    SubstackDistributor(
-                        publication_url=self.settings.substack_publication_url,
-                        sid=self.settings.substack_sid,
+                    "ghost",
+                    GhostDistributor(
+                        admin_api_url=self.settings.ghost_admin_api_url,
+                        admin_api_key=self.settings.ghost_admin_api_key,
                     ),
                 )
             )
