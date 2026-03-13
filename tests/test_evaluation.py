@@ -14,6 +14,7 @@ from bcn.evaluation import build_benchmark_summary
 from bcn.evaluation import build_shadow_preference_pair
 from bcn.evaluation import build_shadow_summary
 from bcn.evaluation import load_settings_with_overrides
+from bcn.optimization.scoring import score_optimization_candidate
 
 
 def _benchmark_row(
@@ -149,6 +150,89 @@ def test_load_settings_with_overrides_validates_file(tmp_path):
     assert payload["briefing_critic_min_score"] == 85
 
 
+def test_score_optimization_candidate_rejects_quality_regressions():
+    champion_replay = {
+        "summary": {
+            "avg_simulated_score": 88,
+            "gate_quality": {"simulated_hard_pass_rate": 1.0},
+            "focus_metrics": {
+                "human_writer_pass_rate_simulated": 1.0,
+                "formatting_clean_pass_rate_simulated": 1.0,
+                "duplicate_link_issue_rate_simulated": 0.0,
+                "duplicate_story_signal_rate_simulated": 0.0,
+            },
+        }
+    }
+    candidate_replay = {
+        "summary": {
+            "avg_simulated_score": 84,
+            "gate_quality": {"simulated_hard_pass_rate": 0.8},
+            "focus_metrics": {
+                "human_writer_pass_rate_simulated": 0.8,
+                "formatting_clean_pass_rate_simulated": 1.0,
+                "duplicate_link_issue_rate_simulated": 0.1,
+                "duplicate_story_signal_rate_simulated": 0.0,
+            },
+        }
+    }
+    benchmark_report = {
+        "summary": {
+            "candidate_vs_champion_case_pass_delta": -0.1,
+        }
+    }
+
+    summary = score_optimization_candidate(
+        champion_replay=champion_replay,
+        candidate_replay=candidate_replay,
+        benchmark_report=benchmark_report,
+    )
+
+    assert summary["hard_reject"] is True
+    assert "benchmark_case_pass_regressed" in summary["hard_reject_reasons"]
+    assert summary["recommendation"] == "reject"
+
+
+def test_score_optimization_candidate_can_promote_candidate():
+    champion_replay = {
+        "summary": {
+            "avg_simulated_score": 84,
+            "gate_quality": {"simulated_hard_pass_rate": 0.9},
+            "focus_metrics": {
+                "human_writer_pass_rate_simulated": 0.7,
+                "formatting_clean_pass_rate_simulated": 0.9,
+                "duplicate_link_issue_rate_simulated": 0.0,
+                "duplicate_story_signal_rate_simulated": 0.0,
+            },
+        }
+    }
+    candidate_replay = {
+        "summary": {
+            "avg_simulated_score": 87,
+            "gate_quality": {"simulated_hard_pass_rate": 0.9},
+            "focus_metrics": {
+                "human_writer_pass_rate_simulated": 0.8,
+                "formatting_clean_pass_rate_simulated": 0.9,
+                "duplicate_link_issue_rate_simulated": 0.0,
+                "duplicate_story_signal_rate_simulated": 0.0,
+            },
+        }
+    }
+    benchmark_report = {
+        "summary": {
+            "candidate_vs_champion_case_pass_delta": 0.1,
+        }
+    }
+
+    summary = score_optimization_candidate(
+        champion_replay=champion_replay,
+        candidate_replay=candidate_replay,
+        benchmark_report=benchmark_report,
+    )
+
+    assert summary["hard_reject"] is False
+    assert summary["recommendation"] == "promote_candidate"
+
+
 def test_benchmark_pack_command_writes_output(monkeypatch, tmp_path):
     runner = CliRunner()
     output_path = tmp_path / "benchmark_pack.json"
@@ -163,6 +247,39 @@ def test_benchmark_pack_command_writes_output(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Benchmark pack written" in result.output
     assert build_mock.await_count == 1
+
+
+def test_optimize_run_command_reports_summary(monkeypatch, tmp_path):
+    runner = CliRunner()
+    variant_path = tmp_path / "variant.json"
+    variant_path.write_text(
+        json.dumps({"id": "test-variant", "settings_overrides": {}}),
+        encoding="utf-8",
+    )
+    run_mock = AsyncMock(
+        return_value={
+            "variant": {"id": "test-variant"},
+            "output_dir": str(tmp_path / "artifacts"),
+            "db_run_id": "run-id",
+            "db_candidate_id": "candidate-id",
+            "summary": {
+                "recommendation": "eligible",
+                "composite_score": 3.5,
+                "hard_reject_reasons": [],
+            },
+        }
+    )
+    monkeypatch.setattr("bcn.optimization.execute_optimization_run", run_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["optimize-run", "--variant", str(variant_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "Optimization variant=test-variant recommendation=eligible score=3.5" in result.output
+    assert "DB run id: run-id" in result.output
+    assert run_mock.await_count == 1
 
 
 def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):

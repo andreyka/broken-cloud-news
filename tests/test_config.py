@@ -26,6 +26,9 @@ class TestSettings:
         assert s.service_request_timeout_seconds == 900
         assert s.writer_service_url == ""
         assert s.distributor_service_url == ""
+        assert s.writer_prompt_bundle_path == ""
+        assert s.critic_prompt_path == ""
+        assert s.verifier_prompt_path == ""
 
     def test_env_override(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_TIMEOUT", "60")

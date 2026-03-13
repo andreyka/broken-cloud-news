@@ -1,0 +1,217 @@
+"""Persistence gateway for offline optimization runs."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+from uuid import UUID
+
+import asyncpg
+
+from bcn.persistence.runtime import ensure_schema_ready
+from bcn.persistence.runtime import get_pool
+
+
+async def ensure_optimization_tables() -> None:
+    """Ensure optimization tables exist via schema migrations."""
+    await ensure_schema_ready()
+
+
+async def create_optimization_run(
+    *,
+    source: str,
+    git_sha: str | None,
+    benchmark_pack_path: str | None,
+    replay_limit: int,
+    replay_since_days: int,
+    notes: str | None = None,
+) -> UUID:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO optimization_runs (
+            source,
+            git_sha,
+            benchmark_pack_path,
+            replay_limit,
+            replay_since_days,
+            notes
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING id
+        """,
+        source,
+        git_sha,
+        benchmark_pack_path,
+        int(replay_limit),
+        int(replay_since_days),
+        notes,
+    )
+    return row["id"]
+
+
+async def complete_optimization_run(run_id: UUID, *, notes: str | None = None) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_runs
+        SET status = 'COMPLETED',
+            notes = COALESCE($2, notes),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        run_id,
+        notes,
+    )
+
+
+async def fail_optimization_run(run_id: UUID, *, notes: str | None = None) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_runs
+        SET status = 'FAILED',
+            notes = COALESCE($2, notes),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        run_id,
+        notes,
+    )
+
+
+async def insert_optimization_candidate(
+    *,
+    optimization_run_id: UUID,
+    variant_id: str,
+    base_variant: str,
+    variant_payload: dict[str, Any],
+) -> UUID:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO optimization_candidates (
+            optimization_run_id,
+            variant_id,
+            base_variant,
+            variant_payload
+        )
+        VALUES ($1, $2, $3, $4::jsonb)
+        RETURNING id
+        """,
+        optimization_run_id,
+        variant_id,
+        base_variant,
+        json.dumps(variant_payload, ensure_ascii=False, default=str),
+    )
+    return row["id"]
+
+
+async def complete_optimization_candidate(
+    candidate_id: UUID,
+    *,
+    hard_reject: bool,
+    recommendation: str,
+    composite_score: float,
+    summary: dict[str, Any],
+) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_candidates
+        SET status = 'COMPLETED',
+            hard_reject = $2,
+            recommendation = $3,
+            composite_score = $4,
+            summary = $5::jsonb,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        candidate_id,
+        bool(hard_reject),
+        recommendation,
+        float(composite_score),
+        json.dumps(summary, ensure_ascii=False, default=str),
+    )
+
+
+async def fail_optimization_candidate(
+    candidate_id: UUID,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_candidates
+        SET status = 'FAILED',
+            summary = $2::jsonb,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        candidate_id,
+        json.dumps(summary or {}, ensure_ascii=False, default=str),
+    )
+
+
+async def insert_optimization_candidate_lane_result(
+    *,
+    optimization_candidate_id: UUID,
+    lane: str,
+    report: dict[str, Any],
+    summary: dict[str, Any],
+    hard_reject: bool,
+    score: float,
+) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO optimization_candidate_lane_results (
+            optimization_candidate_id,
+            lane,
+            report,
+            summary,
+            hard_reject,
+            score
+        )
+        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+        """,
+        optimization_candidate_id,
+        lane,
+        json.dumps(report, ensure_ascii=False, default=str),
+        json.dumps(summary, ensure_ascii=False, default=str),
+        bool(hard_reject),
+        float(score),
+    )
+
+
+async def list_recent_optimization_runs(limit: int = 20) -> list[asyncpg.Record]:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT
+            r.id,
+            r.created_at,
+            r.status,
+            r.source,
+            r.git_sha,
+            c.variant_id,
+            c.recommendation,
+            c.composite_score,
+            c.hard_reject
+        FROM optimization_runs r
+        LEFT JOIN optimization_candidates c
+          ON c.optimization_run_id = r.id
+        ORDER BY r.created_at DESC, c.created_at DESC
+        LIMIT $1
+        """,
+        max(1, int(limit)),
+    )

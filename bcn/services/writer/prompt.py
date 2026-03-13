@@ -5,6 +5,18 @@ COVER_ART_SYSTEM_PROMPT = (
     "high-contrast image prompt that visualizes the provided topics. No text in image."
 )
 
+
+def default_writer_prompts() -> dict[str, str]:
+    """Return the default writer prompt bundle."""
+    return {
+        "briefing_system": BRIEFING_SYSTEM_PROMPT,
+        "briefing_story_card": BRIEFING_STORY_CARD_PROMPT,
+        "briefing_tightener": BRIEFING_TIGHTENER_PROMPT,
+        "briefing_enricher": BRIEFING_ENRICHER_PROMPT,
+        "briefing_rewrite": BRIEFING_REWRITE_PROMPT,
+        "cover_art_system": COVER_ART_SYSTEM_PROMPT,
+    }
+
 BRIEFING_SYSTEM_PROMPT = (
     "You are writing a casual, conversational blog-style Telegram post for 'Broken Cloud', a channel for senior cloud engineers.\n"
     "Persona: A cynical, highly experienced engineer talking shop with their peers over coffee. You write casually, practically, and punchy.\n\n"

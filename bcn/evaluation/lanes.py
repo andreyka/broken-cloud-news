@@ -9,7 +9,11 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
+from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.services import WriterWorkflow
 from bcn.common.config import Settings
+from bcn.evaluation.overrides import load_settings_with_overrides
 from bcn.persistence.briefings import get_distributed_briefings
 from bcn.persistence.briefings import get_recent_briefings
 from bcn.persistence.news_items import get_recent_published_items
@@ -17,10 +21,7 @@ from bcn.persistence.news_items import get_top_items_for_period
 from bcn.persistence.news_items import preview_analyzed_items
 from bcn.persistence.training import get_generation_runs_for_export
 from bcn.persistence.training import get_human_reviews
-from bcn.contracts.services import WriterWorkflow
 from bcn.service_registry import build_writer_workflow
-from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
-from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 from .simulation import _strip_cover_image
 from .simulation import score_feedback_rubric
@@ -51,25 +52,6 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(v) for v in value]
     return value
-
-
-def load_settings_with_overrides(
-    base_settings: Settings,
-    overrides_path: str | None = None,
-) -> tuple[Settings, dict[str, Any]]:
-    """Return validated settings merged with optional JSON overrides."""
-    if not overrides_path:
-        return base_settings, {}
-
-    raw = Path(overrides_path).read_text(encoding="utf-8")
-    payload = json.loads(raw)
-    if not isinstance(payload, dict):
-        raise ValueError("Settings overrides must be a JSON object.")
-
-    merged = dict(base_settings.model_dump())
-    for key, value in payload.items():
-        merged[str(key)] = value
-    return Settings(**merged), {str(k): v for k, v in payload.items()}
 
 
 async def _select_items_for_workflow(

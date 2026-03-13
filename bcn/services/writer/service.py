@@ -10,6 +10,7 @@ from bcn.briefing import BriefingSelector
 from bcn.common.comfyui import ComfyUIClient
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
+from bcn.common.prompt_overrides import load_json_prompt_bundle
 from bcn.contracts.services import CriticEvaluator
 from bcn.contracts.services import VerificationEvaluator
 from bcn.contracts.services import WriterTraceMetadata
@@ -86,7 +87,10 @@ class WriterService:
         self.llm_client = (
             llm_client if llm_client is not None else LLMClient.from_settings(settings)
         )
-        self.writer_llm = WriterLLM(self.llm_client)
+        self.writer_llm = WriterLLM(
+            self.llm_client,
+            prompts=load_json_prompt_bundle(settings.writer_prompt_bundle_path),
+        )
         self.selector = BriefingSelector(settings)
         self.quality = BriefingQualityGate(settings)
         self.postprocessor = WriterPostprocessor(

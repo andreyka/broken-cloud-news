@@ -12,6 +12,7 @@ from bcn.briefing.text import extract_urls_in_order as extract_urls_in_order_fro
 from bcn.briefing.text import normalize_url
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
+from bcn.common.prompt_overrides import load_text_prompt_override
 from bcn.common.scraper import Scraper
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,10 @@ class BriefingFactVerifier:
         base_client = llm_client or LLMClient.from_settings(settings)
         self._owned_llm_client = llm_client is None
         self._llm_client = base_client
-        self.verifier_llm = VerifierLLM(base_client)
+        self.verifier_llm = VerifierLLM(
+            base_client,
+            prompt_text=load_text_prompt_override(settings.verifier_prompt_path),
+        )
         self.scraper = Scraper()
         self._url_liveness_cache: dict[str, bool] = {}
 

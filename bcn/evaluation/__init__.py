@@ -4,7 +4,7 @@ from .lanes import build_benchmark_pack
 from .lanes import build_benchmark_summary
 from .lanes import build_shadow_preference_pair
 from .lanes import build_shadow_summary
-from .lanes import load_settings_with_overrides
+from .overrides import load_settings_with_overrides
 from .lanes import run_benchmark_pack
 from .lanes import run_shadow_lane
 from .simulation import compare_simulation_reports

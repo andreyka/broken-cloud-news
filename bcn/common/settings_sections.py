@@ -285,6 +285,9 @@ class SharedLLMSettingsMixin:
     llm_api_key_critic: str = ""
     llm_api_key_verifier: str = ""
     llm_api_key_cover: str = ""
+    writer_prompt_bundle_path: str = ""
+    critic_prompt_path: str = ""
+    verifier_prompt_path: str = ""
 
 
 class ComfyUISettingsMixin:

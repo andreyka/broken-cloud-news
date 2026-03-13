@@ -9,6 +9,7 @@ from bcn.services.critic.llm import CriticLLM
 from bcn.briefing.quality import BriefingQualityGate
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
+from bcn.common.prompt_overrides import load_text_prompt_override
 from bcn.contracts.review import CritiqueRequest
 from bcn.contracts.review import parse_critique_request_payload
 from bcn.contracts.review import render_critique_request_payload
@@ -30,7 +31,10 @@ class CriticService:
         self.llm_client = (
             llm_client if llm_client is not None else LLMClient.from_settings(settings)
         )
-        self.critic_llm = CriticLLM(self.llm_client)
+        self.critic_llm = CriticLLM(
+            self.llm_client,
+            prompt_text=load_text_prompt_override(settings.critic_prompt_path),
+        )
         self.quality = BriefingQualityGate(settings)
 
     async def evaluate(self, request: CritiqueRequest) -> dict[str, Any]:

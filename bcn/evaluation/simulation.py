@@ -19,6 +19,7 @@ from statistics import pstdev
 from bcn.services.analyst.service import AnalystService
 from bcn.services.analyst.service import AnalystWorkflowProtocol
 from bcn.common.config import Settings
+from bcn.evaluation.overrides import load_settings_with_overrides
 from bcn.persistence.briefings import get_distributed_briefings
 from bcn.persistence.news_items import get_items_by_ids
 from bcn.persistence.news_items import update_item_analyzed
@@ -591,6 +592,7 @@ async def simulate_historical_briefings(
     *,
     limit: int = 0,
     since_days: int = 0,
+    candidate_overrides_path: str | None = None,
     include_text: bool = False,
     apply_critic_rewrites: bool = True,
     reanalyze_items: bool = False,
@@ -614,10 +616,14 @@ async def simulate_historical_briefings(
 
     # Replay oldest -> newest for realistic style memory context.
     ordered = sorted(briefings, key=lambda b: b["created_at"])
-    writer = build_writer_workflow(settings)
+    effective_settings, candidate_overrides = load_settings_with_overrides(
+        settings,
+        candidate_overrides_path,
+    )
+    writer = build_writer_workflow(effective_settings)
     analyst: AnalystWorkflowProtocol | None = None
     if reanalyze_items:
-        analyst = AnalystService(settings)
+        analyst = AnalystService(effective_settings)
 
     results: list[dict[str, object]] = []
     recurring_notes: Counter[str] = Counter()
@@ -656,7 +662,10 @@ async def simulate_historical_briefings(
                 item_rows = await get_items_by_ids(item_ids)
                 items = _order_items_by_ids([dict(r) for r in item_rows], item_ids)
 
-            history_start = max(0, idx - int(settings.briefing_history_items))
+            history_start = max(
+                0,
+                idx - int(effective_settings.briefing_history_items),
+            )
             history = [
                 {
                     "id": str(prev["id"]),
@@ -832,6 +841,7 @@ async def simulate_historical_briefings(
 
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "candidate_overrides": candidate_overrides,
             "count": len(results),
             "limit": int(limit),
             "since_days": int(since_days),

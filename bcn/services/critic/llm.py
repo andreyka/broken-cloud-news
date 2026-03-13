@@ -11,8 +11,9 @@ logger = logging.getLogger(__name__)
 
 
 class CriticLLM:
-    def __init__(self, client: LLMClient):
+    def __init__(self, client: LLMClient, *, prompt_text: str | None = None):
         self.client = client
+        self.prompt_text = str(prompt_text or BRIEFING_CRITIC_PROMPT).strip()
 
     async def critique_briefing(
         self,
@@ -75,7 +76,7 @@ class CriticLLM:
         )
         raw = await self.client.chat_for_role(
             role="critic",
-            system_prompt=BRIEFING_CRITIC_PROMPT,
+            system_prompt=self.prompt_text,
             user_content=user_msg,
             json_response=True,
         )

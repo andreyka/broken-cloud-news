@@ -1,0 +1,8 @@
+{
+  "id": "rewrite-budget-7",
+  "description": "Baseline optimization candidate with a 7-round rewrite budget.",
+  "base": "champion",
+  "settings_overrides": {
+    "briefing_critique_max_rounds": 7
+  }
+}

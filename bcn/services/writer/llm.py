@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import re
+import hashlib
 from typing import Any
 
 from bcn.services.tools import allow_tool_urls
@@ -14,6 +15,7 @@ from bcn.services.writer.prompt import BRIEFING_STORY_CARD_PROMPT
 from bcn.services.writer.prompt import BRIEFING_SYSTEM_PROMPT
 from bcn.services.writer.prompt import BRIEFING_TIGHTENER_PROMPT
 from bcn.services.writer.prompt import COVER_ART_SYSTEM_PROMPT
+from bcn.services.writer.prompt import default_writer_prompts
 from bcn.common.llm import LLMClient
 from bcn.common.scraper import Scraper
 
@@ -40,9 +42,14 @@ _IMAGE_MODEL_HINTS = frozenset(
 
 
 class WriterLLM:
-    def __init__(self, client: LLMClient):
+    def __init__(self, client: LLMClient, *, prompts: dict[str, str] | None = None):
         self.client = client
         self.scraper = Scraper()
+        self.prompts = default_writer_prompts()
+        for key, value in (prompts or {}).items():
+            text = str(value or "").strip()
+            if text:
+                self.prompts[str(key)] = text
 
     async def close(self) -> None:
         """Release writer helper resources."""
@@ -95,7 +102,7 @@ class WriterLLM:
         with allow_tool_urls(tool_urls):
             return await self.client.chat_for_role(
                 role="writer",
-                system_prompt=BRIEFING_SYSTEM_PROMPT,
+                system_prompt=self.prompts["briefing_system"],
                 user_content=user_msg,
                 tools=tools,
             )
@@ -113,7 +120,7 @@ class WriterLLM:
         )
         tightened = await self.client.chat_for_role(
             role="writer",
-            system_prompt=BRIEFING_TIGHTENER_PROMPT,
+            system_prompt=self.prompts["briefing_tightener"],
             user_content=user_msg,
         )
         return tightened.strip()
@@ -165,7 +172,7 @@ class WriterLLM:
         with allow_tool_urls(tool_urls):
             rewritten = await self.client.chat_for_role(
                 role="writer",
-                system_prompt=BRIEFING_ENRICHER_PROMPT,
+                system_prompt=self.prompts["briefing_enricher"],
                 user_content=user_msg,
                 tools=tools,
             )
@@ -227,7 +234,7 @@ class WriterLLM:
         with allow_tool_urls(tool_urls):
             revised = await self.client.chat_for_role(
                 role="writer",
-                system_prompt=BRIEFING_REWRITE_PROMPT,
+                system_prompt=self.prompts["briefing_rewrite"],
                 user_content=user_msg,
                 tools=tools,
             )
@@ -238,7 +245,7 @@ class WriterLLM:
         user_msg = f"Topics:\n{topics}"
         raw = await self.client.chat_for_role(
             role="writer",
-            system_prompt=COVER_ART_SYSTEM_PROMPT,
+            system_prompt=self.prompts["cover_art_system"],
             user_content=user_msg,
         )
         return raw.replace("`", "").strip()
@@ -263,18 +270,8 @@ class WriterLLM:
         return f"data:{mime_type};base64,{encoded}"
 
     def prompt_versions(self) -> dict[str, dict[str, str | int]]:
-        import hashlib
-
         out: dict[str, dict[str, str | int]] = {}
-        prompts = {
-            "briefing_system": BRIEFING_SYSTEM_PROMPT,
-            "briefing_story_card": BRIEFING_STORY_CARD_PROMPT,
-            "briefing_tightener": BRIEFING_TIGHTENER_PROMPT,
-            "briefing_enricher": BRIEFING_ENRICHER_PROMPT,
-            "briefing_rewrite": BRIEFING_REWRITE_PROMPT,
-            "cover_art_system": COVER_ART_SYSTEM_PROMPT,
-        }
-        for name, prompt in prompts.items():
+        for name, prompt in self.prompts.items():
             digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
             out[name] = {"sha256": digest, "chars": len(prompt)}
         return out
