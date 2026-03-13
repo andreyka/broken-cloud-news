@@ -105,7 +105,8 @@ The first runnable implementation provides:
 
 ### Immediate Next Steps After Phase 1
 
-1. Curate a reviewed benchmark pack (`benchmark_packs/core_v1.json`).
+1. Review and tighten the first curated benchmark pack
+   (`benchmark_packs/core_v1.json`).
 2. Start recording lightweight human editorial review labels on accepted/edited
    briefings.
 3. Add dashboard visibility for optimization runs.
