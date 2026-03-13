@@ -14,6 +14,7 @@ from bcn.evaluation import build_benchmark_summary
 from bcn.evaluation import build_shadow_preference_pair
 from bcn.evaluation import build_shadow_summary
 from bcn.evaluation import load_settings_with_overrides
+from bcn.optimization.runner import execute_optimization_run
 from bcn.optimization.scoring import score_optimization_candidate
 
 
@@ -280,6 +281,86 @@ def test_optimize_run_command_reports_summary(monkeypatch, tmp_path):
     assert "Optimization variant=test-variant recommendation=eligible score=3.5" in result.output
     assert "DB run id: run-id" in result.output
     assert run_mock.await_count == 1
+
+
+async def _noop_async_dict(payload):
+    return payload
+
+
+def test_execute_optimization_run_manages_pool(monkeypatch, tmp_path):
+    variant_path = tmp_path / "variant.json"
+    variant_path.write_text(
+        json.dumps({"id": "rewrite-budget-7", "settings_overrides": {}}),
+        encoding="utf-8",
+    )
+    benchmark_path = tmp_path / "cases.json"
+    benchmark_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
+
+    get_pool_mock = AsyncMock()
+    close_pool_mock = AsyncMock()
+    monkeypatch.setattr("bcn.optimization.runner.get_pool", get_pool_mock)
+    monkeypatch.setattr("bcn.optimization.runner.close_pool", close_pool_mock)
+    monkeypatch.setattr(
+        "bcn.optimization.runner.execute_simulation_lane",
+        AsyncMock(
+            side_effect=[
+                {
+                    "summary": {
+                        "avg_simulated_score": 80,
+                        "gate_quality": {"simulated_hard_pass_rate": 1.0},
+                        "focus_metrics": {
+                            "human_writer_pass_rate_simulated": 1.0,
+                            "formatting_clean_pass_rate_simulated": 1.0,
+                            "duplicate_link_issue_rate_simulated": 0.0,
+                            "duplicate_story_signal_rate_simulated": 0.0,
+                        },
+                    }
+                },
+                {
+                    "summary": {
+                        "avg_simulated_score": 82,
+                        "gate_quality": {"simulated_hard_pass_rate": 1.0},
+                        "focus_metrics": {
+                            "human_writer_pass_rate_simulated": 1.0,
+                            "formatting_clean_pass_rate_simulated": 1.0,
+                            "duplicate_link_issue_rate_simulated": 0.0,
+                            "duplicate_story_signal_rate_simulated": 0.0,
+                        },
+                    }
+                },
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.execute_benchmark_lane",
+        AsyncMock(
+            return_value={
+                "summary": {
+                    "candidate_case_pass_rate": 1.0,
+                    "candidate_vs_champion_case_pass_delta": 0.0,
+                }
+            }
+        ),
+    )
+
+    import asyncio
+
+    result = asyncio.run(
+        execute_optimization_run(
+            Settings(),
+            variant_path=str(variant_path),
+            benchmark_pack_path=str(benchmark_path),
+            replay_limit=2,
+            replay_since_days=30,
+            benchmark_since_days=30,
+            output_dir=str(tmp_path / "artifacts"),
+            store_db=False,
+        )
+    )
+
+    assert result["variant"]["id"] == "rewrite-budget-7"
+    assert get_pool_mock.await_count == 1
+    assert close_pool_mock.await_count == 1
 
 
 def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):

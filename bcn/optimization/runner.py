@@ -23,6 +23,8 @@ from bcn.persistence.optimization import insert_optimization_candidate
 from bcn.persistence.optimization import (
     insert_optimization_candidate_lane_result,
 )
+from bcn.persistence.runtime import close_pool
+from bcn.persistence.runtime import get_pool
 
 
 def _git_sha() -> str:
@@ -49,6 +51,7 @@ async def execute_optimization_run(
     output_dir: str = "optimization_runs",
     store_db: bool = True,
     source: str = "cli",
+    manage_pool: bool = True,
 ) -> dict[str, Any]:
     """Run champion vs candidate replay+benchmark for one variant spec."""
     variant_spec, overrides = load_variant_spec(variant_path)
@@ -59,6 +62,8 @@ async def execute_optimization_run(
     run_id = None
     candidate_id = None
     try:
+        if manage_pool:
+            await get_pool(settings)
         if not benchmark_pack_path:
             benchmark_pack_path = str(out_dir / "benchmark_pack.json")
             await build_benchmark_pack_artifact(
@@ -95,7 +100,7 @@ async def execute_optimization_run(
             with_critic_rewrites=False,
             reanalyze_items=False,
             store_db=False,
-            manage_pool=True,
+            manage_pool=False,
         )
         with tempfile.NamedTemporaryFile(
             mode="w",
@@ -116,7 +121,7 @@ async def execute_optimization_run(
             with_critic_rewrites=False,
             reanalyze_items=False,
             store_db=False,
-            manage_pool=True,
+            manage_pool=False,
         )
         benchmark_report = await execute_benchmark_lane(
             settings,
@@ -125,7 +130,7 @@ async def execute_optimization_run(
             output_path=str(out_dir / "benchmark.json"),
             include_text=True,
             store_db=False,
-            manage_pool=True,
+            manage_pool=False,
         )
 
         summary = score_optimization_candidate(
@@ -203,3 +208,6 @@ async def execute_optimization_run(
         if store_db and run_id is not None:
             await fail_optimization_run(run_id, notes=str(exc))
         raise
+    finally:
+        if manage_pool:
+            await close_pool()
