@@ -67,6 +67,22 @@ async def complete_optimization_run(run_id: UUID, *, notes: str | None = None) -
     )
 
 
+async def partial_optimization_run(run_id: UUID, *, notes: str | None = None) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_runs
+        SET status = 'PARTIAL',
+            notes = COALESCE($2, notes),
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        run_id,
+        notes,
+    )
+
+
 async def fail_optimization_run(run_id: UUID, *, notes: str | None = None) -> None:
     await ensure_optimization_tables()
     pool = await get_pool()
@@ -140,6 +156,26 @@ async def complete_optimization_candidate(
     )
 
 
+async def partial_optimization_candidate(
+    candidate_id: UUID,
+    *,
+    summary: dict[str, Any] | None = None,
+) -> None:
+    await ensure_optimization_tables()
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE optimization_candidates
+        SET status = 'PARTIAL',
+            summary = $2::jsonb,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        candidate_id,
+        json.dumps(summary or {}, ensure_ascii=False, default=str),
+    )
+
+
 async def fail_optimization_candidate(
     candidate_id: UUID,
     *,
@@ -166,8 +202,10 @@ async def insert_optimization_candidate_lane_result(
     lane: str,
     report: dict[str, Any],
     summary: dict[str, Any],
+    status: str = "COMPLETED",
+    error_text: str | None = None,
     hard_reject: bool,
-    score: float,
+    score: float | None,
 ) -> None:
     await ensure_optimization_tables()
     pool = await get_pool()
@@ -178,17 +216,21 @@ async def insert_optimization_candidate_lane_result(
             lane,
             report,
             summary,
+            status,
+            error_text,
             hard_reject,
             score
         )
-        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+        VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8)
         """,
         optimization_candidate_id,
         lane,
         json.dumps(report, ensure_ascii=False, default=str),
         json.dumps(summary, ensure_ascii=False, default=str),
+        status,
+        error_text,
         bool(hard_reject),
-        float(score),
+        float(score) if score is not None else None,
     )
 
 

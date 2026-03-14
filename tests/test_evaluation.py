@@ -16,6 +16,7 @@ from bcn.evaluation import build_shadow_summary
 from bcn.evaluation import load_settings_with_overrides
 from bcn.optimization.runner import execute_optimization_run
 from bcn.optimization.scoring import score_optimization_candidate
+import pytest
 
 
 def _benchmark_row(
@@ -361,6 +362,174 @@ def test_execute_optimization_run_manages_pool(monkeypatch, tmp_path):
     assert result["variant"]["id"] == "rewrite-budget-7"
     assert get_pool_mock.await_count == 1
     assert close_pool_mock.await_count == 1
+
+
+def test_execute_optimization_run_marks_partial_after_benchmark_failure(
+    monkeypatch,
+    tmp_path,
+):
+    variant_path = tmp_path / "variant.json"
+    variant_path.write_text(
+        json.dumps({"id": "rewrite-budget-7", "settings_overrides": {}}),
+        encoding="utf-8",
+    )
+    benchmark_path = tmp_path / "cases.json"
+    benchmark_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
+
+    run_id = uuid4()
+    candidate_id = uuid4()
+    lane_insert_mock = AsyncMock()
+    partial_candidate_mock = AsyncMock()
+    partial_run_mock = AsyncMock()
+    fail_candidate_mock = AsyncMock()
+    fail_run_mock = AsyncMock()
+    monkeypatch.setattr(
+        "bcn.optimization.runner.create_optimization_run",
+        AsyncMock(return_value=run_id),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.insert_optimization_candidate",
+        AsyncMock(return_value=candidate_id),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.insert_optimization_candidate_lane_result",
+        lane_insert_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.partial_optimization_candidate",
+        partial_candidate_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.partial_optimization_run",
+        partial_run_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.fail_optimization_candidate",
+        fail_candidate_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.fail_optimization_run",
+        fail_run_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.execute_simulation_lane",
+        AsyncMock(
+            side_effect=[
+                {"summary": {"avg_simulated_score": 80}},
+                {"summary": {"avg_simulated_score": 82}},
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.execute_benchmark_lane",
+        AsyncMock(
+            side_effect=RuntimeError("Server disconnected without sending a response.")
+        ),
+    )
+
+    import asyncio
+
+    with pytest.raises(RuntimeError, match="Server disconnected"):
+        asyncio.run(
+            execute_optimization_run(
+                Settings(),
+                variant_path=str(variant_path),
+                benchmark_pack_path=str(benchmark_path),
+                replay_limit=2,
+                replay_since_days=30,
+                benchmark_since_days=30,
+                output_dir=str(tmp_path / "artifacts"),
+                store_db=True,
+                manage_pool=False,
+            )
+        )
+
+    assert lane_insert_mock.await_count == 3
+    assert lane_insert_mock.await_args_list[0].kwargs["lane"] == "replay_champion"
+    assert lane_insert_mock.await_args_list[0].kwargs["status"] == "COMPLETED"
+    assert lane_insert_mock.await_args_list[1].kwargs["lane"] == "replay_candidate"
+    assert lane_insert_mock.await_args_list[1].kwargs["status"] == "COMPLETED"
+    assert lane_insert_mock.await_args_list[2].kwargs["lane"] == "benchmark"
+    assert lane_insert_mock.await_args_list[2].kwargs["status"] == "FAILED"
+    assert partial_candidate_mock.await_count == 1
+    assert partial_run_mock.await_count == 1
+    assert fail_candidate_mock.await_count == 0
+    assert fail_run_mock.await_count == 0
+
+
+def test_execute_optimization_run_fails_when_first_lane_errors(monkeypatch, tmp_path):
+    variant_path = tmp_path / "variant.json"
+    variant_path.write_text(
+        json.dumps({"id": "rewrite-budget-7", "settings_overrides": {}}),
+        encoding="utf-8",
+    )
+    benchmark_path = tmp_path / "cases.json"
+    benchmark_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
+
+    run_id = uuid4()
+    candidate_id = uuid4()
+    lane_insert_mock = AsyncMock()
+    partial_candidate_mock = AsyncMock()
+    partial_run_mock = AsyncMock()
+    fail_candidate_mock = AsyncMock()
+    fail_run_mock = AsyncMock()
+    monkeypatch.setattr(
+        "bcn.optimization.runner.create_optimization_run",
+        AsyncMock(return_value=run_id),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.insert_optimization_candidate",
+        AsyncMock(return_value=candidate_id),
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.insert_optimization_candidate_lane_result",
+        lane_insert_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.partial_optimization_candidate",
+        partial_candidate_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.partial_optimization_run",
+        partial_run_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.fail_optimization_candidate",
+        fail_candidate_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.fail_optimization_run",
+        fail_run_mock,
+    )
+    monkeypatch.setattr(
+        "bcn.optimization.runner.execute_simulation_lane",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+
+    import asyncio
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(
+            execute_optimization_run(
+                Settings(),
+                variant_path=str(variant_path),
+                benchmark_pack_path=str(benchmark_path),
+                replay_limit=2,
+                replay_since_days=30,
+                benchmark_since_days=30,
+                output_dir=str(tmp_path / "artifacts"),
+                store_db=True,
+                manage_pool=False,
+            )
+        )
+
+    assert lane_insert_mock.await_count == 1
+    assert lane_insert_mock.await_args_list[0].kwargs["lane"] == "replay_champion"
+    assert lane_insert_mock.await_args_list[0].kwargs["status"] == "FAILED"
+    assert partial_candidate_mock.await_count == 0
+    assert partial_run_mock.await_count == 0
+    assert fail_candidate_mock.await_count == 1
+    assert fail_run_mock.await_count == 1
 
 
 def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):

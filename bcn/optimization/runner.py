@@ -23,6 +23,8 @@ from bcn.persistence.optimization import insert_optimization_candidate
 from bcn.persistence.optimization import (
     insert_optimization_candidate_lane_result,
 )
+from bcn.persistence.optimization import partial_optimization_candidate
+from bcn.persistence.optimization import partial_optimization_run
 from bcn.persistence.runtime import close_pool
 from bcn.persistence.runtime import get_pool
 
@@ -61,6 +63,9 @@ async def execute_optimization_run(
 
     run_id = None
     candidate_id = None
+    current_lane: str | None = None
+    completed_lanes: list[str] = []
+    overrides_path: str | None = None
     try:
         if manage_pool:
             await get_pool(settings)
@@ -91,6 +96,7 @@ async def execute_optimization_run(
                 variant_payload=variant_spec,
             )
 
+        current_lane = "replay_champion"
         champion_replay = await execute_simulation_lane(
             settings,
             limit=max(0, int(replay_limit)),
@@ -102,6 +108,21 @@ async def execute_optimization_run(
             store_db=False,
             manage_pool=False,
         )
+        if store_db and candidate_id is not None:
+            await insert_optimization_candidate_lane_result(
+                optimization_candidate_id=candidate_id,
+                lane=current_lane,
+                report=champion_replay,
+                summary=champion_replay.get("summary", {}),
+                status="COMPLETED",
+                error_text=None,
+                hard_reject=False,
+                score=float(
+                    champion_replay.get("summary", {}).get("avg_simulated_score", 0.0)
+                ),
+            )
+        completed_lanes.append(current_lane)
+        current_lane = None
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -111,6 +132,7 @@ async def execute_optimization_run(
             json.dump(overrides, handle, ensure_ascii=False, indent=2)
             overrides_path = handle.name
 
+        current_lane = "replay_candidate"
         candidate_replay = await execute_simulation_lane(
             settings,
             limit=max(0, int(replay_limit)),
@@ -123,6 +145,22 @@ async def execute_optimization_run(
             store_db=False,
             manage_pool=False,
         )
+        if store_db and candidate_id is not None:
+            await insert_optimization_candidate_lane_result(
+                optimization_candidate_id=candidate_id,
+                lane=current_lane,
+                report=candidate_replay,
+                summary=candidate_replay.get("summary", {}),
+                status="COMPLETED",
+                error_text=None,
+                hard_reject=False,
+                score=float(
+                    candidate_replay.get("summary", {}).get("avg_simulated_score", 0.0)
+                ),
+            )
+        completed_lanes.append(current_lane)
+        current_lane = None
+        current_lane = "benchmark"
         benchmark_report = await execute_benchmark_lane(
             settings,
             cases_path=str(benchmark_pack_path),
@@ -132,6 +170,24 @@ async def execute_optimization_run(
             store_db=False,
             manage_pool=False,
         )
+        if store_db and candidate_id is not None:
+            await insert_optimization_candidate_lane_result(
+                optimization_candidate_id=candidate_id,
+                lane=current_lane,
+                report=benchmark_report,
+                summary=benchmark_report.get("summary", {}),
+                status="COMPLETED",
+                error_text=None,
+                hard_reject=False,
+                score=float(
+                    benchmark_report.get("summary", {}).get(
+                        "candidate_case_pass_rate",
+                        0.0,
+                    )
+                ),
+            )
+        completed_lanes.append(current_lane)
+        current_lane = None
 
         summary = score_optimization_candidate(
             champion_replay=champion_replay,
@@ -140,39 +196,6 @@ async def execute_optimization_run(
         )
 
         if store_db and candidate_id is not None:
-            await insert_optimization_candidate_lane_result(
-                optimization_candidate_id=candidate_id,
-                lane="replay_champion",
-                report=champion_replay,
-                summary=champion_replay.get("summary", {}),
-                hard_reject=False,
-                score=float(
-                    champion_replay.get("summary", {}).get("avg_simulated_score", 0.0)
-                ),
-            )
-            await insert_optimization_candidate_lane_result(
-                optimization_candidate_id=candidate_id,
-                lane="replay_candidate",
-                report=candidate_replay,
-                summary=candidate_replay.get("summary", {}),
-                hard_reject=bool(summary.get("hard_reject")),
-                score=float(
-                    candidate_replay.get("summary", {}).get("avg_simulated_score", 0.0)
-                ),
-            )
-            await insert_optimization_candidate_lane_result(
-                optimization_candidate_id=candidate_id,
-                lane="benchmark",
-                report=benchmark_report,
-                summary=benchmark_report.get("summary", {}),
-                hard_reject=bool(summary.get("hard_reject")),
-                score=float(
-                    benchmark_report.get("summary", {}).get(
-                        "candidate_case_pass_rate",
-                        0.0,
-                    )
-                ),
-            )
             await complete_optimization_candidate(
                 candidate_id,
                 hard_reject=bool(summary["hard_reject"]),
@@ -200,14 +223,50 @@ async def execute_optimization_run(
         )
         return report
     except Exception as exc:
-        if store_db and candidate_id is not None:
-            await fail_optimization_candidate(
-                candidate_id,
-                summary={"error": str(exc), "variant": variant_spec},
+        partial_summary = {
+            "error": str(exc),
+            "variant": variant_spec,
+            "completed_lanes": completed_lanes,
+            "failed_lane": current_lane,
+        }
+        if (
+            store_db
+            and candidate_id is not None
+            and current_lane is not None
+            and current_lane not in completed_lanes
+        ):
+            await insert_optimization_candidate_lane_result(
+                optimization_candidate_id=candidate_id,
+                lane=current_lane,
+                report={},
+                summary={"error": str(exc)},
+                status="FAILED",
+                error_text=str(exc),
+                hard_reject=False,
+                score=None,
             )
+        if store_db and candidate_id is not None:
+            if completed_lanes:
+                await partial_optimization_candidate(
+                    candidate_id,
+                    summary=partial_summary,
+                )
+            else:
+                await fail_optimization_candidate(
+                    candidate_id,
+                    summary=partial_summary,
+                )
         if store_db and run_id is not None:
-            await fail_optimization_run(run_id, notes=str(exc))
+            if completed_lanes:
+                await partial_optimization_run(run_id, notes=str(exc))
+            else:
+                await fail_optimization_run(run_id, notes=str(exc))
         raise
     finally:
+        if overrides_path:
+            try:
+                Path(overrides_path).unlink(missing_ok=True)
+            except Exception:
+                pass
         if manage_pool:
             await close_pool()
