@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -14,6 +15,7 @@ from bcn.evaluation import build_benchmark_summary
 from bcn.evaluation import build_shadow_preference_pair
 from bcn.evaluation import build_shadow_summary
 from bcn.evaluation import load_settings_with_overrides
+from bcn.evaluation.lanes import run_benchmark_pack
 from bcn.optimization.runner import execute_optimization_run
 from bcn.optimization.scoring import score_optimization_candidate
 import pytest
@@ -136,6 +138,70 @@ def test_build_shadow_preference_pair_skips_low_confidence_or_low_overlap():
     }
 
     assert build_shadow_preference_pair(report) is None
+
+
+@pytest.mark.asyncio
+async def test_run_benchmark_pack_logs_case_progress(monkeypatch, tmp_path, caplog):
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "case_id": "repeat-trim",
+                        "selected_items": [{"id": "1", "title": "Alpha"}],
+                        "history": [],
+                        "reference_markdown": "reference",
+                        "expected_publishable": True,
+                        "issue_tags": ["repeat_trim_required"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _DummyWriter:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "bcn.evaluation.lanes.load_settings_with_overrides",
+        lambda settings, path: (settings, {}),
+    )
+    monkeypatch.setattr(
+        "bcn.evaluation.lanes.build_writer_workflow",
+        lambda settings: _DummyWriter(),
+    )
+    monkeypatch.setattr(
+        "bcn.evaluation.lanes._evaluate_existing_markdown",
+        AsyncMock(
+            return_value={
+                "rubric": {"score": 80},
+                "gate": {"hard_issues": []},
+                "release_passed": True,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.evaluation.lanes._generate_release_candidate",
+        AsyncMock(
+            return_value={
+                "rubric": {"score": 85},
+                "gate": {"hard_issues": []},
+                "release_passed": True,
+            }
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger="bcn.evaluation.lanes"):
+        report = await run_benchmark_pack(Settings(), cases_path=str(cases_path))
+
+    assert report["count"] == 1
+    messages = [record.message for record in caplog.records]
+    assert any("Benchmark case start" in message for message in messages)
+    assert any("case_id=repeat-trim" in message for message in messages)
+    assert any("Benchmark case complete" in message for message in messages)
 
 
 def test_load_settings_with_overrides_validates_file(tmp_path):

@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from pathlib import Path
 from statistics import mean
+import time
 from typing import Any
 
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
@@ -25,6 +27,8 @@ from bcn.service_registry import build_writer_workflow
 
 from .simulation import _strip_cover_image
 from .simulation import score_feedback_rubric
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -547,6 +551,17 @@ async def run_benchmark_pack(
                 str(raw_case.get("reference_markdown") or "")
             )
             expected_publishable = bool(raw_case.get("expected_publishable", True))
+            case_id = str(raw_case.get("case_id") or "")
+            case_tags = _normalize_json(raw_case.get("issue_tags"), [])
+            case_started = time.monotonic()
+            logger.info(
+                "Benchmark case start: case_id=%s mode=%s selected_items=%s expected_publishable=%s tags=%s",
+                case_id,
+                mode,
+                len(selected_items),
+                expected_publishable,
+                case_tags,
+            )
 
             reference_result = await _evaluate_existing_markdown(
                 champion_writer,
@@ -582,12 +597,23 @@ async def run_benchmark_pack(
                 reference_result=reference_result,
                 candidate_result=candidate_result,
             )
+            logger.info(
+                "Benchmark case complete: case_id=%s elapsed_ms=%s champion_pass=%s candidate_pass=%s champion_score=%s candidate_score=%s champion_release=%s candidate_release=%s",
+                case_id,
+                int((time.monotonic() - case_started) * 1000),
+                bool(champion_result["case_pass"]),
+                bool(candidate_result["case_pass"]),
+                int(champion_result.get("rubric", {}).get("score", 0) or 0),
+                int(candidate_result.get("rubric", {}).get("score", 0) or 0),
+                bool(champion_result.get("release_passed")),
+                bool(candidate_result.get("release_passed")),
+            )
 
             row: dict[str, Any] = {
-                "case_id": str(raw_case.get("case_id") or ""),
+                "case_id": case_id,
                 "expected_decision": str(raw_case.get("expected_decision") or ""),
                 "expected_publishable": expected_publishable,
-                "issue_tags": _normalize_json(raw_case.get("issue_tags"), []),
+                "issue_tags": case_tags,
                 "champion": champion_result,
                 "candidate": candidate_result,
                 "reference": reference_result,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 from unittest.mock import AsyncMock
 from unittest.mock import patch
@@ -41,6 +42,7 @@ class TestScraper:
 
             mock_page = AsyncMock()
             mock_context.new_page = AsyncMock(return_value=mock_page)
+            mock_page.url = "https://example.com/post"
 
             mock_el = AsyncMock()
             mock_el.inner_text = AsyncMock(
@@ -53,6 +55,36 @@ class TestScraper:
 
             mock_page.goto.assert_called_once()
             mock_page.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_scrape_logs_start_and_success(self, scraper, caplog):
+        with patch("bcn.common.scraper.async_playwright") as mock_pw_start:
+            mock_pw = AsyncMock()
+            mock_pw_start.return_value.start = AsyncMock(return_value=mock_pw)
+
+            mock_browser = AsyncMock()
+            mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
+
+            mock_context = AsyncMock()
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+            mock_page = AsyncMock()
+            mock_page.url = "https://example.com/final"
+            mock_context.new_page = AsyncMock(return_value=mock_page)
+
+            mock_el = AsyncMock()
+            mock_el.inner_text = AsyncMock(return_value="Readable article content here.")
+            mock_page.query_selector = AsyncMock(return_value=mock_el)
+
+            with caplog.at_level(logging.INFO, logger="bcn.common.scraper"):
+                result = await scraper.scrape("https://example.com/post")
+
+            assert result == "Readable article content here."
+            messages = [record.message for record in caplog.records]
+            assert any("Playwright scrape start" in message for message in messages)
+            assert any("Playwright scrape loaded" in message for message in messages)
+            assert any("Playwright scrape success" in message for message in messages)
+            assert any("selector=article" in message for message in messages)
 
     @pytest.mark.asyncio
     async def test_falls_back_to_body(self, scraper):
@@ -158,6 +190,39 @@ class TestScraper:
             assert status == 200
             assert body == "feed body"
             mock_context.request.fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fetch_text_logs_redirect_and_completion(self, scraper, caplog):
+        with patch("bcn.common.scraper.async_playwright") as mock_pw_start:
+            mock_pw = AsyncMock()
+            mock_pw_start.return_value.start = AsyncMock(return_value=mock_pw)
+            mock_browser = AsyncMock()
+            mock_pw.chromium.launch = AsyncMock(return_value=mock_browser)
+            mock_context = AsyncMock()
+            mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+            redirect_response = AsyncMock()
+            redirect_response.status = 302
+            redirect_response.headers = {"location": "/next"}
+
+            final_response = AsyncMock()
+            final_response.status = 200
+            final_response.headers = {}
+            final_response.text = AsyncMock(return_value="feed body")
+
+            mock_context.request.fetch = AsyncMock(
+                side_effect=[redirect_response, final_response]
+            )
+
+            with caplog.at_level(logging.INFO, logger="bcn.common.scraper"):
+                status, body = await scraper.fetch_text("https://example.com/feed.xml")
+
+            assert status == 200
+            assert body == "feed body"
+            messages = [record.message for record in caplog.records]
+            assert any("Playwright fetch start" in message for message in messages)
+            assert any("Playwright fetch redirect" in message for message in messages)
+            assert any("Playwright fetch success" in message for message in messages)
 
     @pytest.mark.asyncio
     async def test_ensure_browser_initializes_playwright_once_under_concurrency(self, scraper):

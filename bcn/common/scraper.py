@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
+import json
 import logging
 import os
-import json
+import time
 from typing import Iterable, Optional
 from urllib.parse import urljoin
 
@@ -21,6 +23,8 @@ from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
 
 logger = logging.getLogger(__name__)
+_SCRAPER_OP_IDS = itertools.count(1)
+
 
 def _is_live_status(status: int) -> bool:
     """Treat any non-server-error HTTP response as reachable.
@@ -132,6 +136,64 @@ class Scraper:
         text = (url or "").strip().lower()
         return text.startswith("http://") or text.startswith("https://")
 
+    @staticmethod
+    def _next_operation_id(kind: str) -> str:
+        return f"{kind}-{next(_SCRAPER_OP_IDS)}"
+
+    @staticmethod
+    def _page_url(page: object, fallback: str) -> str:
+        page_url = getattr(page, "url", None)
+        return page_url if isinstance(page_url, str) and page_url else fallback
+
+    async def _attach_page_logging(self, page: object, op_id: str, url: str) -> None:
+        def _request_failed(request: object) -> None:
+            request_url = getattr(request, "url", "") or url
+            method = getattr(request, "method", "") or ""
+            failure = ""
+            try:
+                failure_data = request.failure() if callable(getattr(request, "failure", None)) else None
+                if isinstance(failure_data, dict):
+                    failure = str(failure_data.get("errorText") or "")
+            except Exception:
+                failure = ""
+            logger.warning(
+                "Playwright page request failed [%s]: method=%s url=%s error=%s",
+                op_id,
+                method,
+                request_url,
+                failure or "unknown",
+            )
+
+        def _page_error(exc: object) -> None:
+            logger.warning("Playwright page error [%s] for %s: %s", op_id, url, exc)
+
+        def _console(message: object) -> None:
+            try:
+                message_type = message.type() if callable(getattr(message, "type", None)) else ""
+                message_text = message.text() if callable(getattr(message, "text", None)) else str(message)
+            except Exception:
+                return
+            if message_type in {"warning", "error"}:
+                logger.info(
+                    "Playwright console [%s]: type=%s url=%s text=%s",
+                    op_id,
+                    message_type,
+                    url,
+                    message_text,
+                )
+
+        for event, handler in (
+            ("requestfailed", _request_failed),
+            ("pageerror", _page_error),
+            ("console", _console),
+        ):
+            try:
+                result = page.on(event, handler)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                continue
+
     async def _guard_request(self, route: PWRoute, request: PWRequest) -> None:
         """Block internal/private HTTP requests at the browser network layer."""
         request_url = request.url or ""
@@ -173,10 +235,27 @@ class Scraper:
             logger.warning("Blocked URL by SSRF policy: %s (%s)", url, exc)
             return ""
 
+        op_id = self._next_operation_id("scrape")
+        started = time.monotonic()
+        logger.info(
+            "Playwright scrape start [%s]: url=%s timeout_ms=%s settle_ms=%s",
+            op_id,
+            url,
+            timeout_ms,
+            settle_ms,
+        )
         context = await self._ensure_browser()
         page = await context.new_page()
+        await self._attach_page_logging(page, op_id, url)
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            logger.info(
+                "Playwright scrape loaded [%s]: initial_url=%s final_url=%s elapsed_ms=%s",
+                op_id,
+                url,
+                self._page_url(page, url),
+                int((time.monotonic() - started) * 1000),
+            )
             if settle_ms > 0:
                 await page.wait_for_timeout(settle_ms)
 
@@ -188,13 +267,36 @@ class Scraper:
                         continue
                     text = (await el.inner_text()).strip()
                     if text and len(text) >= self.min_content_length:
+                        logger.info(
+                            "Playwright scrape success [%s]: url=%s final_url=%s selector=%s chars=%s elapsed_ms=%s",
+                            op_id,
+                            url,
+                            self._page_url(page, url),
+                            selector,
+                            len(text),
+                            int((time.monotonic() - started) * 1000),
+                        )
                         return text[: self.content_limit]
                 except Exception:
                     continue
 
+            logger.info(
+                "Playwright scrape empty [%s]: url=%s final_url=%s elapsed_ms=%s",
+                op_id,
+                url,
+                self._page_url(page, url),
+                int((time.monotonic() - started) * 1000),
+            )
             return ""
         except Exception as exc:
-            logger.warning("Playwright scrape failed for %s: %s", url, exc)
+            logger.warning(
+                "Playwright scrape failed [%s] for %s after %sms (final_url=%s): %s",
+                op_id,
+                url,
+                int((time.monotonic() - started) * 1000),
+                self._page_url(page, url),
+                exc,
+            )
             return ""
         finally:
             await page.close()
@@ -225,6 +327,15 @@ class Scraper:
             logger.warning("Blocked URL by SSRF policy: %s (%s)", url, exc)
             return 0, ""
 
+        op_id = self._next_operation_id("fetch")
+        started = time.monotonic()
+        logger.info(
+            "Playwright fetch start [%s]: method=%s url=%s timeout_ms=%s",
+            op_id,
+            method.upper(),
+            url,
+            timeout_ms,
+        )
         context = await self._ensure_browser()
         current_url = url
         current_method = method.upper()
@@ -243,11 +354,25 @@ class Scraper:
 
                 if status not in {301, 302, 303, 307, 308}:
                     text = await response.text()
+                    logger.info(
+                        "Playwright fetch success [%s]: method=%s url=%s final_url=%s status=%s redirects=%s bytes=%s elapsed_ms=%s",
+                        op_id,
+                        method.upper(),
+                        url,
+                        current_url,
+                        status,
+                        redirects,
+                        len(text),
+                        int((time.monotonic() - started) * 1000),
+                    )
                     return status, text
 
                 if redirects >= max_redirects:
                     logger.warning(
-                        "Playwright fetch exceeded redirect limit for %s", url
+                        "Playwright fetch exceeded redirect limit [%s] for %s after %sms",
+                        op_id,
+                        url,
+                        int((time.monotonic() - started) * 1000),
                     )
                     return 0, ""
 
@@ -266,6 +391,13 @@ class Scraper:
 
                 next_url = urljoin(current_url, location)
                 assert_public_http_url(next_url, trusted_hosts=self.trusted_hosts)
+                logger.info(
+                    "Playwright fetch redirect [%s]: status=%s from=%s to=%s",
+                    op_id,
+                    status,
+                    current_url,
+                    next_url,
+                )
                 current_url = next_url
                 if status in {301, 302, 303} and current_method not in {"GET", "HEAD"}:
                     current_method = "GET"
@@ -274,7 +406,13 @@ class Scraper:
             logger.warning("Blocked redirect URL by SSRF policy: %s (%s)", url, exc)
             return 0, ""
         except Exception as exc:
-            logger.warning("Playwright fetch failed for %s: %s", url, exc)
+            logger.warning(
+                "Playwright fetch failed [%s] for %s after %sms: %s",
+                op_id,
+                url,
+                int((time.monotonic() - started) * 1000),
+                exc,
+            )
             return 0, ""
 
     async def fetch_text_or_raise(
