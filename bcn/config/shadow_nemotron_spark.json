@@ -1,0 +1,11 @@
+{
+  "llm_provider_writer": "openai_compat",
+  "llm_base_url_writer": "http://spark_bridge:8000/v1",
+  "llm_model_writer": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+  "llm_provider_critic": "openai_compat",
+  "llm_base_url_critic": "http://spark_bridge:8000/v1",
+  "llm_model_critic": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4",
+  "llm_provider_verifier": "openai_compat",
+  "llm_base_url_verifier": "http://spark_bridge:8000/v1",
+  "llm_model_verifier": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
+}
