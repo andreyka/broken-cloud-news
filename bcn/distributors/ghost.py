@@ -23,6 +23,10 @@ from bcn.services.writer.rendering import render_html_body
 logger = logging.getLogger(__name__)
 
 _BODY_TAG_RE = re.compile(r"(?is)<body[^>]*>(.*?)</body>")
+_GHOST_API_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_GHOST_IMAGE_FETCH_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+_GHOST_IMAGE_UPLOAD_TIMEOUT = httpx.Timeout(180.0, connect=20.0)
+_GHOST_IMAGE_UPLOAD_ATTEMPTS = 2
 
 
 def _b64url(data: bytes) -> str:
@@ -56,7 +60,7 @@ class GhostDistributor:
         self.admin_api_key = str(admin_api_key or "").strip()
         self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
         self._redaction_secrets = (self.admin_api_key,)
-        self._client = httpx.AsyncClient(timeout=30)
+        self._client = httpx.AsyncClient(timeout=_GHOST_API_TIMEOUT)
         self.last_result: dict[str, Any] = {}
 
     async def close(self) -> None:
@@ -186,7 +190,10 @@ class GhostDistributor:
         except URLValidationError as exc:
             raise ValueError(f"Blocked cover image URL: {exc}") from exc
 
-        image_response = await self._client.get(cover_image_url, timeout=30)
+        image_response = await self._client.get(
+            cover_image_url,
+            timeout=_GHOST_IMAGE_FETCH_TIMEOUT,
+        )
         image_response.raise_for_status()
         mime_type = (
             image_response.headers.get("content-type", "image/png").split(";")[0].strip()
@@ -202,23 +209,39 @@ class GhostDistributor:
         mime_type: str,
         image_bytes: bytes,
     ) -> str:
-        response = await self._client.post(
-            f"{self.admin_api_url}/images/upload/",
-            headers={
-                "Authorization": f"Ghost {self._build_jwt()}",
-                "Accept": "application/json",
-                "Accept-Version": "v6.0",
-            },
-            data={"purpose": "image", "ref": filename},
-            files={"file": (filename, image_bytes, mime_type)},
-        )
-        response.raise_for_status()
-        response_json = response.json()
-        image = ((response_json or {}).get("images") or [{}])[0]
-        uploaded_url = str(image.get("url") or "").strip()
-        if not uploaded_url:
-            raise ValueError("Ghost image upload returned no URL")
-        return uploaded_url
+        timeout_exc: httpx.ReadTimeout | None = None
+        for attempt in range(1, _GHOST_IMAGE_UPLOAD_ATTEMPTS + 1):
+            try:
+                response = await self._client.post(
+                    f"{self.admin_api_url}/images/upload/",
+                    headers={
+                        "Authorization": f"Ghost {self._build_jwt()}",
+                        "Accept": "application/json",
+                        "Accept-Version": "v6.0",
+                    },
+                    data={"purpose": "image", "ref": filename},
+                    files={"file": (filename, image_bytes, mime_type)},
+                    timeout=_GHOST_IMAGE_UPLOAD_TIMEOUT,
+                )
+                response.raise_for_status()
+                response_json = response.json()
+                image = ((response_json or {}).get("images") or [{}])[0]
+                uploaded_url = str(image.get("url") or "").strip()
+                if not uploaded_url:
+                    raise ValueError("Ghost image upload returned no URL")
+                return uploaded_url
+            except httpx.ReadTimeout as exc:
+                timeout_exc = exc
+                if attempt >= _GHOST_IMAGE_UPLOAD_ATTEMPTS:
+                    break
+                logger.warning(
+                    "Ghost image upload timed out on attempt %s/%s; retrying",
+                    attempt,
+                    _GHOST_IMAGE_UPLOAD_ATTEMPTS,
+                )
+        if timeout_exc is not None:
+            raise timeout_exc
+        raise RuntimeError("Ghost image upload failed without raising an exception")
 
     def _extract_title(self, briefing: dict[str, Any]) -> str:
         subject = str(briefing.get("email_subject") or "").strip()

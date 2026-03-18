@@ -436,6 +436,56 @@ class TestGhostDistributor:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_send_retries_feature_image_upload_after_timeout(self):
+        dist = self._make_dist()
+        respx.get("https://img.example/cover.png").mock(
+            return_value=httpx.Response(
+                200,
+                content=b"fake",
+                headers={"content-type": "image/png"},
+            )
+        )
+        upload_route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/images/upload/"
+        ).mock(
+            side_effect=[
+                httpx.ReadTimeout("slow upload"),
+                httpx.Response(
+                    201,
+                    json={
+                        "images": [
+                            {"url": "https://cdn.ghost.io/content/images/retried-cover.png"}
+                        ]
+                    },
+                ),
+            ]
+        )
+        route = respx.post(
+            "https://testpub.ghost.io/ghost/api/admin/posts/?source=html"
+        ).mock(
+            return_value=httpx.Response(
+                201, json={"posts": [{"id": "1", "status": "published"}]}
+            )
+        )
+
+        ok = await dist.send(
+            {
+                "content_markdown": "Body text here",
+                "cover_image_url": "https://img.example/cover.png",
+            }
+        )
+
+        assert ok is True
+        assert upload_route.call_count == 2
+        payload = json.loads(route.calls[0].request.content.decode("utf-8"))
+        assert (
+            payload["posts"][0]["feature_image"]
+            == "https://cdn.ghost.io/content/images/retried-cover.png"
+        )
+        assert "feature_image_error" not in dist.last_result
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_send_failure_on_api_error(self):
         dist = self._make_dist()
         respx.post("https://testpub.ghost.io/ghost/api/admin/posts/?source=html").mock(
