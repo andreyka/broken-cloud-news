@@ -546,8 +546,20 @@ class TestGhostDistributor:
 class TestSubstackDistributor:
     PUB_URL = "https://testpub.substack.com"
 
-    def _make_dist(self, sid: str = "fake-sid") -> SubstackDistributor:
-        return SubstackDistributor(publication_url=self.PUB_URL, sid=sid)
+    def _make_dist(
+        self,
+        sid: str = "fake-sid",
+        *,
+        ghost_admin_api_url: str = "",
+        ghost_admin_api_key: str = "",
+    ) -> SubstackDistributor:
+        return SubstackDistributor(
+            publication_url=self.PUB_URL,
+            sid=sid,
+            trusted_image_hosts=("comfy",),
+            ghost_admin_api_url=ghost_admin_api_url,
+            ghost_admin_api_key=ghost_admin_api_key,
+        )
 
     @staticmethod
     def _patch_page(
@@ -619,6 +631,42 @@ class TestSubstackDistributor:
         payload = args[1]
         assert "data:image/png" not in payload["body"]
         assert "Hello world" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_send_hosts_non_public_cover_via_ghost(self):
+        dist = self._make_dist(
+            ghost_admin_api_url="https://ghost.example",
+            ghost_admin_api_key="ghost-id:" + ("ab" * 32),
+        )
+        page = self._patch_page(
+            dist,
+            [
+                {"id": 9},
+                {"slug": "daily-post"},
+            ],
+        )
+        assert dist._ghost_image_host is not None
+        dist._ghost_image_host._load_cover_image_bytes = AsyncMock(
+            return_value=("cover.png", "image/png", b"\x89PNG\r\n")
+        )
+        dist._ghost_image_host._upload_image = AsyncMock(
+            return_value="https://cdn.ghost.io/content/images/substack-cover.png"
+        )
+
+        ok = await dist.send(
+            {
+                "content_markdown": "Hello world",
+                "cover_image_url": "http://comfy:8188/view?filename=cover.png",
+            }
+        )
+
+        assert ok is True
+        args, _kwargs = page.evaluate.await_args_list[0]
+        payload = args[1]
+        assert "https://cdn.ghost.io/content/images/substack-cover.png" in payload["body"]
+        assert dist.last_result["feature_image_url"] == (
+            "https://cdn.ghost.io/content/images/substack-cover.png"
+        )
 
     @pytest.mark.asyncio
     async def test_send_reports_safe_error(self):

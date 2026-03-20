@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from datetime import datetime
 from datetime import timezone
 import json
 import logging
+import os
 import re
 from typing import Any
 from typing import Optional
@@ -19,6 +21,9 @@ from playwright.async_api import Page
 from playwright.async_api import Playwright
 
 from bcn.common.secrets import redact_error_text
+from bcn.common.url_policy import assert_public_http_url
+from bcn.common.url_policy import URLValidationError
+from bcn.distributors.ghost import GhostDistributor
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +82,11 @@ async (draftId) => {
 """
 
 
-def _build_substack_body(briefing: Any) -> str:
+def _build_substack_body(briefing: Any, *, cover_url: str = "") -> str:
     """Render BCN markdown into Substack's ProseMirror-style document JSON."""
     markdown = str(briefing.get("content_markdown") or "").strip()
-    cover_url = str(briefing.get("cover_image_url") or "").strip()
-    if cover_url and not cover_url.startswith(("http://", "https://")):
-        logger.info("Skipping unsupported Substack cover source")
-        cover_url = ""
-    if cover_url and not markdown.startswith("!["):
-        markdown = f"![Daily Cover]({cover_url})\n\n{markdown}".strip()
+    if cover_url:
+        markdown = _prepend_cover_block(markdown, cover_url=cover_url)
 
     if not markdown:
         fallback = str(briefing.get("content_html") or "").strip()
@@ -122,6 +123,18 @@ def _strip_html(html_text: str) -> str:
     text = re.sub(r"(?i)</h[1-6]\\s*>", "\n\n", text)
     text = re.sub(r"(?is)<[^>]+>", "", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _prepend_cover_block(markdown: str, *, cover_url: str) -> str:
+    """Ensure the resolved cover image renders as the first block."""
+    blocks = [block.strip() for block in str(markdown or "").split("\n\n") if block.strip()]
+    if blocks and _parse_image_block(blocks[0]):
+        blocks = blocks[1:]
+    body = "\n\n".join(blocks).strip()
+    cover_block = f"![Daily Cover]({cover_url})"
+    if not body:
+        return cover_block
+    return f"{cover_block}\n\n{body}"
 
 
 def _parse_image_block(block: str) -> dict[str, Any] | None:
@@ -210,10 +223,29 @@ def _parse_inline_nodes(text: str) -> list[dict[str, Any]]:
 class SubstackDistributor:
     """Publishes briefings to Substack as newsletter posts."""
 
-    def __init__(self, publication_url: str, sid: str) -> None:
+    def __init__(
+        self,
+        publication_url: str,
+        sid: str,
+        *,
+        trusted_image_hosts: Iterable[str] | None = None,
+        ghost_admin_api_url: str = "",
+        ghost_admin_api_key: str = "",
+    ) -> None:
         self.publication_url: str = publication_url.rstrip("/")
         self._sid: str = sid
-        self._redaction_secrets: tuple[str, ...] = (self._sid,)
+        self._ghost_image_host: GhostDistributor | None = None
+        if str(ghost_admin_api_url or "").strip() and str(ghost_admin_api_key or "").strip():
+            self._ghost_image_host = GhostDistributor(
+                admin_api_url=ghost_admin_api_url,
+                admin_api_key=ghost_admin_api_key,
+                trusted_image_hosts=trusted_image_hosts,
+            )
+        self._redaction_secrets: tuple[str, ...] = tuple(
+            value
+            for value in (self._sid, str(ghost_admin_api_key or "").strip())
+            if value
+        )
         self.last_result: dict[str, Any] = {}
 
         self._pw: Optional[Playwright] = None
@@ -235,7 +267,11 @@ class SubstackDistributor:
             domain = parsed.hostname or parsed.netloc
 
             pw = await async_playwright().start()
-            browser = await pw.chromium.launch(headless=True)
+            launch_kwargs: dict[str, object] = {"headless": True}
+            proxy_server = self._playwright_proxy_server()
+            if proxy_server:
+                launch_kwargs["proxy"] = {"server": proxy_server}
+            browser = await pw.chromium.launch(**launch_kwargs)
             context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -282,14 +318,28 @@ class SubstackDistributor:
                 await browser.close()
             if pw:
                 await pw.stop()
+            if self._ghost_image_host is not None:
+                await self._ghost_image_host.close()
+
+    @staticmethod
+    def _playwright_proxy_server() -> str | None:
+        """Resolve proxy server URL for Playwright, if configured."""
+        for key in ("BCN_PLAYWRIGHT_PROXY", "HTTPS_PROXY", "HTTP_PROXY"):
+            value = os.getenv(key, "").strip()
+            if value:
+                return value
+        return None
 
     async def send(self, briefing: Any) -> bool:
         """Publish a briefing to Substack."""
+        self.last_result = {}
         try:
             page = await self._ensure_page()
 
             title = self._extract_title(briefing)
-            body = _build_substack_body(briefing)
+            cover_url = await self._prepare_cover_image_url(briefing)
+            cover_image_error = str(self.last_result.get("feature_image_error") or "")
+            body = _build_substack_body(briefing, cover_url=cover_url)
 
             draft_data = await page.evaluate(
                 _CREATE_DRAFT_JS,
@@ -315,11 +365,55 @@ class SubstackDistributor:
                 "post_url": post_url,
                 "primary_message_id": post_url,
             }
+            if cover_url:
+                self.last_result["feature_image_url"] = cover_url
+            if cover_image_error:
+                self.last_result["feature_image_error"] = cover_image_error
             return True
         except Exception as exc:
             safe_error = redact_error_text(exc, secrets=self._redaction_secrets)
             logger.error("Substack send failed: %s", safe_error)
             self.last_result = {"error": safe_error}
+            return False
+
+    async def _prepare_cover_image_url(self, briefing: Any) -> str:
+        """Return a publicly embeddable cover image URL for Substack."""
+        cover_image_url = str(briefing.get("cover_image_url") or "").strip()
+        if not cover_image_url:
+            return ""
+
+        if self._is_public_http_url(cover_image_url):
+            return cover_image_url
+
+        if self._ghost_image_host is None:
+            self.last_result["feature_image_error"] = (
+                "Substack cover image requires a public URL or Ghost image hosting"
+            )
+            logger.info("Skipping Substack cover image without public hosting path")
+            return ""
+
+        try:
+            filename, mime_type, image_bytes = (
+                await self._ghost_image_host._load_cover_image_bytes(cover_image_url)
+            )
+            return await self._ghost_image_host._upload_image(
+                filename=filename,
+                mime_type=mime_type,
+                image_bytes=image_bytes,
+            )
+        except Exception as exc:
+            safe_error = redact_error_text(exc, secrets=self._redaction_secrets)
+            logger.warning("Substack cover image upload skipped: %s", safe_error)
+            self.last_result["feature_image_error"] = safe_error
+            return ""
+
+    @staticmethod
+    def _is_public_http_url(url: str) -> bool:
+        """Return whether *url* is directly embeddable by Substack."""
+        try:
+            assert_public_http_url(url)
+            return True
+        except URLValidationError:
             return False
 
     def _extract_title(self, briefing: Any) -> str:

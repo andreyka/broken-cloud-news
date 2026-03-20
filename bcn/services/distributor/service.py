@@ -159,6 +159,9 @@ class DistributorService:
                     SubstackDistributor(
                         publication_url=self.settings.substack_publication_url,
                         sid=self.settings.substack_sid,
+                        trusted_image_hosts=trusted_image_hosts,
+                        ghost_admin_api_url=self.settings.ghost_admin_api_url,
+                        ghost_admin_api_key=self.settings.ghost_admin_api_key,
                     ),
                 )
             )
