@@ -1,4 +1,4 @@
-"""Distribution channel implementations (Telegram, Email, Slack, Discord)."""
+"""Distribution channel implementations."""
 
 from __future__ import annotations
 

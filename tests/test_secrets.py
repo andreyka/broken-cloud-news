@@ -41,6 +41,7 @@ def test_redact_sensitive_value_masks_nested_distribution_metadata():
         discord_bot_token="discord-super-secret",
         slack_webhook_url=webhook_url,
         smtp_password="smtp-password",
+        substack_sid="substack-super-secret",
         ghost_admin_api_key="ghost-id:" + ("ab" * 32),
     )
 
@@ -50,6 +51,7 @@ def test_redact_sensitive_value_masks_nested_distribution_metadata():
             webhook_url,
             "Authorization: Bot discord-super-secret",
             {"smtp": "smtp-password"},
+            {"substack": "substack-super-secret"},
             {"ghost": "ghost-id:" + ("ab" * 32)},
         ],
     }
@@ -64,6 +66,7 @@ def test_redact_sensitive_value_masks_nested_distribution_metadata():
     assert webhook_url not in text
     assert "discord-super-secret" not in text
     assert "smtp-password" not in text
+    assert "substack-super-secret" not in text
     assert "ghost-id:" not in text
 
 

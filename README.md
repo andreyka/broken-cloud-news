@@ -248,7 +248,7 @@ Current service set:
 | `verifier` | `8083` | `/v1/evaluate` | deterministic and LLM-backed factual verification |
 | `collector` | `8084` | `/v1/collect` | source collection, normalization, and bounded enrichment |
 | `analyst` | `8085` | `/v1/analyze-item` | scoring, summarization, tagging, canonicalization |
-| `distributor` | `8086` | `/v1/deliver` | outbound delivery to Telegram, Discord, Ghost, and email |
+| `distributor` | `8086` | `/v1/deliver` | outbound delivery to Telegram, Discord, Ghost, Substack, and email |
 
 Every service also exposes `/v1/healthz`.
 

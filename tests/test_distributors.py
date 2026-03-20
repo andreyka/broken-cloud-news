@@ -11,6 +11,7 @@ from bcn.distributors.ghost import GhostDistributor
 from bcn.distributors.slack import SlackDistributor
 import json
 
+from bcn.distributors.substack import SubstackDistributor
 from bcn.distributors.telegram import TelegramDistributor
 
 
@@ -540,3 +541,100 @@ class TestGhostDistributor:
         ok = await dist.send({"content_markdown": "content"})
         assert ok is False
         assert admin_key not in str(dist.last_result.get("error", ""))
+
+
+class TestSubstackDistributor:
+    PUB_URL = "https://testpub.substack.com"
+
+    def _make_dist(self, sid: str = "fake-sid") -> SubstackDistributor:
+        return SubstackDistributor(publication_url=self.PUB_URL, sid=sid)
+
+    @staticmethod
+    def _patch_page(
+        dist: SubstackDistributor,
+        evaluate_results: list[dict[str, object]],
+    ) -> AsyncMock:
+        call_index = {"i": 0}
+
+        async def _fake_evaluate(_expr, _arg=None):
+            idx = call_index["i"]
+            call_index["i"] += 1
+            return evaluate_results[idx]
+
+        mock_page = AsyncMock()
+        mock_page.evaluate = AsyncMock(side_effect=_fake_evaluate)
+        dist._page = mock_page
+        return mock_page
+
+    @pytest.mark.asyncio
+    async def test_send_creates_draft_and_publishes(self):
+        dist = self._make_dist()
+        self._patch_page(
+            dist,
+            [
+                {"id": 42},
+                {"slug": "broken-cloud-news-2026-03-11"},
+            ],
+        )
+
+        ok = await dist.send(
+            {
+                "content_html": "<p>Briefing body</p>",
+                "content_markdown": "Briefing body",
+                "email_subject": "BCN Daily - 2026-03-11",
+            }
+        )
+
+        assert ok is True
+        assert dist.last_result["draft_id"] == 42
+        assert (
+            dist.last_result["post_url"]
+            == "https://testpub.substack.com/p/broken-cloud-news-2026-03-11"
+        )
+        assert (
+            dist.last_result["primary_message_id"]
+            == "https://testpub.substack.com/p/broken-cloud-news-2026-03-11"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_skips_unsupported_data_url_cover(self):
+        dist = self._make_dist()
+        page = self._patch_page(
+            dist,
+            [
+                {"id": 9},
+                {"slug": "daily-post"},
+            ],
+        )
+
+        ok = await dist.send(
+            {
+                "content_markdown": "Hello world",
+                "cover_image_url": "data:image/png;base64,ZmFrZQ==",
+            }
+        )
+
+        assert ok is True
+        args, _kwargs = page.evaluate.await_args_list[0]
+        payload = args[1]
+        assert "data:image/png" not in payload["body"]
+        assert "Hello world" in payload["body"]
+
+    @pytest.mark.asyncio
+    async def test_send_reports_safe_error(self):
+        dist = self._make_dist(sid="super-secret-substack-sid")
+        self._patch_page(
+            dist,
+            [
+                {
+                    "error": True,
+                    "status": 403,
+                    "body": "bad cookie super-secret-substack-sid",
+                }
+            ],
+        )
+
+        ok = await dist.send({"content_markdown": "Body"})
+
+        assert ok is False
+        assert "super-secret-substack-sid" not in json.dumps(dist.last_result)
