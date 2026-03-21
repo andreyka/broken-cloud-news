@@ -774,3 +774,39 @@ def test_run_command_delegates_to_workflow_daemon_service(monkeypatch):
     assert isinstance(settings_arg, Settings)
     assert daemon_mock.await_args.kwargs["emit"] is click.echo
     assert daemon_mock.await_args.kwargs == {"emit": click.echo}
+
+
+def test_scheduler_command_delegates_to_scheduler_service(monkeypatch):
+    runner = CliRunner()
+    scheduler_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(cli_module, "run_scheduler", scheduler_mock)
+
+    result = runner.invoke(cli_module.cli, ["scheduler"])
+
+    assert result.exit_code == 0
+    assert scheduler_mock.await_count == 1
+    settings_arg = scheduler_mock.await_args.args[0]
+    assert isinstance(settings_arg, Settings)
+    assert scheduler_mock.await_args.kwargs == {"emit": click.echo}
+
+
+def test_worker_command_delegates_to_queue_worker(monkeypatch):
+    runner = CliRunner()
+    worker_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(cli_module, "run_worker", worker_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["worker", "--lane", "publish", "--lane", "evaluation", "--once"],
+    )
+
+    assert result.exit_code == 0
+    assert worker_mock.await_count == 1
+    settings_arg = worker_mock.await_args.args[0]
+    assert isinstance(settings_arg, Settings)
+    assert worker_mock.await_args.kwargs == {
+        "lanes": ("publish", "evaluation"),
+        "emit": click.echo,
+        "worker_name": None,
+        "once": True,
+    }

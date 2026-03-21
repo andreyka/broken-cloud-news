@@ -55,6 +55,12 @@ def register_evaluation_commands(cli: click.Group, workflow_mode_choices: click.
         show_default=True,
         help="Persist simulation runs/results in PostgreSQL.",
     )
+    @click.option(
+        "--enqueue/--no-enqueue",
+        default=False,
+        show_default=True,
+        help="Queue the replay onto an evaluation worker instead of running inline.",
+    )
     def simulate(
         limit: int,
         since_days: int,
@@ -63,11 +69,33 @@ def register_evaluation_commands(cli: click.Group, workflow_mode_choices: click.
         with_critic_rewrites: bool,
         reanalyze_items: bool,
         store_db: bool,
+        enqueue: bool,
     ) -> None:
         """Simulate historical briefings and compare against actual distributed posts."""
         settings = build_settings()
 
         async def _run() -> None:
+            if enqueue:
+                if not store_db:
+                    raise click.ClickException(
+                        "Queued simulation runs require --store-db so they can checkpoint and resume."
+                    )
+                from bcn.workflows.queue import enqueue_simulation_job
+
+                job_id = await enqueue_simulation_job(
+                    settings,
+                    limit=max(0, int(limit)),
+                    since_days=max(0, int(since_days)),
+                    output_path=output_path,
+                    include_text=include_text,
+                    with_critic_rewrites=with_critic_rewrites,
+                    reanalyze_items=reanalyze_items,
+                    source="cli",
+                )
+                click.echo(f"Queued simulation job: {job_id}")
+                click.echo("Run `bcn worker --lane evaluation` to process it.")
+                return
+
             from bcn.evaluation.service import execute_simulation_lane
 
             report = await execute_simulation_lane(
@@ -258,17 +286,43 @@ def register_evaluation_commands(cli: click.Group, workflow_mode_choices: click.
         show_default=True,
         help="Persist benchmark runs in PostgreSQL.",
     )
+    @click.option(
+        "--enqueue/--no-enqueue",
+        default=False,
+        show_default=True,
+        help="Queue the benchmark onto an evaluation worker instead of running inline.",
+    )
     def benchmark(
         cases_path: str,
         candidate_overrides: str | None,
         output_path: str,
         include_text: bool,
         store_db: bool,
+        enqueue: bool,
     ) -> None:
         """Run champion and challenger against the benchmark pack."""
         settings = build_settings()
 
         async def _run() -> None:
+            if enqueue:
+                if not store_db:
+                    raise click.ClickException(
+                        "Queued benchmark runs require --store-db so they can checkpoint and resume."
+                    )
+                from bcn.workflows.queue import enqueue_benchmark_job
+
+                job_id = await enqueue_benchmark_job(
+                    settings,
+                    cases_path=cases_path,
+                    candidate_overrides_path=candidate_overrides,
+                    output_path=output_path,
+                    include_text=include_text,
+                    source="cli",
+                )
+                click.echo(f"Queued benchmark job: {job_id}")
+                click.echo("Run `bcn worker --lane evaluation` to process it.")
+                return
+
             from bcn.evaluation.service import execute_benchmark_lane
 
             report = await execute_benchmark_lane(

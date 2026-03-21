@@ -279,7 +279,7 @@ def register_core_commands(
 
     @cli.command()
     def run() -> None:
-        """Start daemon mode with the scheduler."""
+        """Start the scheduler plus default publish/collection/analysis/eval workers."""
         settings = build_settings()
 
         async def _daemon() -> None:
@@ -292,6 +292,105 @@ def register_core_commands(
             run_async(_daemon)
         except KeyboardInterrupt:
             click.echo("\nShutting down...")
+
+    @cli.command("scheduler")
+    def scheduler() -> None:
+        """Run the enqueue-only scheduler without executing jobs inline."""
+        settings = build_settings()
+
+        async def _scheduler() -> None:
+            await bindings.run_scheduler(
+                settings,
+                emit=click.echo,
+            )
+
+        try:
+            run_async(_scheduler)
+        except KeyboardInterrupt:
+            click.echo("\nShutting down...")
+
+    @cli.command("worker")
+    @click.option(
+        "--lane",
+        "lanes",
+        type=click.Choice(["publish", "collection", "analysis", "evaluation"]),
+        multiple=True,
+        help="Only process jobs from these lanes (repeatable). Defaults to all lanes.",
+    )
+    @click.option(
+        "--worker-name",
+        type=str,
+        help="Optional worker label used in queue lease ownership.",
+    )
+    @click.option(
+        "--once",
+        is_flag=True,
+        help="Process at most one job per selected lane, then exit.",
+    )
+    def worker(lanes: tuple[str, ...], worker_name: str | None, once: bool) -> None:
+        """Run durable workflow workers that lease jobs from the queue."""
+        settings = build_settings()
+
+        async def _worker() -> None:
+            await bindings.run_worker(
+                settings,
+                lanes=lanes,
+                emit=click.echo,
+                worker_name=worker_name,
+                once=once,
+            )
+
+        try:
+            run_async(_worker)
+        except KeyboardInterrupt:
+            click.echo("\nShutting down...")
+
+    @cli.command("workflow-jobs")
+    @click.option(
+        "--lane",
+        type=click.Choice(["publish", "collection", "analysis", "evaluation"]),
+        help="Filter by workflow lane.",
+    )
+    @click.option(
+        "--limit",
+        type=int,
+        default=20,
+        show_default=True,
+        help="How many recent jobs to show.",
+    )
+    def workflow_jobs(lane: str | None, limit: int) -> None:
+        """List recent durable workflow jobs."""
+        settings = build_settings()
+
+        async def _run() -> None:
+            from bcn.persistence.runtime import close_pool
+            from bcn.persistence.runtime import get_pool
+            from bcn.persistence.workflow_jobs import list_recent_workflow_jobs
+
+            await get_pool(settings)
+            rows = await list_recent_workflow_jobs(
+                lane=lane,
+                limit=max(1, int(limit)),
+            )
+            if not rows:
+                click.echo("No workflow jobs found")
+                await close_pool()
+                return
+
+            for row in rows:
+                payload = dict(row)
+                click.echo(
+                    f"{payload.get('created_at').isoformat()} | "
+                    f"id={payload.get('id')} | "
+                    f"lane={payload.get('lane')} | "
+                    f"type={payload.get('job_type')} | "
+                    f"status={payload.get('status')} | "
+                    f"attempts={payload.get('attempt_count')}/{payload.get('max_attempts')} | "
+                    f"workflow={payload.get('workflow_id') or '-'}"
+                )
+            await close_pool()
+
+        run_async(_run)
 
 
 __all__ = ["register_core_commands"]

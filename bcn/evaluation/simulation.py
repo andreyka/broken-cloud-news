@@ -7,6 +7,8 @@ against a feedback-aligned rubric.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Callable
 from collections import Counter
 from datetime import datetime
 from datetime import timezone
@@ -27,6 +29,7 @@ from bcn.contracts.services import WriterWorkflow
 from bcn.service_registry import build_writer_workflow
 
 logger = logging.getLogger(__name__)
+SimulationProgressCallback = Callable[[int, dict[str, object]], Awaitable[None]]
 
 _AI_STAMP_PATTERNS = (
     re.compile(
@@ -587,6 +590,91 @@ async def _simulate_briefing_body(
     )
 
 
+def _seed_recurring_notes(results: list[dict[str, object]]) -> Counter[str]:
+    notes: Counter[str] = Counter()
+    for row in results:
+        for note in row.get("actual_notes") or []:
+            notes[str(note)] += 1
+    return notes
+
+
+def _build_simulation_report(
+    *,
+    candidate_overrides: dict[str, object],
+    limit: int,
+    since_days: int,
+    include_text: bool,
+    apply_critic_rewrites: bool,
+    reanalyze_items: bool,
+    results: list[dict[str, object]],
+    recurring_notes: Counter[str],
+) -> dict[str, object]:
+    actual_scores = [int(row["actual_score"]) for row in results]
+    simulated_scores = [int(row["simulated_score"]) for row in results]
+    deltas = [int(row["delta"]) for row in results]
+
+    actual_llm_tone_scores = [int(row["actual_llm_tone_score"]) for row in results]
+    simulated_llm_tone_scores = [int(row["simulated_llm_tone_score"]) for row in results]
+    actual_llm_novelty_scores = [int(row["actual_llm_novelty_score"]) for row in results]
+    simulated_llm_novelty_scores = [
+        int(row["simulated_llm_novelty_score"]) for row in results
+    ]
+
+    summary = {
+        "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
+        "avg_simulated_score": round(mean(simulated_scores), 2) if simulated_scores else 0.0,
+        "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2)
+        if actual_llm_tone_scores
+        else 0.0,
+        "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2)
+        if simulated_llm_tone_scores
+        else 0.0,
+        "avg_llm_tone_score_change": round(
+            mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores),
+            2,
+        )
+        if simulated_llm_tone_scores and actual_llm_tone_scores
+        else 0.0,
+        "avg_actual_llm_novelty_score": round(mean(actual_llm_novelty_scores), 2)
+        if actual_llm_novelty_scores
+        else 0.0,
+        "avg_simulated_llm_novelty_score": round(
+            mean(simulated_llm_novelty_scores),
+            2,
+        )
+        if simulated_llm_novelty_scores
+        else 0.0,
+        "avg_llm_novelty_score_change": round(
+            mean(simulated_llm_novelty_scores) - mean(actual_llm_novelty_scores),
+            2,
+        )
+        if simulated_llm_novelty_scores and actual_llm_novelty_scores
+        else 0.0,
+        "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
+        "improved": sum(1 for delta in deltas if delta > 0),
+        "regressed": sum(1 for delta in deltas if delta < 0),
+        "equal": sum(1 for delta in deltas if delta == 0),
+        "top_actual_feedback_gaps": [
+            {"issue": issue, "count": count}
+            for issue, count in recurring_notes.most_common(8)
+        ],
+    }
+    summary.update(_build_decision_summary(results))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "candidate_overrides": candidate_overrides,
+        "count": len(results),
+        "limit": int(limit),
+        "since_days": int(since_days),
+        "include_text": bool(include_text),
+        "apply_critic_rewrites": bool(apply_critic_rewrites),
+        "reanalyze_items": bool(reanalyze_items),
+        "results": results,
+        "summary": summary,
+    }
+
+
 async def simulate_historical_briefings(
     settings: Settings,
     *,
@@ -596,6 +684,9 @@ async def simulate_historical_briefings(
     include_text: bool = False,
     apply_critic_rewrites: bool = True,
     reanalyze_items: bool = False,
+    start_briefing_index: int = 0,
+    existing_results: list[dict[str, object]] | None = None,
+    progress_callback: SimulationProgressCallback | None = None,
 ) -> dict[str, object]:
     """Replay historical distributed briefings and compare simulated output."""
     briefings = await get_distributed_briefings(limit=limit, since_days=since_days)
@@ -625,11 +716,11 @@ async def simulate_historical_briefings(
     if reanalyze_items:
         analyst = AnalystService(effective_settings)
 
-    results: list[dict[str, object]] = []
-    recurring_notes: Counter[str] = Counter()
+    results: list[dict[str, object]] = list(existing_results or [])
+    recurring_notes = _seed_recurring_notes(results)
 
     try:
-        for idx, briefing in enumerate(ordered):
+        for idx, briefing in enumerate(ordered[start_briefing_index:], start=start_briefing_index):
             item_ids = list(briefing.get("item_ids") or [])
             if not item_ids:
                 continue
@@ -777,6 +868,20 @@ async def simulate_historical_briefings(
                 entry["selected_items"] = items
                 entry["simulated_selected_items"] = simulated_items
             results.append(entry)
+            if progress_callback is not None:
+                await progress_callback(
+                    idx + 1,
+                    _build_simulation_report(
+                        candidate_overrides=candidate_overrides,
+                        limit=limit,
+                        since_days=since_days,
+                        include_text=include_text,
+                        apply_critic_rewrites=apply_critic_rewrites,
+                        reanalyze_items=reanalyze_items,
+                        results=results,
+                        recurring_notes=recurring_notes,
+                    ),
+                )
             if (idx + 1) % 5 == 0:
                 logger.info(
                     "Simulation progress: %d/%d briefings processed",
@@ -784,74 +889,16 @@ async def simulate_historical_briefings(
                     len(ordered),
                 )
 
-        actual_scores = [int(row["actual_score"]) for row in results]
-        simulated_scores = [int(row["simulated_score"]) for row in results]
-        deltas = [int(row["delta"]) for row in results]
-
-        actual_llm_tone_scores = [int(row["actual_llm_tone_score"]) for row in results]
-        simulated_llm_tone_scores = [
-            int(row["simulated_llm_tone_score"]) for row in results
-        ]
-        actual_llm_novelty_scores = [
-            int(row["actual_llm_novelty_score"]) for row in results
-        ]
-        simulated_llm_novelty_scores = [
-            int(row["simulated_llm_novelty_score"]) for row in results
-        ]
-
-        summary = {
-            "avg_actual_score": round(mean(actual_scores), 2) if actual_scores else 0.0,
-            "avg_simulated_score": round(mean(simulated_scores), 2)
-            if simulated_scores
-            else 0.0,
-            "avg_actual_llm_tone_score": round(mean(actual_llm_tone_scores), 2)
-            if actual_llm_tone_scores
-            else 0.0,
-            "avg_simulated_llm_tone_score": round(mean(simulated_llm_tone_scores), 2)
-            if simulated_llm_tone_scores
-            else 0.0,
-            "avg_llm_tone_score_change": round(
-                mean(simulated_llm_tone_scores) - mean(actual_llm_tone_scores),
-                2,
-            )
-            if simulated_llm_tone_scores and actual_llm_tone_scores
-            else 0.0,
-            "avg_actual_llm_novelty_score": round(mean(actual_llm_novelty_scores), 2)
-            if actual_llm_novelty_scores
-            else 0.0,
-            "avg_simulated_llm_novelty_score": round(
-                mean(simulated_llm_novelty_scores),
-                2,
-            )
-            if simulated_llm_novelty_scores
-            else 0.0,
-            "avg_llm_novelty_score_change": round(
-                mean(simulated_llm_novelty_scores) - mean(actual_llm_novelty_scores),
-                2,
-            )
-            if simulated_llm_novelty_scores and actual_llm_novelty_scores
-            else 0.0,
-            "avg_delta": round(mean(deltas), 2) if deltas else 0.0,
-            "improved": sum(1 for delta in deltas if delta > 0),
-            "regressed": sum(1 for delta in deltas if delta < 0),
-            "equal": sum(1 for delta in deltas if delta == 0),
-            "top_actual_feedback_gaps": [
-                {"issue": issue, "count": count}
-                for issue, count in recurring_notes.most_common(8)
-            ],
-        }
-        summary.update(_build_decision_summary(results))
-
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "candidate_overrides": candidate_overrides,
-            "count": len(results),
-            "limit": int(limit),
-            "since_days": int(since_days),
-            "apply_critic_rewrites": bool(apply_critic_rewrites),
-            "results": results,
-            "summary": summary,
-        }
+        return _build_simulation_report(
+            candidate_overrides=candidate_overrides,
+            limit=limit,
+            since_days=since_days,
+            include_text=include_text,
+            apply_critic_rewrites=apply_critic_rewrites,
+            reanalyze_items=reanalyze_items,
+            results=results,
+            recurring_notes=recurring_notes,
+        )
     finally:
         await writer.close()
         if analyst is not None:

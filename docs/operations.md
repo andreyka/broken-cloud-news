@@ -66,7 +66,7 @@ Default exposed ports:
 The default stack in `docker-compose.yaml` runs:
 
 - `postgres` for the system of record
-- `bcn` with the `run` command as the scheduler/control-plane process
+- `bcn` with the `run` command as the scheduler plus default worker set
 - `dashboard` against the same database
 - `egress_proxy` as the outbound web proxy
 - `dns_resolver` as the internal DNS resolver
@@ -127,13 +127,16 @@ The control plane can keep workflow ownership while calling remote service pools
 
 Example layout:
 
-- host A: `bcn run` plus PostgreSQL access
-- host B: `bcn serve writer`
-- host C: `bcn serve critic`
-- host D: `bcn serve verifier`
-- host E: `bcn serve collector`
-- host F: `bcn serve analyst`
-- host G: `bcn serve distributor`
+- host A: `bcn scheduler` plus PostgreSQL access
+- host B: `bcn worker --lane publish`
+- host C: `bcn worker --lane collection --lane analysis`
+- host D: `bcn worker --lane evaluation`
+- host E: `bcn serve writer`
+- host F: `bcn serve critic`
+- host G: `bcn serve verifier`
+- host H: `bcn serve collector`
+- host I: `bcn serve analyst`
+- host J: `bcn serve distributor`
 
 Typical control-plane environment:
 
@@ -148,6 +151,10 @@ BCN_SERVICE_AUTH_TOKEN=shared-internal-token
 ```
 
 Service processes load component-scoped settings rather than the full control-plane settings surface.
+
+Operational note:
+
+- `bcn run` is still valid for a single-host deployment, but the durable queue is designed so publish, collection, analysis, and evaluation workers can be split cleanly across processes or hosts without changing workflow semantics.
 
 ## Security And Networking
 

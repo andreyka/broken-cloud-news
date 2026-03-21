@@ -294,11 +294,12 @@ async def test_complete_evaluation_run_updates_status_and_report():
             report_path="/tmp/shadow_report.json",
         )
 
-    args, _kwargs = fake_pool.execute.await_args
-    sql = args[0]
-    assert "UPDATE evaluation_runs" in sql
-    assert "status = 'completed'" in sql
-    assert args[3] == "/tmp/shadow_report.json"
+    assert fake_pool.execute.await_count == 2
+    progress_args = fake_pool.execute.await_args_list[0].args
+    complete_args = fake_pool.execute.await_args_list[1].args
+    assert "UPDATE evaluation_runs" in progress_args[0]
+    assert progress_args[3] == "/tmp/shadow_report.json"
+    assert "status = 'completed'" in complete_args[0]
 
 
 @pytest.mark.asyncio

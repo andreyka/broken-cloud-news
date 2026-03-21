@@ -429,6 +429,18 @@ class SchedulingSettingsMixin:
     analysis_retry_stale_analyzing_minutes: int = 120
 
 
+class WorkflowQueueSettingsMixin:
+    """Durable workflow queue and worker settings."""
+
+    workflow_job_poll_interval_seconds: int = 5
+    workflow_job_lease_refresh_seconds: int = 60
+    workflow_job_default_lease_seconds: int = 900
+    workflow_job_evaluation_lease_seconds: int = 1800
+    workflow_job_publish_deadline_seconds: int = 7200
+    workflow_job_retry_base_delay_seconds: int = 30
+    workflow_job_retry_max_delay_seconds: int = 300
+
+
 class ScrapingSettingsMixin:
     """HTML scraping and RSS body-fetch limits."""
 
@@ -576,5 +588,6 @@ __all__ = [
     "SharedLLMSettingsMixin",
     "TrustedImageSourceSettingsMixin",
     "VerifierPolicySettingsMixin",
+    "WorkflowQueueSettingsMixin",
     "WriterPolicySettingsMixin",
 ]

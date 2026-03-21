@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
+from collections.abc import Callable
 from datetime import datetime
 from datetime import timezone
 import json
@@ -29,6 +31,7 @@ from .simulation import _strip_cover_image
 from .simulation import score_feedback_rubric
 
 logger = logging.getLogger(__name__)
+BenchmarkProgressCallback = Callable[[int, dict[str, Any]], Awaitable[None]]
 
 
 def _now_iso() -> str:
@@ -510,6 +513,9 @@ async def run_benchmark_pack(
     cases_path: str,
     candidate_overrides_path: str | None = None,
     include_text: bool = False,
+    start_case_index: int = 0,
+    existing_results: list[dict[str, Any]] | None = None,
+    progress_callback: BenchmarkProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run champion and candidate against a curated benchmark pack."""
     pack = json.loads(Path(cases_path).read_text(encoding="utf-8"))
@@ -527,8 +533,8 @@ async def run_benchmark_pack(
         candidate_writer = build_writer_workflow(candidate_settings)
 
     try:
-        results: list[dict[str, Any]] = []
-        for raw_case in cases:
+        results: list[dict[str, Any]] = list(existing_results or [])
+        for case_index, raw_case in enumerate(cases[start_case_index:], start=start_case_index):
             if not isinstance(raw_case, dict):
                 continue
             selected_items = [
@@ -622,6 +628,19 @@ async def run_benchmark_pack(
                 row["selected_items"] = selected_items
                 row["history"] = history
             results.append(_json_safe(row))
+            if progress_callback is not None:
+                await progress_callback(
+                    case_index + 1,
+                    {
+                        "generated_at": _now_iso(),
+                        "lane": "benchmark",
+                        "pack_path": str(Path(cases_path).resolve()),
+                        "count": len(results),
+                        "candidate_overrides": candidate_overrides,
+                        "summary": build_benchmark_summary(results),
+                        "results": results,
+                    },
+                )
 
         summary = build_benchmark_summary(results)
         return {

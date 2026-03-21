@@ -28,6 +28,8 @@ from bcn.workflows.review import execute_critique as critique_briefing
 from bcn.workflows.review import execute_verification as verify_briefing
 from bcn.workflows.service import execute_workflow_mode
 from bcn.workflows.service import run_daemon
+from bcn.workflows.service import run_scheduler
+from bcn.workflows.service import run_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +67,8 @@ __all__ = [
     "execute_distribution",
     "execute_workflow_mode",
     "run_daemon",
+    "run_scheduler",
+    "run_worker",
     "serve_component_http",
     "verify_briefing",
 ]

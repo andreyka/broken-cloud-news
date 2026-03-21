@@ -631,6 +631,50 @@ def test_benchmark_command_reports_recommendation(monkeypatch, tmp_path):
     assert run_mock.await_count == 1
 
 
+def test_benchmark_command_can_enqueue(monkeypatch, tmp_path):
+    runner = CliRunner()
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
+    enqueue_mock = AsyncMock(return_value="job-123")
+    monkeypatch.setattr("bcn.workflows.queue.enqueue_benchmark_job", enqueue_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["benchmark", "--cases", str(cases_path), "--enqueue"],
+    )
+
+    assert result.exit_code == 0
+    assert "Queued benchmark job: job-123" in result.output
+    assert enqueue_mock.await_count == 1
+
+
+def test_simulate_command_can_enqueue(monkeypatch):
+    runner = CliRunner()
+    enqueue_mock = AsyncMock(return_value="job-456")
+    monkeypatch.setattr("bcn.workflows.queue.enqueue_simulation_job", enqueue_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["simulate", "--since-days", "7", "--enqueue"],
+    )
+
+    assert result.exit_code == 0
+    assert "Queued simulation job: job-456" in result.output
+    assert enqueue_mock.await_count == 1
+
+
+def test_simulate_enqueue_requires_store_db():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["simulate", "--enqueue", "--no-store-db"],
+    )
+
+    assert result.exit_code != 0
+    assert "Queued simulation runs require --store-db" in result.output
+
+
 def test_shadow_command_reports_recommendation(monkeypatch, tmp_path):
     runner = CliRunner()
     output_path = tmp_path / "shadow_report.json"

@@ -13,6 +13,9 @@ bcn verify --latest
 bcn distribute --mode regular_daily_briefing
 bcn pipeline --mode regular_daily_briefing
 bcn workflow-run --mode ad_hoc
+bcn scheduler
+bcn worker --lane publish
+bcn workflow-jobs --limit 20
 bcn run
 ```
 
@@ -34,8 +37,10 @@ bcn serve distributor
 ```bash
 bcn simulate --limit 30
 bcn simulate --since-days 7 --with-critic-rewrites
+bcn simulate --since-days 30 --enqueue
 bcn benchmark-pack --output benchmark_pack.json
 bcn benchmark --cases benchmark_pack.json
+bcn benchmark --cases benchmark_pack.json --enqueue
 bcn shadow --candidate-overrides challenger.json --store-db
 bcn evaluation-runs --lane shadow --limit 20
 ```
@@ -47,6 +52,7 @@ Semantics:
 - `benchmark`: champion vs challenger on a benchmark pack
 - `shadow`: champion vs challenger on current upcoming items without publishing
 - `evaluation-runs`: lists recent persisted benchmark/shadow runs
+- `--enqueue` on `simulate` / `benchmark`: queues evaluation work onto the durable evaluation lane instead of running inline
 
 ## Review And Training Commands
 
@@ -86,6 +92,9 @@ See [optimization-loop.md](optimization-loop.md) for the optimization workflow.
 
 ## Notes
 
-- `bcn run` is the scheduler/control-plane daemon used by the default Compose stack.
+- `bcn scheduler` is enqueue-only: it registers schedules and writes durable jobs.
+- `bcn worker --lane <lane>` leases durable jobs and executes them.
+- `bcn run` starts the scheduler plus the default worker lanes in one process for convenience and backwards compatibility.
+- `bcn workflow-jobs` shows the durable queue state across publish, collection, analysis, and evaluation lanes.
 - `bcn serve <component>` runs one deployable service behind its HTTP contract.
 - Most evaluation commands can persist results in PostgreSQL; the dashboard reads those persisted rows.

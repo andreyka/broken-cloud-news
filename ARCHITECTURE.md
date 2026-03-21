@@ -104,9 +104,16 @@ flowchart TB
 
     subgraph ControlPlane["Control plane host"]
         CLI2["bcn CLI"]:::node
+        Scheduler["bcn scheduler"]:::node
+        Workers["bcn worker --lane …"]:::node
         Daemon["bcn run"]:::node
-        LocalWorkflow["Workflow layer"]:::node
+        Queue["workflow_jobs queue"]:::db
+        LocalWorkflow["Workflow orchestration layer"]:::node
         CLI2 --> LocalWorkflow
+        Scheduler --> Queue
+        Workers --> Queue
+        Daemon --> Queue
+        Workers --> LocalWorkflow
         Daemon --> LocalWorkflow
     end
 
@@ -229,8 +236,10 @@ Scheduled jobs are defined through `bcn/workflows/catalog.py`. Each definition d
   - operation
   - args
 - optional enablement predicate
+- queue lane / priority / retry policy
+- optional deadline budget
 
-Execution is step-driven through `bcn/workflows/execution.py`, which dispatches typed workflow steps instead of hardcoding one executor per scheduled workflow.
+The scheduler no longer executes those workflows inline. It enqueues durable jobs into `workflow_jobs`, and lane-scoped workers lease and execute them. Execution is still step-driven through `bcn/workflows/execution.py`, which dispatches typed workflow steps instead of hardcoding one executor per scheduled workflow.
 
 ### Deployable Services
 
