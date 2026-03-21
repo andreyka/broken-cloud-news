@@ -435,10 +435,24 @@ class WorkflowQueueSettingsMixin:
     workflow_job_poll_interval_seconds: int = 5
     workflow_job_lease_refresh_seconds: int = 60
     workflow_job_default_lease_seconds: int = 900
+    workflow_job_publish_lease_seconds: int = 1200
+    workflow_job_collection_lease_seconds: int = 900
+    workflow_job_analysis_lease_seconds: int = 1200
     workflow_job_evaluation_lease_seconds: int = 1800
     workflow_job_publish_deadline_seconds: int = 7200
+    workflow_job_collection_deadline_seconds: int = 5400
+    workflow_job_analysis_deadline_seconds: int = 3600
+    workflow_job_evaluation_deadline_seconds: int = 43200
     workflow_job_retry_base_delay_seconds: int = 30
     workflow_job_retry_max_delay_seconds: int = 300
+    workflow_job_publish_retry_base_delay_seconds: int = 30
+    workflow_job_publish_retry_max_delay_seconds: int = 300
+    workflow_job_collection_retry_base_delay_seconds: int = 120
+    workflow_job_collection_retry_max_delay_seconds: int = 1800
+    workflow_job_analysis_retry_base_delay_seconds: int = 120
+    workflow_job_analysis_retry_max_delay_seconds: int = 1800
+    workflow_job_evaluation_retry_base_delay_seconds: int = 300
+    workflow_job_evaluation_retry_max_delay_seconds: int = 3600
 
 
 class ScrapingSettingsMixin:

@@ -4,9 +4,12 @@ import Link from "next/link";
 import {
   type EvaluationRunSummary,
   type SimulationSummary,
+  type WorkflowJobSummary,
+  type WorkflowQueueSnapshot,
   getLatestEvaluationRunByLane,
   getLatestSimulationSummary,
   getRecentEvaluationRuns,
+  getWorkflowQueueSnapshot,
 } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +47,18 @@ function metric(summary: Record<string, unknown>, key: string): string {
 }
 
 function laneTitle(lane: string): string {
+  if (lane === "publish") {
+    return "Publish";
+  }
+  if (lane === "collection") {
+    return "Collection";
+  }
+  if (lane === "analysis") {
+    return "Analysis";
+  }
+  if (lane === "evaluation") {
+    return "Evaluation";
+  }
   if (lane === "benchmark") {
     return "Benchmark";
   }
@@ -54,6 +69,29 @@ function laneTitle(lane: string): string {
     return "Replay";
   }
   return lane;
+}
+
+function workflowStatusTone(status: WorkflowJobSummary["status"]): string {
+  if (status === "leased") {
+    return "running";
+  }
+  if (status === "completed") {
+    return "completed";
+  }
+  if (status === "failed" || status === "canceled") {
+    return "failed";
+  }
+  return "queued";
+}
+
+function workflowHeadline(snapshot: WorkflowQueueSnapshot): string {
+  if (snapshot.leasedCount > 0) {
+    return "Workers active";
+  }
+  if (snapshot.queuedCount > 0) {
+    return "Queue backlog";
+  }
+  return "Queue healthy";
 }
 
 function runStateLabel(run: EvaluationRunSummary | null): string {
@@ -346,12 +384,94 @@ function EvaluationLaneCard({
   );
 }
 
+function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
+  return (
+    <section className="panel">
+      <div className="section-head">
+        <div>
+          <p className="eyebrow">Workflow Queue</p>
+          <h2>{workflowHeadline(snapshot)}</h2>
+        </div>
+        <p className="muted">
+          Dedicated scheduler and lane-scoped workers now own publish,
+          collection, analysis, and evaluation execution.
+        </p>
+      </div>
+
+      <div className="metric-grid queue-metric-grid">
+        <div className="metric-cell">
+          <span className="metric-label">Queued</span>
+          <strong className="metric-value">{String(snapshot.queuedCount)}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Leased</span>
+          <strong className="metric-value">{String(snapshot.leasedCount)}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Publish backlog</span>
+          <strong className="metric-value">{String(snapshot.publishBacklogCount)}</strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Evaluation backlog</span>
+          <strong className="metric-value">
+            {String(snapshot.evaluationBacklogCount)}
+          </strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Completed 24h</span>
+          <strong className="metric-value">
+            {String(snapshot.completed24hCount)}
+          </strong>
+        </div>
+        <div className="metric-cell">
+          <span className="metric-label">Failed 24h</span>
+          <strong className="metric-value">{String(snapshot.failed24hCount)}</strong>
+        </div>
+      </div>
+
+      <div className="jobs-table">
+        <div className="jobs-row runs-head">
+          <span>Lane</span>
+          <span>Status</span>
+          <span>Created</span>
+          <span>Workflow</span>
+          <span>Attempts</span>
+          <span>Deadline</span>
+          <span>Signal</span>
+        </div>
+        {snapshot.jobs.map((job) => {
+          const signal =
+            job.status === "failed" || job.status === "canceled"
+              ? job.errorMessage || job.status
+              : `${job.jobType} · ${job.source}`;
+          return (
+            <div className="jobs-row" key={job.id}>
+              <span className={`lane-pill lane-${job.lane}`}>{laneTitle(job.lane)}</span>
+              <span className={`run-state run-state-${workflowStatusTone(job.status)}`}>
+                {job.status}
+              </span>
+              <span>{formatDate(job.createdAt)}</span>
+              <span>{job.workflowId || job.jobType}</span>
+              <span>
+                {job.attemptCount}/{job.maxAttempts}
+              </span>
+              <span>{formatDate(job.deadlineAt)}</span>
+              <span>{signal}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 export default async function Home() {
-  const [benchmark, shadow, replay, runs] = await Promise.all([
+  const [benchmark, shadow, replay, runs, queue] = await Promise.all([
     getLatestEvaluationRunByLane("benchmark"),
     getLatestEvaluationRunByLane("shadow"),
     getLatestSimulationSummary(),
     getRecentEvaluationRuns(18),
+    getWorkflowQueueSnapshot(8),
   ]);
 
   const heroSignal =
@@ -398,6 +518,8 @@ export default async function Home() {
         <EvaluationLaneCard lane="shadow" run={shadow} />
         <ReplayCard replay={replay} />
       </section>
+
+      <QueueCard snapshot={queue} />
 
       <section className="panel">
         <div className="section-head">

@@ -49,7 +49,14 @@ Default local endpoints:
 
 - `http://localhost:3007` -> dashboard
 - `localhost:5432` -> PostgreSQL
-- `localhost:9001`-`9006` -> BCN component ports published from the `bcn` container
+
+Default local services:
+
+- `scheduler` -> enqueue-only control plane
+- `bcn` -> publish worker
+- `ingest_worker` -> collection and analysis worker
+- `evaluation_worker` -> benchmark, shadow, and replay worker
+- `dashboard`, `postgres`, `egress_proxy`, `dns_resolver`, `spark_bridge`
 
 ## Common Commands
 

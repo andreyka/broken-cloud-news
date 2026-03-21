@@ -39,6 +39,8 @@ cp .env.example .env
 ```
 
 Then populate the values required for your deployment. The Compose stack uses `env_file: .env` for both `bcn` and `dashboard`.
+The worker split also loads the same `.env` for `scheduler`, `ingest_worker`, and
+`evaluation_worker`.
 
 ## Start The Default Stack
 
@@ -48,7 +50,10 @@ docker compose up -d
 
 Current Compose services:
 
+- `scheduler`
 - `bcn`
+- `ingest_worker`
+- `evaluation_worker`
 - `postgres`
 - `dashboard`
 - `egress_proxy`
@@ -59,20 +64,22 @@ Default exposed ports:
 
 - `3007` -> dashboard
 - `5432` -> PostgreSQL
-- `9001`-`9006` -> BCN container published ports
 
 ## Default Compose Topology
 
 The default stack in `docker-compose.yaml` runs:
 
 - `postgres` for the system of record
-- `bcn` with the `run` command as the scheduler plus default worker set
+- `scheduler` with the `scheduler` command as the enqueue-only control plane
+- `bcn` with `worker --lane publish`
+- `ingest_worker` with `worker --lane collection --lane analysis`
+- `evaluation_worker` with `worker --lane evaluation`
 - `dashboard` against the same database
 - `egress_proxy` as the outbound web proxy
 - `dns_resolver` as the internal DNS resolver
 - `spark_bridge` as an internal bridge to a host-local OpenAI-compatible model endpoint
 
-The `bcn` container is configured with:
+Every BCN runtime container is configured with:
 
 - `HTTP_PROXY` / `HTTPS_PROXY` pointing at `egress_proxy`
 - `BCN_PLAYWRIGHT_PROXY` pointing at the same proxy by default
@@ -154,7 +161,10 @@ Service processes load component-scoped settings rather than the full control-pl
 
 Operational note:
 
-- `bcn run` is still valid for a single-host deployment, but the durable queue is designed so publish, collection, analysis, and evaluation workers can be split cleanly across processes or hosts without changing workflow semantics.
+- `bcn run` is still valid for a single-host compatibility mode, but the default
+  Compose stack now uses dedicated scheduler and worker processes because the
+  durable queue is designed to isolate publish, collection, analysis, and
+  evaluation work from one another.
 
 ## Security And Networking
 

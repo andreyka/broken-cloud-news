@@ -302,9 +302,15 @@ details summary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.queue-metric-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
 .metric-cell,
 .selection-item,
-.runs-row {
+.runs-row,
+.jobs-row {
   border: 1px solid rgba(125, 179, 255, 0.12);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -375,18 +381,27 @@ details summary {
 }
 
 .runs-table,
-.selection-list {
+.selection-list,
+.jobs-table {
   display: grid;
   gap: 10px;
 }
 
-.runs-row {
+.runs-row,
+.jobs-row {
   display: grid;
   gap: 12px;
-  grid-template-columns: 130px 110px 170px 170px 130px minmax(0, 1fr) 70px;
   align-items: center;
   padding: 16px 18px;
   border-radius: 18px;
+}
+
+.runs-row {
+  grid-template-columns: 130px 110px 170px 170px 130px minmax(0, 1fr) 70px;
+}
+
+.jobs-row {
+  grid-template-columns: 120px 110px 170px 190px 110px 170px minmax(0, 1fr);
 }
 
 .runs-head {
@@ -428,6 +443,12 @@ details summary {
   color: var(--cyan);
 }
 
+.run-state-queued {
+  border-color: rgba(143, 164, 193, 0.26);
+  background: rgba(143, 164, 193, 0.12);
+  color: var(--muted-strong);
+}
+
 .run-state-completed {
   border-color: rgba(105, 226, 173, 0.28);
   background: rgba(105, 226, 173, 0.12);
@@ -444,6 +465,30 @@ details summary {
   background: var(--blue-soft);
   border-color: rgba(69, 184, 255, 0.28);
   color: var(--blue);
+}
+
+.lane-publish {
+  background: rgba(105, 226, 173, 0.14);
+  border-color: rgba(105, 226, 173, 0.28);
+  color: var(--success);
+}
+
+.lane-collection {
+  background: var(--steel-soft);
+  border-color: rgba(143, 164, 193, 0.26);
+  color: var(--muted-strong);
+}
+
+.lane-analysis {
+  background: rgba(69, 184, 255, 0.12);
+  border-color: rgba(69, 184, 255, 0.26);
+  color: var(--blue);
+}
+
+.lane-evaluation {
+  background: var(--cyan-soft);
+  border-color: rgba(119, 243, 255, 0.28);
+  color: var(--cyan);
 }
 
 .lane-shadow {
@@ -511,20 +556,24 @@ details summary {
   }
 
   .metric-grid,
+  .queue-metric-grid,
   .detail-grid,
   .stat-grid,
   .runs-row,
-  .runs-head {
+  .runs-head,
+  .jobs-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
   .metric-grid,
+  .queue-metric-grid,
   .detail-grid,
   .stat-grid,
   .runs-row,
-  .runs-head {
+  .runs-head,
+  .jobs-row {
     grid-template-columns: 1fr;
   }
 

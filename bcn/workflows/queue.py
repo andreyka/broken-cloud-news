@@ -41,6 +41,63 @@ JOB_TYPE_SCHEDULED_WORKFLOW = "scheduled_workflow"
 JOB_TYPE_EVALUATION_BENCHMARK = "evaluation_benchmark"
 JOB_TYPE_EVALUATION_SIMULATION = "evaluation_simulation"
 DEFAULT_WORKER_LANES = ("publish", "collection", "analysis", "evaluation")
+_LANE_LEASE_ATTRS: dict[str, tuple[str, ...]] = {
+    "publish": ("workflow_job_publish_lease_seconds", "workflow_job_default_lease_seconds"),
+    "collection": (
+        "workflow_job_collection_lease_seconds",
+        "workflow_job_default_lease_seconds",
+    ),
+    "analysis": (
+        "workflow_job_analysis_lease_seconds",
+        "workflow_job_default_lease_seconds",
+    ),
+    "evaluation": (
+        "workflow_job_evaluation_lease_seconds",
+        "workflow_job_default_lease_seconds",
+    ),
+}
+_LANE_RETRY_BASE_ATTRS: dict[str, tuple[str, ...]] = {
+    "publish": (
+        "workflow_job_publish_retry_base_delay_seconds",
+        "workflow_job_retry_base_delay_seconds",
+    ),
+    "collection": (
+        "workflow_job_collection_retry_base_delay_seconds",
+        "workflow_job_retry_base_delay_seconds",
+    ),
+    "analysis": (
+        "workflow_job_analysis_retry_base_delay_seconds",
+        "workflow_job_retry_base_delay_seconds",
+    ),
+    "evaluation": (
+        "workflow_job_evaluation_retry_base_delay_seconds",
+        "workflow_job_retry_base_delay_seconds",
+    ),
+}
+_LANE_RETRY_MAX_ATTRS: dict[str, tuple[str, ...]] = {
+    "publish": (
+        "workflow_job_publish_retry_max_delay_seconds",
+        "workflow_job_retry_max_delay_seconds",
+    ),
+    "collection": (
+        "workflow_job_collection_retry_max_delay_seconds",
+        "workflow_job_retry_max_delay_seconds",
+    ),
+    "analysis": (
+        "workflow_job_analysis_retry_max_delay_seconds",
+        "workflow_job_retry_max_delay_seconds",
+    ),
+    "evaluation": (
+        "workflow_job_evaluation_retry_max_delay_seconds",
+        "workflow_job_retry_max_delay_seconds",
+    ),
+}
+_LANE_DEADLINE_ATTRS: dict[str, tuple[str, ...]] = {
+    "publish": ("workflow_job_publish_deadline_seconds",),
+    "collection": ("workflow_job_collection_deadline_seconds",),
+    "analysis": ("workflow_job_analysis_deadline_seconds",),
+    "evaluation": ("workflow_job_evaluation_deadline_seconds",),
+}
 
 
 def _utc_now() -> datetime:
@@ -61,10 +118,31 @@ def _normalize_lanes(lanes: tuple[str, ...] | list[str] | None) -> tuple[str, ..
     return tuple(normalized) or DEFAULT_WORKER_LANES
 
 
+def _lane_value(
+    settings: Settings,
+    lane: str,
+    mapping: dict[str, tuple[str, ...]],
+    *,
+    minimum: int,
+    fallback: int,
+) -> int:
+    normalized_lane = str(lane or "").strip().lower()
+    for attr in mapping.get(normalized_lane, ()):
+        raw_value = getattr(settings, attr, None)
+        if raw_value is None:
+            continue
+        return max(minimum, int(raw_value))
+    return max(minimum, int(fallback))
+
+
 def _lease_seconds_for_lane(settings: Settings, lane: str) -> int:
-    if str(lane or "").strip().lower() == "evaluation":
-        return max(60, int(settings.workflow_job_evaluation_lease_seconds))
-    return max(60, int(settings.workflow_job_default_lease_seconds))
+    return _lane_value(
+        settings,
+        lane,
+        _LANE_LEASE_ATTRS,
+        minimum=60,
+        fallback=int(settings.workflow_job_default_lease_seconds),
+    )
 
 
 def _worker_id(label: str | None = None) -> str:
@@ -77,11 +155,38 @@ def _worker_id(label: str | None = None) -> str:
     return f"{host}:{pid}:{nonce}"
 
 
-def _retry_delay_seconds(settings: Settings, attempt_count: int) -> int:
-    base = max(1, int(settings.workflow_job_retry_base_delay_seconds))
-    maximum = max(base, int(settings.workflow_job_retry_max_delay_seconds))
+def _retry_delay_seconds(settings: Settings, lane: str, attempt_count: int) -> int:
+    base = _lane_value(
+        settings,
+        lane,
+        _LANE_RETRY_BASE_ATTRS,
+        minimum=1,
+        fallback=int(settings.workflow_job_retry_base_delay_seconds),
+    )
+    maximum = _lane_value(
+        settings,
+        lane,
+        _LANE_RETRY_MAX_ATTRS,
+        minimum=base,
+        fallback=max(base, int(settings.workflow_job_retry_max_delay_seconds)),
+    )
     exponent = max(0, int(attempt_count) - 1)
     return min(maximum, base * (2**exponent))
+
+
+def _lane_deadline_at(settings: Settings, lane: str) -> datetime | None:
+    normalized_lane = str(lane or "").strip().lower()
+    attrs = _LANE_DEADLINE_ATTRS.get(normalized_lane)
+    if not attrs:
+        return None
+    deadline_seconds = _lane_value(
+        settings,
+        normalized_lane,
+        _LANE_DEADLINE_ATTRS,
+        minimum=1,
+        fallback=0,
+    )
+    return _utc_now() + timedelta(seconds=deadline_seconds)
 
 
 def _workflow_deadline_at(
@@ -89,9 +194,9 @@ def _workflow_deadline_at(
     definition: ScheduledWorkflowDefinition,
 ) -> datetime | None:
     deadline_seconds = definition.deadline_seconds(settings)
-    if deadline_seconds is None:
-        return None
-    return _utc_now() + timedelta(seconds=deadline_seconds)
+    if deadline_seconds is not None:
+        return _utc_now() + timedelta(seconds=deadline_seconds)
+    return _lane_deadline_at(settings, definition.lane)
 
 
 def _build_scheduled_job_payload(
@@ -151,6 +256,7 @@ async def enqueue_benchmark_job(
             "notes": notes,
         },
         notes=notes,
+        deadline_at=_lane_deadline_at(settings, "evaluation"),
     )
 
 
@@ -189,6 +295,7 @@ async def enqueue_simulation_job(
             "notes": notes,
         },
         notes=notes,
+        deadline_at=_lane_deadline_at(settings, "evaluation"),
     )
 
 
@@ -580,6 +687,7 @@ async def _run_one_claimed_job(
             error_message=str(exc),
             delay_seconds=_retry_delay_seconds(
                 settings,
+                str(job.get("lane") or ""),
                 int(job.get("attempt_count", 0) or 0),
             ),
             state=current_state,

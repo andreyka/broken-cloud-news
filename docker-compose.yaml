@@ -1,3 +1,27 @@
+x-bcn-base: &bcn-base
+  build: .
+  restart: always
+  env_file: .env
+  environment:
+    - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
+    - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
+    - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
+    - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
+    - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
+  dns:
+    - 172.29.0.53
+  depends_on:
+    postgres:
+      condition: service_healthy
+    egress_proxy:
+      condition: service_started
+    dns_resolver:
+      condition: service_started
+    spark_bridge:
+      condition: service_started
+  networks:
+    - app_internal
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -53,37 +77,21 @@ services:
       - app_internal
       - egress_public
 
+  scheduler:
+    <<: *bcn-base
+    command: scheduler
+
   bcn:
-    build: .
-    restart: always
-    command: run
-    env_file: .env
-    environment:
-      - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
-      - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
-      - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
-      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
-      - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge
-    dns:
-      - 172.29.0.53
-    ports:
-      - "9001:9001"
-      - "9002:9002"
-      - "9003:9003"
-      - "9004:9004"
-      - "9005:9005"
-      - "9006:9006"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      egress_proxy:
-        condition: service_started
-      dns_resolver:
-        condition: service_started
-      spark_bridge:
-        condition: service_started
-    networks:
-      - app_internal
+    <<: *bcn-base
+    command: worker --lane publish
+
+  ingest_worker:
+    <<: *bcn-base
+    command: worker --lane collection --lane analysis
+
+  evaluation_worker:
+    <<: *bcn-base
+    command: worker --lane evaluation
 
   dashboard:
     build: ./dashboard

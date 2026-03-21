@@ -32,6 +32,34 @@ export type SimulationSummary = {
   summary: JsonObject;
 } | null;
 
+export type WorkflowJobSummary = {
+  id: string;
+  lane: string;
+  jobType: string;
+  workflowId: string | null;
+  status: "queued" | "leased" | "completed" | "failed" | "canceled";
+  createdAt: string;
+  availableAt: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  deadlineAt: string | null;
+  source: string;
+  priority: number;
+  attemptCount: number;
+  maxAttempts: number;
+  errorMessage: string | null;
+};
+
+export type WorkflowQueueSnapshot = {
+  queuedCount: number;
+  leasedCount: number;
+  failed24hCount: number;
+  completed24hCount: number;
+  publishBacklogCount: number;
+  evaluationBacklogCount: number;
+  jobs: WorkflowJobSummary[];
+};
+
 const globalForPg = globalThis as typeof globalThis & {
   __bcnDashboardPool?: Pool;
 };
@@ -85,6 +113,33 @@ function asDateString(value: unknown): string | null {
     return value;
   }
   return null;
+}
+
+function mapWorkflowJob(row: Record<string, unknown>): WorkflowJobSummary {
+  return {
+    id: String(row.id),
+    lane: String(row.lane),
+    jobType: String(row.job_type || "unknown"),
+    workflowId: row.workflow_id ? String(row.workflow_id) : null,
+    status: String(row.status || "queued") as WorkflowJobSummary["status"],
+    createdAt: asDateString(row.created_at) || "",
+    availableAt: asDateString(row.available_at),
+    startedAt: asDateString(row.started_at),
+    finishedAt: asDateString(row.finished_at),
+    deadlineAt: asDateString(row.deadline_at),
+    source: String(row.source || "scheduler"),
+    priority: Number(row.priority || 0),
+    attemptCount: Number(row.attempt_count || 0),
+    maxAttempts: Number(row.max_attempts || 0),
+    errorMessage: row.error_message ? String(row.error_message) : null,
+  };
+}
+
+function isMissingRelationError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  return "code" in error && error.code === "42P01";
 }
 
 function mapEvaluationRun(row: Record<string, unknown>): EvaluationRunSummary {
@@ -226,4 +281,80 @@ export async function getLatestSimulationSummary(): Promise<SimulationSummary> {
     count: Number(row.count || 0),
     summary: asObject(row.summary),
   };
+}
+
+export async function getWorkflowQueueSnapshot(
+  limit = 10,
+): Promise<WorkflowQueueSnapshot> {
+  const rowLimit = Math.max(1, limit);
+  try {
+    const [summaryResult, jobsResult] = await Promise.all([
+      getPool().query(
+        `
+          SELECT
+            COUNT(*) FILTER (WHERE status = 'queued') AS queued_count,
+            COUNT(*) FILTER (WHERE status = 'leased') AS leased_count,
+            COUNT(*) FILTER (
+              WHERE status = 'failed'
+                AND COALESCE(finished_at, updated_at, created_at) >= NOW() - INTERVAL '24 hours'
+            ) AS failed_24h_count,
+            COUNT(*) FILTER (
+              WHERE status = 'completed'
+                AND COALESCE(finished_at, updated_at, created_at) >= NOW() - INTERVAL '24 hours'
+            ) AS completed_24h_count,
+            COUNT(*) FILTER (WHERE status = 'queued' AND lane = 'publish') AS publish_backlog_count,
+            COUNT(*) FILTER (WHERE status = 'queued' AND lane = 'evaluation') AS evaluation_backlog_count
+          FROM workflow_jobs
+        `,
+      ),
+      getPool().query(
+        `
+          SELECT
+            id,
+            lane,
+            job_type,
+            workflow_id,
+            status,
+            created_at,
+            available_at,
+            started_at,
+            finished_at,
+            deadline_at,
+            source,
+            priority,
+            attempt_count,
+            max_attempts,
+            error_message
+          FROM workflow_jobs
+          ORDER BY created_at DESC
+          LIMIT $1
+        `,
+        [rowLimit],
+      ),
+    ]);
+
+    const summary = (summaryResult.rows[0] || {}) as Record<string, unknown>;
+    return {
+      queuedCount: Number(summary.queued_count || 0),
+      leasedCount: Number(summary.leased_count || 0),
+      failed24hCount: Number(summary.failed_24h_count || 0),
+      completed24hCount: Number(summary.completed_24h_count || 0),
+      publishBacklogCount: Number(summary.publish_backlog_count || 0),
+      evaluationBacklogCount: Number(summary.evaluation_backlog_count || 0),
+      jobs: jobsResult.rows.map((row) => mapWorkflowJob(row as Record<string, unknown>)),
+    };
+  } catch (error) {
+    if (!isMissingRelationError(error)) {
+      throw error;
+    }
+    return {
+      queuedCount: 0,
+      leasedCount: 0,
+      failed24hCount: 0,
+      completed24hCount: 0,
+      publishBacklogCount: 0,
+      evaluationBacklogCount: 0,
+      jobs: [],
+    };
+  }
 }
