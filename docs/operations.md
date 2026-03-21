@@ -90,6 +90,15 @@ That proxy path matters for Playwright-backed operations such as:
 - fallback web scraping
 - Substack publishing
 
+Queue control surface:
+
+- `bcn workflow-lanes list`
+- `bcn workflow-lanes pause <lane> --reason "..."`
+- `bcn workflow-lanes resume <lane>`
+
+The dashboard now shows queue alerts, lane pause state, and workflow job drill-down
+pages for failed jobs at `/jobs/<job-id>`.
+
 ## Model Endpoints
 
 BCN supports:

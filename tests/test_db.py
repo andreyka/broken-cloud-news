@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
+from datetime import timezone
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 from uuid import uuid4
@@ -343,6 +345,46 @@ async def test_list_recent_evaluation_runs_applies_lane_filter():
 
 
 @pytest.mark.asyncio
+async def test_set_workflow_lane_control_upserts_pause_state():
+    import bcn.persistence.workflow_jobs as workflow_jobs
+
+    now = datetime.now(timezone.utc)
+    fake_pool = AsyncMock()
+    fake_pool.fetchrow = AsyncMock(
+        return_value={
+            "lane": "evaluation",
+            "paused": True,
+            "reason": "maintenance",
+            "updated_by": "cli",
+            "paused_at": now,
+            "updated_at": now,
+        }
+    )
+
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.workflow_jobs.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        payload = await workflow_jobs.set_workflow_lane_control(
+            "evaluation",
+            paused=True,
+            updated_by="cli",
+            reason="maintenance",
+        )
+
+    assert payload["lane"] == "evaluation"
+    args, _kwargs = fake_pool.fetchrow.await_args
+    sql = args[0]
+    assert "INSERT INTO workflow_lane_controls" in sql
+    assert "ON CONFLICT (lane)" in sql
+    assert args[1] == "evaluation"
+    assert args[2] is True
+    assert args[3] == "maintenance"
+    assert args[4] == "cli"
+
+
+@pytest.mark.asyncio
 async def test_get_evaluation_runs_for_export_reads_full_shadow_reports():
     import bcn.persistence.evaluation as evaluation_db
 
@@ -405,6 +447,43 @@ class _FakePool:
 
     def acquire(self):
         return _FakeAcquire(self._conn)
+
+
+@pytest.mark.asyncio
+async def test_claim_next_workflow_job_sql_excludes_paused_lanes():
+    import bcn.persistence.workflow_jobs as workflow_jobs
+
+    job_id = uuid4()
+    conn = _FakeConn(job_id)
+    conn.fetchrow = AsyncMock(
+        side_effect=[
+            {
+                "id": job_id,
+                "lane": "evaluation",
+                "payload": "{}",
+                "state": "{}",
+                "result": "{}",
+                "attempt_count": 1,
+            },
+            {"id": 42},
+        ]
+    )
+    fake_pool = _FakePool(conn)
+
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.workflow_jobs.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        claimed = await workflow_jobs.claim_next_workflow_job(
+            lanes=["evaluation"],
+            worker_id="worker:test",
+        )
+
+    assert claimed is not None
+    claim_sql = conn.fetchrow.await_args_list[0].args[0]
+    assert "FROM workflow_lane_controls controls" in claim_sql
+    assert "controls.paused = TRUE" in claim_sql
 
 
 @pytest.mark.asyncio

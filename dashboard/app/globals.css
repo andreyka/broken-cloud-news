@@ -307,6 +307,10 @@ details summary {
   margin-bottom: 18px;
 }
 
+.queue-detail-grid {
+  margin-bottom: 18px;
+}
+
 .metric-cell,
 .selection-item,
 .runs-row,
@@ -401,7 +405,12 @@ details summary {
 }
 
 .jobs-row {
-  grid-template-columns: 120px 110px 170px 190px 110px 170px minmax(0, 1fr);
+  grid-template-columns: 120px 110px 170px 190px 110px 170px minmax(0, 1fr) 70px;
+}
+
+.lane-state-head,
+.lane-state-row {
+  grid-template-columns: 120px 110px 80px 80px 170px 170px minmax(0, 1fr);
 }
 
 .runs-head {
@@ -456,6 +465,12 @@ details summary {
 }
 
 .run-state-failed {
+  border-color: rgba(255, 136, 153, 0.28);
+  background: rgba(255, 136, 153, 0.12);
+  color: var(--danger);
+}
+
+.run-state-canceled {
   border-color: rgba(255, 136, 153, 0.28);
   background: rgba(255, 136, 153, 0.12);
   color: var(--danger);
@@ -561,7 +576,9 @@ details summary {
   .stat-grid,
   .runs-row,
   .runs-head,
-  .jobs-row {
+  .jobs-row,
+  .lane-state-head,
+  .lane-state-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -573,7 +590,9 @@ details summary {
   .stat-grid,
   .runs-row,
   .runs-head,
-  .jobs-row {
+  .jobs-row,
+  .lane-state-head,
+  .lane-state-row {
     grid-template-columns: 1fr;
   }
 

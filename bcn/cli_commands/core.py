@@ -21,6 +21,11 @@ def register_core_commands(
 ) -> None:
     """Attach the core BCN CLI commands to the root Click group."""
 
+    workflow_lane_choices = click.Choice(
+        ["publish", "collection", "analysis", "evaluation"],
+        case_sensitive=True,
+    )
+
     @cli.command("db-migrate")
     @click.option(
         "--dry-run",
@@ -388,6 +393,110 @@ def register_core_commands(
                     f"attempts={payload.get('attempt_count')}/{payload.get('max_attempts')} | "
                     f"workflow={payload.get('workflow_id') or '-'}"
                 )
+            await close_pool()
+
+        run_async(_run)
+
+    @cli.group("workflow-lanes")
+    def workflow_lanes() -> None:
+        """Inspect or change lane pause controls used by durable workers."""
+
+    @workflow_lanes.command("list")
+    def workflow_lanes_list() -> None:
+        """List pause state for publish, collection, analysis, and evaluation lanes."""
+        settings = build_settings()
+
+        async def _run() -> None:
+            from bcn.persistence.runtime import close_pool
+            from bcn.persistence.runtime import get_pool
+            from bcn.persistence.workflow_jobs import list_workflow_lane_controls
+
+            await get_pool(settings)
+            rows = await list_workflow_lane_controls()
+            controls = {
+                str(row["lane"]): dict(row)
+                for row in rows
+            }
+            for lane in ("publish", "collection", "analysis", "evaluation"):
+                payload = controls.get(lane, {})
+                paused = bool(payload.get("paused", False))
+                reason = str(payload.get("reason") or "").strip() or "-"
+                updated_by = str(payload.get("updated_by") or "").strip() or "-"
+                updated_at = payload.get("updated_at")
+                click.echo(
+                    f"lane={lane} | "
+                    f"paused={'yes' if paused else 'no'} | "
+                    f"updated_by={updated_by} | "
+                    f"updated_at={updated_at.isoformat() if updated_at else '-'} | "
+                    f"reason={reason}"
+                )
+            await close_pool()
+
+        run_async(_run)
+
+    @workflow_lanes.command("pause")
+    @click.argument("lane", type=workflow_lane_choices)
+    @click.option("--reason", required=True, help="Why this lane is being paused.")
+    @click.option(
+        "--updated-by",
+        default="cli",
+        show_default=True,
+        help="Operator label stored with the lane control row.",
+    )
+    def workflow_lanes_pause(lane: str, reason: str, updated_by: str) -> None:
+        """Pause job claiming for one workflow lane."""
+        settings = build_settings()
+
+        async def _run() -> None:
+            from bcn.persistence.runtime import close_pool
+            from bcn.persistence.runtime import get_pool
+            from bcn.persistence.workflow_jobs import set_workflow_lane_control
+
+            await get_pool(settings)
+            payload = await set_workflow_lane_control(
+                lane,
+                paused=True,
+                updated_by=updated_by,
+                reason=reason,
+            )
+            click.echo(
+                f"Paused lane {payload.get('lane')}: "
+                f"{payload.get('reason') or reason}"
+            )
+            await close_pool()
+
+        run_async(_run)
+
+    @workflow_lanes.command("resume")
+    @click.argument("lane", type=workflow_lane_choices)
+    @click.option(
+        "--reason",
+        default="",
+        help="Optional note recorded alongside the resume action.",
+    )
+    @click.option(
+        "--updated-by",
+        default="cli",
+        show_default=True,
+        help="Operator label stored with the lane control row.",
+    )
+    def workflow_lanes_resume(lane: str, reason: str, updated_by: str) -> None:
+        """Resume job claiming for one workflow lane."""
+        settings = build_settings()
+
+        async def _run() -> None:
+            from bcn.persistence.runtime import close_pool
+            from bcn.persistence.runtime import get_pool
+            from bcn.persistence.workflow_jobs import set_workflow_lane_control
+
+            await get_pool(settings)
+            await set_workflow_lane_control(
+                lane,
+                paused=False,
+                updated_by=updated_by,
+                reason=reason or None,
+            )
+            click.echo(f"Resumed lane {lane}")
             await close_pool()
 
         run_async(_run)

@@ -13,12 +13,13 @@ It collects security signals from GHSA, RSS, Reddit, and Twitter/X, analyzes and
 - generates daily briefings and monthly newsletters with critic/verifier loops
 - distributes approved output to Telegram, Discord, Ghost, Substack, and email
 - stores generation, review, distribution, and evaluation data for replay, shadowing, and benchmarking
+- exposes workflow queue backlog, lane health, and failed-job drill-downs in the dashboard
 
 ## Documentation
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): system model, deployable services, persistence boundaries, and diagrams
 - [docs/operations.md](docs/operations.md): setup, Compose topology, environment variables, networking, and deployment notes
-- [docs/cli.md](docs/cli.md): CLI command reference, evaluation lanes, and operator/admin commands
+- [docs/cli.md](docs/cli.md): CLI command reference, evaluation lanes, queue controls, and operator/admin commands
 - [bcn/evaluation/README.md](bcn/evaluation/README.md): evaluation concepts and implementation notes
 - [benchmark_packs/README.md](benchmark_packs/README.md): benchmark-pack format and usage
 - [docs/optimization-loop.md](docs/optimization-loop.md): offline optimization loop

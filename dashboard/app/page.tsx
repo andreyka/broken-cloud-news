@@ -4,6 +4,7 @@ import Link from "next/link";
 import {
   type EvaluationRunSummary,
   type SimulationSummary,
+  type WorkflowQueueAlert,
   type WorkflowJobSummary,
   type WorkflowQueueSnapshot,
   getLatestEvaluationRunByLane,
@@ -85,6 +86,9 @@ function workflowStatusTone(status: WorkflowJobSummary["status"]): string {
 }
 
 function workflowHeadline(snapshot: WorkflowQueueSnapshot): string {
+  if (snapshot.alerts.some((alert) => alert.level === "critical")) {
+    return "Queue attention required";
+  }
   if (snapshot.leasedCount > 0) {
     return "Workers active";
   }
@@ -92,6 +96,16 @@ function workflowHeadline(snapshot: WorkflowQueueSnapshot): string {
     return "Queue backlog";
   }
   return "Queue healthy";
+}
+
+function queueAlertTone(alert: WorkflowQueueAlert): string {
+  if (alert.level === "critical") {
+    return "failed";
+  }
+  if (alert.level === "warn") {
+    return "queued";
+  }
+  return "completed";
 }
 
 function runStateLabel(run: EvaluationRunSummary | null): string {
@@ -429,6 +443,55 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
         </div>
       </div>
 
+      <div className="card-grid queue-detail-grid">
+        <section className="panel panel-amber">
+          <p className="eyebrow">Alerts</p>
+          {snapshot.alerts.length === 0 ? (
+            <p className="lane-copy">No queue alerts. All lanes are within their age budgets.</p>
+          ) : (
+            <div className="selection-list">
+              {snapshot.alerts.map((alert, index) => (
+                <div className="selection-item" key={`${alert.lane || "global"}-${index}`}>
+                  <span className={`run-state run-state-${queueAlertTone(alert)}`}>
+                    {alert.level}
+                  </span>
+                  <strong>{alert.lane ? laneTitle(alert.lane) : "Global"}</strong>
+                  <span className="lane-meta">{alert.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="panel panel-teal">
+          <p className="eyebrow">Lane status</p>
+          <div className="runs-table">
+            <div className="jobs-row runs-head lane-state-head">
+              <span>Lane</span>
+              <span>State</span>
+              <span>Queued</span>
+              <span>Leased</span>
+              <span>Oldest queued</span>
+              <span>Oldest leased</span>
+              <span>Note</span>
+            </div>
+            {snapshot.lanes.map((lane) => (
+              <div className="jobs-row lane-state-row" key={lane.lane}>
+                <span className={`lane-pill lane-${lane.lane}`}>{laneTitle(lane.lane)}</span>
+                <span className={`run-state run-state-${lane.paused ? "failed" : "completed"}`}>
+                  {lane.paused ? "paused" : "active"}
+                </span>
+                <span>{lane.queuedCount}</span>
+                <span>{lane.leasedCount}</span>
+                <span>{formatDate(lane.oldestQueuedAt)}</span>
+                <span>{formatDate(lane.oldestLeasedAt)}</span>
+                <span>{lane.reason || "running"}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
       <div className="jobs-table">
         <div className="jobs-row runs-head">
           <span>Lane</span>
@@ -438,6 +501,7 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
           <span>Attempts</span>
           <span>Deadline</span>
           <span>Signal</span>
+          <span></span>
         </div>
         {snapshot.jobs.map((job) => {
           const signal =
@@ -457,6 +521,11 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
               </span>
               <span>{formatDate(job.deadlineAt)}</span>
               <span>{signal}</span>
+              <span>
+                <Link className="inline-link" href={`/jobs/${job.id}`}>
+                  View
+                </Link>
+              </span>
             </div>
           );
         })}

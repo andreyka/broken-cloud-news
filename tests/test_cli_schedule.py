@@ -810,3 +810,109 @@ def test_worker_command_delegates_to_queue_worker(monkeypatch):
         "worker_name": None,
         "once": True,
     }
+
+
+def test_workflow_lanes_list_command_outputs_known_lanes(monkeypatch):
+    runner = CliRunner()
+    list_mock = AsyncMock(
+        return_value=[
+            {
+                "lane": "evaluation",
+                "paused": True,
+                "reason": "maintenance",
+                "updated_by": "cli",
+                "updated_at": datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc),
+            }
+        ]
+    )
+    get_pool_mock = AsyncMock(return_value=object())
+    close_pool_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "bcn.persistence.workflow_jobs.list_workflow_lane_controls",
+        list_mock,
+    )
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", get_pool_mock)
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", close_pool_mock)
+
+    result = runner.invoke(cli_module.cli, ["workflow-lanes", "list"])
+
+    assert result.exit_code == 0
+    assert "lane=publish | paused=no" in result.output
+    assert "lane=evaluation | paused=yes" in result.output
+    assert "reason=maintenance" in result.output
+
+
+def test_workflow_lanes_pause_command_updates_control(monkeypatch):
+    runner = CliRunner()
+    set_mock = AsyncMock(
+        return_value={
+            "lane": "evaluation",
+            "paused": True,
+            "reason": "maintenance",
+        }
+    )
+    get_pool_mock = AsyncMock(return_value=object())
+    close_pool_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "bcn.persistence.workflow_jobs.set_workflow_lane_control",
+        set_mock,
+    )
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", get_pool_mock)
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", close_pool_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "workflow-lanes",
+            "pause",
+            "evaluation",
+            "--reason",
+            "maintenance",
+            "--updated-by",
+            "operator",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Paused lane evaluation" in result.output
+    assert set_mock.await_args.args == ("evaluation",)
+    assert set_mock.await_args.kwargs == {
+        "paused": True,
+        "updated_by": "operator",
+        "reason": "maintenance",
+    }
+
+
+def test_workflow_lanes_resume_command_updates_control(monkeypatch):
+    runner = CliRunner()
+    set_mock = AsyncMock(return_value={"lane": "evaluation", "paused": False})
+    get_pool_mock = AsyncMock(return_value=object())
+    close_pool_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "bcn.persistence.workflow_jobs.set_workflow_lane_control",
+        set_mock,
+    )
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", get_pool_mock)
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", close_pool_mock)
+
+    result = runner.invoke(
+        cli_module.cli,
+        [
+            "workflow-lanes",
+            "resume",
+            "evaluation",
+            "--reason",
+            "maintenance complete",
+            "--updated-by",
+            "operator",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Resumed lane evaluation" in result.output
+    assert set_mock.await_args.args == ("evaluation",)
+    assert set_mock.await_args.kwargs == {
+        "paused": False,
+        "updated_by": "operator",
+        "reason": "maintenance complete",
+    }

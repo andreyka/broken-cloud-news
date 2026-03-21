@@ -15,6 +15,9 @@ bcn pipeline --mode regular_daily_briefing
 bcn workflow-run --mode ad_hoc
 bcn scheduler
 bcn worker --lane publish
+bcn workflow-lanes list
+bcn workflow-lanes pause evaluation --reason "maintenance"
+bcn workflow-lanes resume evaluation
 bcn workflow-jobs --limit 20
 bcn run
 ```
@@ -94,6 +97,7 @@ See [optimization-loop.md](optimization-loop.md) for the optimization workflow.
 
 - `bcn scheduler` is enqueue-only: it registers schedules and writes durable jobs.
 - `bcn worker --lane <lane>` leases durable jobs and executes them.
+- `bcn workflow-lanes` shows and mutates lane pause state; paused lanes stay queued but are not leased by workers.
 - `bcn run` starts the scheduler plus the default worker lanes in one process for convenience and backwards compatibility.
 - `bcn workflow-jobs` shows the durable queue state across publish, collection, analysis, and evaluation lanes.
 - `bcn serve <component>` runs one deployable service behind its HTTP contract.

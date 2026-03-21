@@ -39,6 +39,10 @@ def _normalize_error(error: str | None, *, fallback: str) -> str:
     return value[:_JOB_ERROR_MAX_LEN]
 
 
+def _normalize_lane(lane: str | None) -> str:
+    return str(lane or "").strip().lower()
+
+
 async def ensure_workflow_job_tables() -> None:
     """Ensure schema migrations already created workflow job tables."""
     await ensure_schema_ready()
@@ -102,7 +106,7 @@ async def create_workflow_job(
             notes = COALESCE(EXCLUDED.notes, workflow_jobs.notes)
         RETURNING id
         """,
-        str(lane or "").strip().lower(),
+        _normalize_lane(lane),
         int(priority),
         str(job_type or "").strip(),
         str(source or "scheduler").strip(),
@@ -215,6 +219,12 @@ async def claim_next_workflow_job(
                       AND available_at <= NOW()
                       AND attempt_count < max_attempts
                       AND (deadline_at IS NULL OR deadline_at > NOW())
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM workflow_lane_controls controls
+                          WHERE controls.lane = workflow_jobs.lane
+                            AND controls.paused = TRUE
+                      )
                     ORDER BY priority DESC, available_at ASC, created_at ASC
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
@@ -257,7 +267,7 @@ async def claim_next_workflow_job(
                     j.error_message,
                     j.notes
                 """,
-                [str(lane or "").strip().lower() for lane in lanes],
+                [_normalize_lane(lane) for lane in lanes],
                 str(worker_id or "").strip(),
             )
             if not row:
@@ -545,6 +555,71 @@ async def get_workflow_job(job_id: UUID) -> dict[str, Any] | None:
     return payload
 
 
+async def set_workflow_lane_control(
+    lane: str,
+    *,
+    paused: bool,
+    updated_by: str = "cli",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Upsert one lane control row used to pause or resume job claiming."""
+    await ensure_workflow_job_tables()
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        INSERT INTO workflow_lane_controls (
+            lane,
+            paused,
+            reason,
+            updated_by,
+            paused_at,
+            updated_at
+        )
+        VALUES (
+            $1,
+            $2,
+            NULLIF($3, ''),
+            NULLIF($4, ''),
+            CASE WHEN $2 THEN NOW() ELSE NULL END,
+            NOW()
+        )
+        ON CONFLICT (lane)
+        DO UPDATE
+        SET
+            paused = EXCLUDED.paused,
+            reason = EXCLUDED.reason,
+            updated_by = EXCLUDED.updated_by,
+            paused_at = CASE WHEN EXCLUDED.paused THEN NOW() ELSE NULL END,
+            updated_at = NOW()
+        RETURNING lane, paused, reason, updated_by, paused_at, updated_at
+        """,
+        _normalize_lane(lane),
+        bool(paused),
+        str(reason or "").strip(),
+        str(updated_by or "").strip(),
+    )
+    return dict(row) if row else {}
+
+
+async def list_workflow_lane_controls() -> list[asyncpg.Record]:
+    """Return persisted lane pause state for operator controls."""
+    await ensure_workflow_job_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT
+            lane,
+            paused,
+            reason,
+            updated_by,
+            paused_at,
+            updated_at
+        FROM workflow_lane_controls
+        ORDER BY lane ASC
+        """
+    )
+
+
 async def list_recent_workflow_jobs(
     *,
     lane: str | None = None,
@@ -617,9 +692,11 @@ __all__ = [
     "ensure_workflow_job_tables",
     "fail_workflow_job",
     "get_workflow_job",
+    "list_workflow_lane_controls",
     "list_recent_workflow_jobs",
     "reclaim_expired_workflow_job_leases",
     "requeue_workflow_job",
     "renew_workflow_job_lease",
+    "set_workflow_lane_control",
     "update_workflow_job_progress",
 ]
