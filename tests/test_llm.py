@@ -329,6 +329,8 @@ class TestGenerateCoverPrompt:
         result = await WriterLLM(llm).generate_cover_prompt("topics")
         assert "`" not in result
         assert "cyberpunk server room" in result
+        assert "editorial cover image" in result
+        assert "no creepy faces" in result
 
 
 class TestCoverImageSupport:

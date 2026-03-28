@@ -40,6 +40,15 @@ _IMAGE_MODEL_HINTS = frozenset(
     }
 )
 
+_COVER_PROMPT_SUFFIX = (
+    "editorial cover image, organic social-media art direction, clean composition, "
+    "natural or soft cinematic lighting, realistic textures, grounded environment, "
+    "high-quality photography-inspired rendering, subtle color grade, modern magazine aesthetic, "
+    "no text, no watermark, no logo, no horror, no creepy faces, no hooded hacker, "
+    "no glowing eyes, no distorted anatomy, no extra fingers, no extra limbs, "
+    "no floating UI clutter, no generic cyberpunk neon"
+)
+
 
 class WriterLLM:
     def __init__(self, client: LLMClient, *, prompts: dict[str, str] | None = None):
@@ -248,7 +257,7 @@ class WriterLLM:
             system_prompt=self.prompts["cover_art_system"],
             user_content=user_msg,
         )
-        return raw.replace("`", "").strip()
+        return self._finalize_cover_prompt(raw)
 
     def supports_cover_image_generation(self) -> bool:
         """Return True when the cover role points to a Gemini image-capable model."""
@@ -275,6 +284,19 @@ class WriterLLM:
             digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
             out[name] = {"sha256": digest, "chars": len(prompt)}
         return out
+
+    @staticmethod
+    def _finalize_cover_prompt(raw: str) -> str:
+        """Normalize the model output into a stable editorial-looking cover prompt."""
+        cleaned = raw.replace("`", " ").replace("\n", " ").strip(" ,")
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            cleaned = "cloud security incident scene"
+
+        lower = cleaned.lower()
+        if _COVER_PROMPT_SUFFIX.lower() in lower:
+            return cleaned
+        return f"{cleaned}, {_COVER_PROMPT_SUFFIX}"
 
     def _build_style_memory(self, recent_briefings: list[dict]) -> str:
         """Build compact style-memory snippets to reduce repetitive writing."""

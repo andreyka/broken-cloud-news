@@ -106,7 +106,7 @@ class ComfyUIClient:
     ) -> dict[str, Any]:
         """Build the ComfyUI workflow payload for Flux.1-schnell.
 
-        Uses 4 steps, cfg=1, euler sampler, simple scheduler, 1024x1024.
+        Uses 6 steps, cfg=1, euler sampler, simple scheduler, 1344x768.
 
         Args:
             prompt_text: Positive text prompt.
@@ -120,7 +120,7 @@ class ComfyUIClient:
             "3": {
                 "inputs": {
                     "seed": seed,
-                    "steps": 4,
+                    "steps": 6,
                     "cfg": 1,
                     "sampler_name": "euler",
                     "scheduler": "simple",
@@ -137,7 +137,7 @@ class ComfyUIClient:
                 "class_type": "CheckpointLoaderSimple",
             },
             "5": {
-                "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+                "inputs": {"width": 1344, "height": 768, "batch_size": 1},
                 "class_type": "EmptyLatentImage",
             },
             "6": {
@@ -146,7 +146,12 @@ class ComfyUIClient:
             },
             "7": {
                 "inputs": {
-                    "text": "text, watermark, blurry, low quality",
+                    "text": (
+                        "text, watermark, logo, horror, creepy, uncanny, "
+                        "hooded hacker, glowing eyes, deformed anatomy, extra fingers, "
+                        "extra limbs, duplicate people, distorted face, blurry, low quality, "
+                        "plastic 3d render, floating ui shards, oversaturated neon"
+                    ),
                     "clip": ["4", 1],
                 },
                 "class_type": "CLIPTextEncode",

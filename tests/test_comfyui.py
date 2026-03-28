@@ -67,5 +67,7 @@ class TestComfyUIClient:
         assert wf["6"]["inputs"]["text"] == "test prompt"
         assert wf["3"]["inputs"]["seed"] == 42
         assert wf["9"]["inputs"]["filename_prefix"] == "Test"
-        assert wf["3"]["inputs"]["steps"] == 4
-        assert wf["5"]["inputs"]["width"] == 1024
+        assert wf["3"]["inputs"]["steps"] == 6
+        assert wf["5"]["inputs"]["width"] == 1344
+        assert wf["5"]["inputs"]["height"] == 768
+        assert "hooded hacker" in wf["7"]["inputs"]["text"]
