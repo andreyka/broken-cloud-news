@@ -1,0 +1,11 @@
+{
+  "llm_provider_writer": "vertexai",
+  "llm_base_url_writer": "https://aiplatform.googleapis.com/v1",
+  "llm_model_writer": "gemini-3.1-pro-preview",
+  "llm_provider_critic": "vertexai",
+  "llm_base_url_critic": "https://aiplatform.googleapis.com/v1",
+  "llm_model_critic": "gemini-3.1-pro-preview",
+  "llm_provider_verifier": "vertexai",
+  "llm_base_url_verifier": "https://aiplatform.googleapis.com/v1",
+  "llm_model_verifier": "gemini-3.1-pro-preview"
+}
