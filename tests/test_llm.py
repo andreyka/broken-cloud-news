@@ -33,6 +33,36 @@ def _chat_response(content: str) -> httpx.Response:
     )
 
 
+def _tool_call_response(
+    *,
+    tool_name: str,
+    arguments: dict[str, object],
+    content: str | None = None,
+) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {
+                    "message": {
+                        "content": content,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": json.dumps(arguments),
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    )
+
+
 class TestChat:
     @respx.mock
     @pytest.mark.asyncio
@@ -88,6 +118,40 @@ class TestChat:
         wait_seconds = float(mock_sleep.await_args.args[0])
         assert wait_seconds >= 5.0
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_compat_tool_loop_executes_tool_and_returns_final_content(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions")
+        route.side_effect = [
+            _tool_call_response(
+                tool_name="fetch_page_content",
+                arguments={"url": "https://example.com"},
+            ),
+            _chat_response("done"),
+        ]
+
+        async def fetch_page_content(url: str) -> str:
+            return f"content for {url}"
+
+        result = await llm.chat_for_role(
+            role="analyst",
+            system_prompt="system",
+            user_content="user",
+            tools=[fetch_page_content],
+        )
+
+        assert result == "done"
+        assert route.call_count == 2
+
+        first_request = json.loads(route.calls[0].request.content)
+        assert first_request["tools"][0]["function"]["name"] == "fetch_page_content"
+
+        second_request = json.loads(route.calls[1].request.content)
+        assert second_request["messages"][2]["role"] == "assistant"
+        assert second_request["messages"][3]["role"] == "tool"
+        assert second_request["messages"][3]["tool_call_id"] == "call_1"
+        assert second_request["messages"][3]["content"] == "content for https://example.com"
+
 
 class TestAnalyzeItem:
     @respx.mock
@@ -141,6 +205,37 @@ class TestAnalyzeItem:
         )
         result = await AnalystLLM(llm).analyze_item("title", "content", "url")
         assert result.relevance_score == 10
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_compat_analyze_item_uses_tool_call(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions")
+        route.side_effect = [
+            _tool_call_response(
+                tool_name="fetch_page_content",
+                arguments={"url": "https://example.com"},
+            ),
+            _chat_response(
+                json.dumps(
+                    {
+                        "summary": "tool-assisted",
+                        "relevance_score": 8,
+                        "tags": ["cloud"],
+                        "image_prompt": "prompt",
+                    }
+                )
+            ),
+        ]
+
+        result = await AnalystLLM(llm).analyze_item(
+            "Title",
+            "Body",
+            "https://example.com",
+        )
+
+        assert result.summary == "tool-assisted"
+        assert result.relevance_score == 8
+        assert route.call_count == 2
 
 
 class TestGenerateBriefing:

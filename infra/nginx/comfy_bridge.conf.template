@@ -1,0 +1,15 @@
+server {
+    listen 8188;
+    server_name _;
+
+    location / {
+        proxy_pass ${COMFYUI_BRIDGE_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header Connection "";
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}

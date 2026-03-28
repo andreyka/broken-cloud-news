@@ -12,7 +12,7 @@ import json
 import logging
 import random
 import re
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 import httpx
 
@@ -245,6 +245,7 @@ class LLMClient:
                     system_prompt,
                     user_content,
                     json_response=json_response,
+                    tools=tools,
                 )
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
@@ -310,21 +311,166 @@ class LLMClient:
         user_content: str,
         *,
         json_response: bool = False,
+        tools: list[Any] | None = None,
     ) -> str:
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
         request: dict[str, Any] = {
             "model": endpoint.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
+            "messages": messages,
         }
+        if tools:
+            tool_schemas = [self._build_openai_tool_schema(tool) for tool in tools]
+            request["tools"] = tool_schemas
+            request["tool_choice"] = "auto"
+
+            tool_map: dict[str, Callable[..., Any]] = {
+                str(tool.__name__): tool for tool in tools if callable(tool)
+            }
+            for _ in range(8):
+                response = await self._client.post(
+                    f"{endpoint.base_url}/chat/completions",
+                    headers=self._headers(endpoint),
+                    json=request,
+                )
+                response.raise_for_status()
+                choice = (response.json().get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                tool_calls = list(message.get("tool_calls") or [])
+                if not tool_calls:
+                    return self._extract_openai_content(message)
+
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "tool_calls": tool_calls,
+                }
+                if "content" in message:
+                    assistant_message["content"] = message.get("content")
+                messages.append(assistant_message)
+
+                for tool_call in tool_calls:
+                    tool_response = await self._invoke_openai_tool_call(
+                        tool_call, tool_map
+                    )
+                    tool_call_id = str(tool_call.get("id") or "")
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": tool_response,
+                        }
+                    )
+                request["messages"] = messages
+
+            raise RuntimeError(
+                "OpenAI-compatible tool call loop exceeded maximum iterations"
+            )
+
         response = await self._client.post(
             f"{endpoint.base_url}/chat/completions",
             headers=self._headers(endpoint),
             json=request,
         )
         response.raise_for_status()
-        return str(response.json()["choices"][0]["message"]["content"])
+        return self._extract_openai_content(response.json()["choices"][0]["message"])
+
+    @staticmethod
+    def _build_openai_tool_schema(tool: Callable[..., Any]) -> dict[str, Any]:
+        signature = inspect.signature(tool)
+        properties: dict[str, dict[str, str]] = {}
+        required: list[str] = []
+
+        for parameter in signature.parameters.values():
+            if parameter.kind in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            ):
+                continue
+            properties[parameter.name] = {
+                "type": LLMClient._json_schema_type_for_annotation(
+                    parameter.annotation
+                )
+            }
+            if parameter.default is inspect.Parameter.empty:
+                required.append(parameter.name)
+
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.__name__,
+                "description": inspect.getdoc(tool) or tool.__name__,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        }
+
+    @staticmethod
+    def _json_schema_type_for_annotation(annotation: Any) -> str:
+        if annotation in {int}:
+            return "integer"
+        if annotation in {float}:
+            return "number"
+        if annotation in {bool}:
+            return "boolean"
+        return "string"
+
+    async def _invoke_openai_tool_call(
+        self,
+        tool_call: dict[str, Any],
+        tool_map: dict[str, Callable[..., Any]],
+    ) -> str:
+        function_payload = tool_call.get("function") or {}
+        tool_name = str(function_payload.get("name") or "").strip()
+        if not tool_name or tool_name not in tool_map:
+            return f"Tool execution failed: unknown tool '{tool_name}'."
+
+        raw_arguments = function_payload.get("arguments")
+        try:
+            arguments = (
+                json.loads(raw_arguments)
+                if isinstance(raw_arguments, str) and raw_arguments.strip()
+                else {}
+            )
+        except json.JSONDecodeError as exc:
+            return f"Tool execution failed: invalid JSON arguments ({exc})."
+        if not isinstance(arguments, dict):
+            return "Tool execution failed: tool arguments must decode to an object."
+
+        try:
+            result = tool_map[tool_name](**arguments)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            logger.warning("OpenAI-compatible tool execution failed: %s", exc)
+            return f"Tool execution failed: {exc}"
+
+        if isinstance(result, str):
+            return result
+        return json.dumps(result, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _extract_openai_content(message: dict[str, Any]) -> str:
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if isinstance(block.get("text"), str):
+                    parts.append(block["text"])
+                elif block.get("type") == "output_text" and isinstance(
+                    block.get("text"), str
+                ):
+                    parts.append(block["text"])
+            return "\n".join(part for part in parts if part).strip()
+        return ""
 
     async def _get_genai_client(self, endpoint: _EndpointConfig) -> Any:
         from google import genai
