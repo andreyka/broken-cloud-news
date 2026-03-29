@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { PortalTabs } from "@/app/_components/portal-tabs";
 import {
   type EvaluationRunSummary,
   type SimulationSummary,
@@ -700,6 +701,8 @@ export default async function Home({ searchParams }: HomePageProps) {
 
   return (
     <main className="shell">
+      <PortalTabs current="overview" />
+
       <section className="hero">
         <div className="brand-lockup">
           <div className="brand-logo-frame">

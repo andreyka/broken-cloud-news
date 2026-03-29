@@ -81,6 +81,51 @@ export type WorkflowControlEnqueueResult = {
   workflowIds: string[];
 };
 
+export type HumanReviewDecision = "accept" | "reject" | "edit" | "needs_work";
+
+export type HumanReviewSummary = {
+  id: string;
+  briefingId: string;
+  runId: string | null;
+  reviewer: string;
+  decision: HumanReviewDecision;
+  issueTags: string[];
+  editedMarkdown: string | null;
+  notes: string | null;
+  createdAt: string;
+};
+
+export type BriefingReviewQueueEntry = {
+  id: string;
+  createdAt: string;
+  distributedAt: string | null;
+  status: string;
+  preview: string;
+  reviewCount: number;
+  lastDecision: HumanReviewDecision | null;
+  lastReviewAt: string | null;
+};
+
+export type BriefingReviewDetail = {
+  briefing: {
+    id: string;
+    createdAt: string;
+    distributedAt: string | null;
+    status: string;
+    contentMarkdown: string;
+    coverImageUrl: string | null;
+    coverImagePrompt: string | null;
+  };
+  latestRun: {
+    id: string;
+    createdAt: string;
+    decision: string;
+    rewriteCount: number;
+    llmModel: string | null;
+  } | null;
+  reviews: HumanReviewSummary[];
+};
+
 export type WorkflowQueueSnapshot = {
   queuedCount: number;
   leasedCount: number;
@@ -380,6 +425,29 @@ function asDateString(value: unknown): string | null {
   return null;
 }
 
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function mapWorkflowJob(row: Record<string, unknown>): WorkflowJobSummary {
   return {
     id: String(row.id),
@@ -439,6 +507,23 @@ function mapWorkflowArtifact(row: Record<string, unknown>): WorkflowJobArtifactS
     createdAt: asDateString(row.created_at) || "",
     updatedAt: asDateString(row.updated_at),
     payload: asObject(row.payload),
+  };
+}
+
+function mapHumanReview(row: Record<string, unknown>): HumanReviewSummary {
+  return {
+    id: String(row.id),
+    briefingId: String(row.briefing_id),
+    runId: row.run_id ? String(row.run_id) : null,
+    reviewer: String(row.reviewer || "portal"),
+    decision: String(row.decision || "needs_work") as HumanReviewDecision,
+    issueTags: asStringArray(row.issue_tags),
+    editedMarkdown:
+      row.edited_markdown && String(row.edited_markdown).trim().length > 0
+        ? String(row.edited_markdown)
+        : null,
+    notes: row.notes && String(row.notes).trim().length > 0 ? String(row.notes) : null,
+    createdAt: asDateString(row.created_at) || "",
   };
 }
 
@@ -842,6 +927,220 @@ export async function enqueueWorkflowControlAction(
       lane: workflows[0].lane,
       jobIds,
       workflowIds: workflows.map((workflow) => workflow.workflowId),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getHumanReviewQueue(
+  limit = 20,
+  onlyUnreviewed = false,
+): Promise<BriefingReviewQueueEntry[]> {
+  const where = onlyUnreviewed
+    ? "WHERE COALESCE(rv.review_count, 0) = 0"
+    : "";
+  const result = await getPool().query(
+    `
+      SELECT
+        b.id,
+        b.created_at,
+        b.distributed_at,
+        b.status,
+        LEFT(COALESCE(b.content_markdown, ''), 280) AS preview,
+        COALESCE(rv.review_count, 0)::int AS review_count,
+        rv.last_decision,
+        rv.last_review_at
+      FROM briefings b
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS review_count,
+          MAX(created_at) AS last_review_at,
+          (ARRAY_AGG(decision ORDER BY created_at DESC))[1] AS last_decision
+        FROM briefing_human_reviews hr
+        WHERE hr.briefing_id = b.id
+      ) rv ON TRUE
+      ${where}
+      ORDER BY b.created_at DESC
+      LIMIT $1
+    `,
+    [Math.max(1, limit)],
+  );
+  return result.rows.map((row) => ({
+    id: String(row.id),
+    createdAt: asDateString(row.created_at) || "",
+    distributedAt: asDateString(row.distributed_at),
+    status: String(row.status || "DRAFT"),
+    preview: String(row.preview || ""),
+    reviewCount: Number(row.review_count || 0),
+    lastDecision: row.last_decision
+      ? (String(row.last_decision) as HumanReviewDecision)
+      : null,
+    lastReviewAt: asDateString(row.last_review_at),
+  }));
+}
+
+export async function getHumanReviewBriefing(
+  briefingId: string,
+): Promise<BriefingReviewDetail | null> {
+  const [briefingResult, reviewsResult] = await Promise.all([
+    getPool().query(
+      `
+        SELECT
+          b.id,
+          b.created_at,
+          b.distributed_at,
+          b.status,
+          b.content_markdown,
+          b.cover_image_url,
+          b.cover_image_prompt,
+          gr.id AS run_id,
+          gr.created_at AS run_created_at,
+          gr.decision AS run_decision,
+          gr.rewrite_count AS run_rewrite_count,
+          gr.llm_model AS run_llm_model
+        FROM briefings b
+        LEFT JOIN LATERAL (
+          SELECT id, created_at, decision, rewrite_count, llm_model
+          FROM generation_runs
+          WHERE briefing_id = b.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) gr ON TRUE
+        WHERE b.id = $1
+        LIMIT 1
+      `,
+      [briefingId],
+    ),
+    getPool().query(
+      `
+        SELECT
+          id,
+          briefing_id,
+          run_id,
+          reviewer,
+          decision,
+          issue_tags,
+          edited_markdown,
+          notes,
+          created_at
+        FROM briefing_human_reviews
+        WHERE briefing_id = $1
+        ORDER BY created_at DESC
+      `,
+      [briefingId],
+    ),
+  ]);
+
+  const row = briefingResult.rows[0] as Record<string, unknown> | undefined;
+  if (!row) {
+    return null;
+  }
+
+  return {
+    briefing: {
+      id: String(row.id),
+      createdAt: asDateString(row.created_at) || "",
+      distributedAt: asDateString(row.distributed_at),
+      status: String(row.status || "DRAFT"),
+      contentMarkdown: String(row.content_markdown || ""),
+      coverImageUrl: row.cover_image_url ? String(row.cover_image_url) : null,
+      coverImagePrompt: row.cover_image_prompt
+        ? String(row.cover_image_prompt)
+        : null,
+    },
+    latestRun: row.run_id
+      ? {
+          id: String(row.run_id),
+          createdAt: asDateString(row.run_created_at) || "",
+          decision: String(row.run_decision || "PENDING"),
+          rewriteCount: Number(row.run_rewrite_count || 0),
+          llmModel: row.run_llm_model ? String(row.run_llm_model) : null,
+        }
+      : null,
+    reviews: reviewsResult.rows.map((review) =>
+      mapHumanReview(review as Record<string, unknown>),
+    ),
+  };
+}
+
+export async function insertHumanReviewFromPortal(params: {
+  briefingId: string;
+  decision: HumanReviewDecision;
+  reviewer?: string;
+  issueTags?: string[];
+  editedMarkdown?: string | null;
+  notes?: string | null;
+}): Promise<{ reviewId: string; runId: string | null }> {
+  const decision = params.decision;
+  if (!["accept", "reject", "edit", "needs_work"].includes(decision)) {
+    throw new Error(`Unsupported review decision: ${decision}`);
+  }
+
+  const reviewer = (params.reviewer || "portal").trim() || "portal";
+  const issueTags = [...new Set((params.issueTags || []).map((tag) => tag.trim()).filter(Boolean))];
+  const editedMarkdown =
+    params.editedMarkdown && params.editedMarkdown.trim().length > 0
+      ? params.editedMarkdown.trim()
+      : null;
+  const notes =
+    params.notes && params.notes.trim().length > 0 ? params.notes.trim() : null;
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const briefingResult = await client.query(
+      `SELECT id FROM briefings WHERE id = $1 LIMIT 1`,
+      [params.briefingId],
+    );
+    if (briefingResult.rowCount === 0) {
+      throw new Error(`Briefing not found: ${params.briefingId}`);
+    }
+
+    const runResult = await client.query(
+      `
+        SELECT id
+        FROM generation_runs
+        WHERE briefing_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [params.briefingId],
+    );
+    const runId = runResult.rows[0]?.id ? String(runResult.rows[0].id) : null;
+
+    const reviewResult = await client.query(
+      `
+        INSERT INTO briefing_human_reviews (
+          briefing_id,
+          run_id,
+          reviewer,
+          decision,
+          issue_tags,
+          edited_markdown,
+          notes
+        )
+        VALUES ($1, $2, $3, $4, $5::text[], $6, $7)
+        RETURNING id
+      `,
+      [
+        params.briefingId,
+        runId,
+        reviewer,
+        decision,
+        issueTags,
+        editedMarkdown,
+        notes,
+      ],
+    );
+
+    await client.query("COMMIT");
+    return {
+      reviewId: String(reviewResult.rows[0]?.id || ""),
+      runId,
     };
   } catch (error) {
     await client.query("ROLLBACK");
