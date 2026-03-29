@@ -1,5 +1,9 @@
 import { Pool } from "pg";
 
+import type { AIReviewConfig } from "@/lib/ai-review";
+import { getAIReviewConfig } from "@/lib/ai-review";
+import type { ReviewDecision } from "@/lib/review-taxonomy";
+
 type JsonObject = Record<string, unknown>;
 
 export type EvaluationRunSummary = {
@@ -81,7 +85,23 @@ export type WorkflowControlEnqueueResult = {
   workflowIds: string[];
 };
 
-export type HumanReviewDecision = "accept" | "reject" | "edit" | "needs_work";
+export type HumanReviewDecision = ReviewDecision;
+
+export type AIReviewSummary = {
+  id: string;
+  briefingId: string;
+  runId: string | null;
+  source: string;
+  reviewerProvider: string;
+  reviewerModel: string;
+  reasoningEffort: string | null;
+  decision: HumanReviewDecision;
+  issueTags: string[];
+  editedMarkdown: string | null;
+  notes: string | null;
+  rawResponse: JsonObject;
+  createdAt: string;
+};
 
 export type HumanReviewSummary = {
   id: string;
@@ -124,6 +144,8 @@ export type BriefingReviewDetail = {
     llmModel: string | null;
   } | null;
   reviews: HumanReviewSummary[];
+  aiReviews: AIReviewSummary[];
+  aiReviewConfig: AIReviewConfig;
 };
 
 export type WorkflowQueueSnapshot = {
@@ -523,6 +545,27 @@ function mapHumanReview(row: Record<string, unknown>): HumanReviewSummary {
         ? String(row.edited_markdown)
         : null,
     notes: row.notes && String(row.notes).trim().length > 0 ? String(row.notes) : null,
+    createdAt: asDateString(row.created_at) || "",
+  };
+}
+
+function mapAIReview(row: Record<string, unknown>): AIReviewSummary {
+  return {
+    id: String(row.id),
+    briefingId: String(row.briefing_id),
+    runId: row.run_id ? String(row.run_id) : null,
+    source: String(row.source || "dashboard"),
+    reviewerProvider: String(row.reviewer_provider || "openai"),
+    reviewerModel: String(row.reviewer_model || ""),
+    reasoningEffort: row.reasoning_effort ? String(row.reasoning_effort) : null,
+    decision: String(row.decision || "needs_work") as HumanReviewDecision,
+    issueTags: asStringArray(row.issue_tags),
+    editedMarkdown:
+      row.edited_markdown && String(row.edited_markdown).trim().length > 0
+        ? String(row.edited_markdown)
+        : null,
+    notes: row.notes && String(row.notes).trim().length > 0 ? String(row.notes) : null,
+    rawResponse: asObject(row.raw_response),
     createdAt: asDateString(row.created_at) || "",
   };
 }
@@ -986,7 +1029,37 @@ export async function getHumanReviewQueue(
 export async function getHumanReviewBriefing(
   briefingId: string,
 ): Promise<BriefingReviewDetail | null> {
-  const [briefingResult, reviewsResult] = await Promise.all([
+  const aiReviewsPromise = getPool()
+    .query(
+      `
+        SELECT
+          id,
+          briefing_id,
+          run_id,
+          source,
+          reviewer_provider,
+          reviewer_model,
+          reasoning_effort,
+          decision,
+          issue_tags,
+          edited_markdown,
+          notes,
+          raw_response,
+          created_at
+        FROM briefing_ai_reviews
+        WHERE briefing_id = $1
+        ORDER BY created_at DESC
+      `,
+      [briefingId],
+    )
+    .catch((error) => {
+      if (isMissingRelationError(error)) {
+        return { rows: [] as Record<string, unknown>[] };
+      }
+      throw error;
+    });
+
+  const [briefingResult, reviewsResult, aiReviewsResult] = await Promise.all([
     getPool().query(
       `
         SELECT
@@ -1033,6 +1106,7 @@ export async function getHumanReviewBriefing(
       `,
       [briefingId],
     ),
+    aiReviewsPromise,
   ]);
 
   const row = briefingResult.rows[0] as Record<string, unknown> | undefined;
@@ -1064,6 +1138,10 @@ export async function getHumanReviewBriefing(
     reviews: reviewsResult.rows.map((review) =>
       mapHumanReview(review as Record<string, unknown>),
     ),
+    aiReviews: aiReviewsResult.rows.map((review) =>
+      mapAIReview(review as Record<string, unknown>),
+    ),
+    aiReviewConfig: getAIReviewConfig(),
   };
 }
 
@@ -1134,6 +1212,110 @@ export async function insertHumanReviewFromPortal(params: {
         issueTags,
         editedMarkdown,
         notes,
+      ],
+    );
+
+    await client.query("COMMIT");
+    return {
+      reviewId: String(reviewResult.rows[0]?.id || ""),
+      runId,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function insertAIReviewFromPortal(params: {
+  briefingId: string;
+  reviewerProvider: string;
+  reviewerModel: string;
+  reasoningEffort?: string | null;
+  decision: HumanReviewDecision;
+  issueTags?: string[];
+  editedMarkdown?: string | null;
+  notes?: string | null;
+  rawResponse?: JsonObject;
+  source?: string;
+}): Promise<{ reviewId: string; runId: string | null }> {
+  const decision = params.decision;
+  if (!["accept", "reject", "edit", "needs_work"].includes(decision)) {
+    throw new Error(`Unsupported AI review decision: ${decision}`);
+  }
+
+  const reviewerProvider = params.reviewerProvider.trim() || "openai";
+  const reviewerModel = params.reviewerModel.trim();
+  if (!reviewerModel) {
+    throw new Error("AI review must include reviewer model.");
+  }
+  const issueTags = [...new Set((params.issueTags || []).map((tag) => tag.trim()).filter(Boolean))];
+  const editedMarkdown =
+    params.editedMarkdown && params.editedMarkdown.trim().length > 0
+      ? params.editedMarkdown.trim()
+      : null;
+  const notes =
+    params.notes && params.notes.trim().length > 0 ? params.notes.trim() : null;
+  const reasoningEffort =
+    params.reasoningEffort && params.reasoningEffort.trim().length > 0
+      ? params.reasoningEffort.trim()
+      : null;
+  const source = params.source?.trim() || "dashboard";
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const briefingResult = await client.query(
+      `SELECT id FROM briefings WHERE id = $1 LIMIT 1`,
+      [params.briefingId],
+    );
+    if (briefingResult.rowCount === 0) {
+      throw new Error(`Briefing not found: ${params.briefingId}`);
+    }
+
+    const runResult = await client.query(
+      `
+        SELECT id
+        FROM generation_runs
+        WHERE briefing_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [params.briefingId],
+    );
+    const runId = runResult.rows[0]?.id ? String(runResult.rows[0].id) : null;
+
+    const reviewResult = await client.query(
+      `
+        INSERT INTO briefing_ai_reviews (
+          briefing_id,
+          run_id,
+          source,
+          reviewer_provider,
+          reviewer_model,
+          reasoning_effort,
+          decision,
+          issue_tags,
+          edited_markdown,
+          notes,
+          raw_response
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11::jsonb)
+        RETURNING id
+      `,
+      [
+        params.briefingId,
+        runId,
+        source,
+        reviewerProvider,
+        reviewerModel,
+        reasoningEffort,
+        decision,
+        issueTags,
+        editedMarkdown,
+        notes,
+        JSON.stringify(params.rawResponse || {}),
       ],
     );
 

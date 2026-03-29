@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { runOpenAIEditorialReview } from "@/lib/ai-review";
 import {
-  type HumanReviewDecision,
-  insertHumanReviewFromPortal,
+  getHumanReviewBriefing,
+  insertAIReviewFromPortal,
 } from "@/lib/db";
-import { REVIEW_DECISIONS } from "@/lib/review-taxonomy";
-
-const VALID_DECISIONS = new Set<HumanReviewDecision>(REVIEW_DECISIONS);
 
 function buildRedirectLocation(
   redirectTo: string,
@@ -24,20 +22,12 @@ function buildRedirectLocation(
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const formData = await request.formData();
   const briefingId = String(formData.get("briefingId") || "").trim();
-  const decision = String(formData.get("decision") || "").trim() as HumanReviewDecision;
-  const reviewer = String(formData.get("reviewer") || "portal").trim();
-  const notes = String(formData.get("notes") || "").trim();
-  const editedMarkdown = String(formData.get("editedMarkdown") || "").trim();
   const redirectTo = String(formData.get("redirectTo") || "/review").trim() || "/review";
-  const issueTags = formData
-    .getAll("issueTag")
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
 
-  if (!briefingId || !VALID_DECISIONS.has(decision)) {
+  if (!briefingId) {
     const failureLocation = buildRedirectLocation(redirectTo, {
       reviewStatus: "error",
-      reviewMessage: "Missing briefing id or review decision.",
+      reviewMessage: "Missing briefing id for AI review.",
     });
     return new NextResponse(null, {
       status: 303,
@@ -46,18 +36,36 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const result = await insertHumanReviewFromPortal({
+    const detail = await getHumanReviewBriefing(briefingId);
+    if (!detail) {
+      throw new Error(`Briefing not found: ${briefingId}`);
+    }
+
+    const aiReview = await runOpenAIEditorialReview({
       briefingId,
-      decision,
-      reviewer,
-      issueTags,
-      editedMarkdown,
-      notes,
+      contentMarkdown: detail.briefing.contentMarkdown,
+      latestRunModel: detail.latestRun?.llmModel || null,
+      latestRunDecision: detail.latestRun?.decision || null,
+      rewriteCount: detail.latestRun?.rewriteCount || 0,
     });
+
+    const result = await insertAIReviewFromPortal({
+      briefingId,
+      reviewerProvider: aiReview.reviewerProvider,
+      reviewerModel: aiReview.reviewerModel,
+      reasoningEffort: aiReview.reasoningEffort,
+      decision: aiReview.decision,
+      issueTags: aiReview.issueTags,
+      editedMarkdown: aiReview.editedMarkdown,
+      notes: aiReview.notes,
+      rawResponse: aiReview.rawResponse,
+      source: "dashboard",
+    });
+
     const successLocation = buildRedirectLocation(redirectTo, {
       briefingId,
       reviewStatus: "success",
-      reviewMessage: `Stored ${decision} review ${result.reviewId}.`,
+      reviewMessage: `Stored AI review ${result.reviewId}.`,
     });
     return new NextResponse(null, {
       status: 303,
@@ -67,7 +75,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const message =
       error instanceof Error && error.message.trim().length > 0
         ? error.message
-        : "Failed to store human review.";
+        : "Failed to run AI review.";
     const failureLocation = buildRedirectLocation(redirectTo, {
       briefingId,
       reviewStatus: "error",

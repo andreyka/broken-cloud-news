@@ -579,6 +579,16 @@ details summary {
   margin: 18px 0;
 }
 
+.review-actions-stack,
+.review-history-grid {
+  display: grid;
+  gap: 18px;
+}
+
+.review-history-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .review-queue-list {
   display: grid;
   gap: 12px;
@@ -624,6 +634,13 @@ details summary {
 
 .review-block {
   padding: 18px;
+}
+
+.review-ai-meta {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
 }
 
 .briefing-markdown {
@@ -886,6 +903,33 @@ details summary {
   gap: 14px;
 }
 
+.review-ai-detail {
+  display: grid;
+  gap: 6px;
+}
+
+.review-bullet-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted-strong);
+}
+
+.review-bullet-list li + li {
+  margin-top: 0.45rem;
+}
+
+.review-claim-list {
+  display: grid;
+  gap: 12px;
+}
+
+.review-claim-item {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(125, 179, 255, 0.12);
+  background: rgba(3, 8, 15, 0.42);
+}
+
 .review-chip-grid {
   display: grid;
   gap: 10px;
@@ -1080,7 +1124,8 @@ details summary {
   .control-actions-grid,
   .lane-status-grid,
   .review-grid,
-  .review-detail-grid {
+  .review-detail-grid,
+  .review-history-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1113,6 +1158,7 @@ details summary {
   .queue-metric-grid,
   .detail-grid,
   .stat-grid,
+  .review-ai-meta,
   .review-decision-grid,
   .review-chip-grid,
   .runs-row,
