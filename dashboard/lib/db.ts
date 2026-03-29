@@ -72,6 +72,15 @@ export type WorkflowQueueAlert = {
   message: string;
 };
 
+export type WorkflowControlAction = "publish" | "analysis" | "collection";
+
+export type WorkflowControlEnqueueResult = {
+  action: WorkflowControlAction;
+  lane: string;
+  jobIds: string[];
+  workflowIds: string[];
+};
+
 export type WorkflowQueueSnapshot = {
   queuedCount: number;
   leasedCount: number;
@@ -141,6 +150,129 @@ const LEASE_AGE_WARN_SECONDS: Record<string, number> = {
   evaluation: 8 * 60 * 60,
 };
 
+type WorkflowStepPayload = {
+  step_id: string;
+  component: string;
+  operation: string;
+  args?: Record<string, unknown>;
+};
+
+type ManualWorkflowDefinition = {
+  workflowId: string;
+  description: string;
+  lane: "publish" | "collection" | "analysis";
+  priority: number;
+  maxAttempts: number;
+  steps: WorkflowStepPayload[];
+};
+
+const MANUAL_WORKFLOW_ACTIONS: Record<
+  WorkflowControlAction,
+  readonly ManualWorkflowDefinition[]
+> = {
+  publish: [
+    {
+      workflowId: "regular_daily_briefing",
+      description: "Run the regular daily briefing publish pipeline.",
+      lane: "publish",
+      priority: 100,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "generate_briefing",
+          component: "writer",
+          operation: "generate_release_candidate",
+          args: { mode: "regular_daily_briefing" },
+        },
+        {
+          step_id: "distribute_briefing",
+          component: "distributor",
+          operation: "deliver",
+          args: { mode: "regular_daily_briefing" },
+        },
+      ],
+    },
+  ],
+  analysis: [
+    {
+      workflowId: "analyst",
+      description: "Analyze newly collected items.",
+      lane: "analysis",
+      priority: 40,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "analyze_pending",
+          component: "analyst",
+          operation: "analyze_pending",
+        },
+      ],
+    },
+  ],
+  collection: [
+    {
+      workflowId: "ghsa_collector",
+      description: "Collect GitHub Security Advisory items.",
+      lane: "collection",
+      priority: 50,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "collect_ghsa",
+          component: "collector",
+          operation: "collect",
+          args: { source: "ghsa" },
+        },
+      ],
+    },
+    {
+      workflowId: "rss_collector",
+      description: "Collect RSS items from configured feeds.",
+      lane: "collection",
+      priority: 50,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "collect_rss",
+          component: "collector",
+          operation: "collect",
+          args: { source: "rss" },
+        },
+      ],
+    },
+    {
+      workflowId: "reddit_collector",
+      description: "Collect Reddit items from configured subreddits.",
+      lane: "collection",
+      priority: 50,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "collect_reddit",
+          component: "collector",
+          operation: "collect",
+          args: { source: "reddit" },
+        },
+      ],
+    },
+    {
+      workflowId: "twitter_collector",
+      description: "Collect Twitter/X items from configured handles.",
+      lane: "collection",
+      priority: 50,
+      maxAttempts: 3,
+      steps: [
+        {
+          step_id: "collect_twitter",
+          component: "collector",
+          operation: "collect",
+          args: { source: "twitter" },
+        },
+      ],
+    },
+  ],
+} as const;
+
 const globalForPg = globalThis as typeof globalThis & {
   __bcnDashboardPool?: Pool;
 };
@@ -167,6 +299,58 @@ function getPool(): Pool {
     globalForPg.__bcnDashboardPool = pool;
   }
   return pool;
+}
+
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function leaseSecondsForLane(
+  lane: ManualWorkflowDefinition["lane"],
+): number {
+  if (lane === "publish") {
+    return envInt("BCN_WORKFLOW_JOB_PUBLISH_LEASE_SECONDS", 1200);
+  }
+  if (lane === "analysis") {
+    return envInt("BCN_WORKFLOW_JOB_ANALYSIS_LEASE_SECONDS", 1200);
+  }
+  return envInt("BCN_WORKFLOW_JOB_COLLECTION_LEASE_SECONDS", 900);
+}
+
+function deadlineSecondsForLane(
+  lane: ManualWorkflowDefinition["lane"],
+): number {
+  if (lane === "publish") {
+    return envInt("BCN_WORKFLOW_JOB_PUBLISH_DEADLINE_SECONDS", 7200);
+  }
+  if (lane === "analysis") {
+    return envInt("BCN_WORKFLOW_JOB_ANALYSIS_DEADLINE_SECONDS", 3600);
+  }
+  return envInt("BCN_WORKFLOW_JOB_COLLECTION_DEADLINE_SECONDS", 5400);
+}
+
+function workflowJobPayload(definition: ManualWorkflowDefinition): string {
+  return JSON.stringify({
+    workflow_id: definition.workflowId,
+    description: definition.description,
+    steps: definition.steps.map((step) => ({
+      step_id: step.step_id,
+      component: step.component,
+      operation: step.operation,
+      args: step.args || {},
+    })),
+  });
+}
+
+export function isWorkflowControlAction(
+  value: string,
+): value is WorkflowControlAction {
+  return value === "publish" || value === "analysis" || value === "collection";
 }
 
 function asObject(value: unknown): JsonObject {
@@ -595,6 +779,75 @@ export async function getWorkflowQueueSnapshot(
       alerts: [],
       jobs: [],
     };
+  }
+}
+
+export async function enqueueWorkflowControlAction(
+  action: WorkflowControlAction,
+): Promise<WorkflowControlEnqueueResult> {
+  const workflows = MANUAL_WORKFLOW_ACTIONS[action];
+  if (!workflows || workflows.length === 0) {
+    throw new Error(`Unsupported workflow control action: ${action}`);
+  }
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const jobIds: string[] = [];
+    for (const workflow of workflows) {
+      const result = await client.query(
+        `
+          INSERT INTO workflow_jobs (
+            lane,
+            priority,
+            job_type,
+            source,
+            workflow_id,
+            max_attempts,
+            lease_duration_seconds,
+            payload,
+            notes,
+            deadline_at
+          )
+          VALUES (
+            $1,
+            $2,
+            'scheduled_workflow',
+            'dashboard',
+            $3,
+            $4,
+            $5,
+            $6::jsonb,
+            $7,
+            NOW() + make_interval(secs => $8)
+          )
+          RETURNING id
+        `,
+        [
+          workflow.lane,
+          workflow.priority,
+          workflow.workflowId,
+          workflow.maxAttempts,
+          leaseSecondsForLane(workflow.lane),
+          workflowJobPayload(workflow),
+          `Queued manually from control portal (${action})`,
+          deadlineSecondsForLane(workflow.lane),
+        ],
+      );
+      jobIds.push(String(result.rows[0]?.id || ""));
+    }
+    await client.query("COMMIT");
+    return {
+      action,
+      lane: workflows[0].lane,
+      jobIds,
+      workflowIds: workflows.map((workflow) => workflow.workflowId),
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

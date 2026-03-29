@@ -108,6 +108,30 @@ function queueAlertTone(alert: WorkflowQueueAlert): string {
   return "completed";
 }
 
+type QueueActionNotice = {
+  tone: "completed" | "failed";
+  message: string;
+};
+
+type SearchParams = Record<string, string | string[] | undefined>;
+
+function searchParamValue(
+  params: SearchParams,
+  key: string,
+): string | null {
+  const value = params[key];
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const first = value.find(
+      (entry) => typeof entry === "string" && entry.trim().length > 0,
+    );
+    return first || null;
+  }
+  return null;
+}
+
 function runStateLabel(run: EvaluationRunSummary | null): string {
   if (!run) {
     return "Awaiting run";
@@ -133,6 +157,46 @@ function statusLabel(run: EvaluationRunSummary): string {
 
 function replayDecision(summary: Record<string, unknown>): Record<string, unknown> {
   return asObject(summary.decision);
+}
+
+function QueueActionCard({
+  target,
+  title,
+  copy,
+  buttonLabel,
+  footnote,
+  paused,
+}: {
+  target: "publish" | "analysis" | "collection";
+  title: string;
+  copy: string;
+  buttonLabel: string;
+  footnote: string;
+  paused: boolean;
+}) {
+  return (
+    <form action="/api/workflows/rerun" className="control-action-card" method="post">
+      <input type="hidden" name="target" value={target} />
+      <input type="hidden" name="redirectTo" value="/" />
+      <div className="control-action-head">
+        <span className={`lane-pill lane-${target === "collection" ? "collection" : target}`}>
+          {title}
+        </span>
+        {paused ? (
+          <span className="run-state run-state-failed">lane paused</span>
+        ) : (
+          <span className="run-state run-state-completed">ready</span>
+        )}
+      </div>
+      <p className="lane-copy">{copy}</p>
+      <button className="control-button" type="submit">
+        {buttonLabel}
+      </button>
+      <span className="lane-meta">
+        {paused ? "Lane is paused. The queued job will wait for resume." : footnote}
+      </span>
+    </form>
+  );
 }
 
 function ReplayCard({ replay }: { replay: SimulationSummary }) {
@@ -398,7 +462,18 @@ function EvaluationLaneCard({
   );
 }
 
-function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
+function QueueCard({
+  snapshot,
+  notice,
+}: {
+  snapshot: WorkflowQueueSnapshot;
+  notice: QueueActionNotice | null;
+}) {
+  const lanes = new Map(snapshot.lanes.map((lane) => [lane.lane, lane]));
+  const publishLane = lanes.get("publish");
+  const analysisLane = lanes.get("analysis");
+  const collectionLane = lanes.get("collection");
+
   return (
     <section className="panel">
       <div className="section-head">
@@ -411,6 +486,13 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
           collection, analysis, and evaluation execution.
         </p>
       </div>
+
+      {notice ? (
+        <div className={`queue-notice queue-notice-${notice.tone}`}>
+          <span className={`run-state run-state-${notice.tone}`}>{notice.tone}</span>
+          <strong>{notice.message}</strong>
+        </div>
+      ) : null}
 
       <div className="metric-grid queue-metric-grid">
         <div className="metric-cell">
@@ -443,6 +525,45 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
         </div>
       </div>
 
+      <section className="control-actions-shell">
+        <div className="section-head">
+          <div>
+            <p className="eyebrow">Operator actions</p>
+            <h2>Manual workflow reruns</h2>
+          </div>
+          <p className="muted">
+            These controls enqueue real workflow jobs. Workers pick them up using
+            the same queue policy as scheduled runs.
+          </p>
+        </div>
+        <div className="control-actions-grid">
+          <QueueActionCard
+            target="publish"
+            title="Publish"
+            copy="Queue an immediate rerun of the regular daily briefing pipeline against the current analyzed pool."
+            buttonLabel="Queue publish rerun"
+            footnote="Creates one publish job."
+            paused={Boolean(publishLane?.paused)}
+          />
+          <QueueActionCard
+            target="analysis"
+            title="Analysis"
+            copy="Rerun the analyst step so newly collected items get scored and normalized without waiting for the next interval."
+            buttonLabel="Queue analysis rerun"
+            footnote="Creates one analysis job."
+            paused={Boolean(analysisLane?.paused)}
+          />
+          <QueueActionCard
+            target="collection"
+            title="Collection"
+            copy="Fan out all configured collector workflows now: GHSA, RSS, Reddit, and Twitter/X."
+            buttonLabel="Queue collection rerun"
+            footnote="Creates four collection jobs."
+            paused={Boolean(collectionLane?.paused)}
+          />
+        </div>
+      </section>
+
       <div className="card-grid queue-detail-grid">
         <section className="panel panel-amber">
           <p className="eyebrow">Alerts</p>
@@ -465,28 +586,35 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
 
         <section className="panel panel-teal">
           <p className="eyebrow">Lane status</p>
-          <div className="runs-table">
-            <div className="jobs-row runs-head lane-state-head">
-              <span>Lane</span>
-              <span>State</span>
-              <span>Queued</span>
-              <span>Leased</span>
-              <span>Oldest queued</span>
-              <span>Oldest leased</span>
-              <span>Note</span>
-            </div>
+          <div className="lane-status-grid">
             {snapshot.lanes.map((lane) => (
-              <div className="jobs-row lane-state-row" key={lane.lane}>
-                <span className={`lane-pill lane-${lane.lane}`}>{laneTitle(lane.lane)}</span>
-                <span className={`run-state run-state-${lane.paused ? "failed" : "completed"}`}>
-                  {lane.paused ? "paused" : "active"}
-                </span>
-                <span>{lane.queuedCount}</span>
-                <span>{lane.leasedCount}</span>
-                <span>{formatDate(lane.oldestQueuedAt)}</span>
-                <span>{formatDate(lane.oldestLeasedAt)}</span>
-                <span>{lane.reason || "running"}</span>
-              </div>
+              <article className="lane-status-card" key={lane.lane}>
+                <div className="lane-status-head">
+                  <span className={`lane-pill lane-${lane.lane}`}>{laneTitle(lane.lane)}</span>
+                  <span className={`run-state run-state-${lane.paused ? "failed" : "completed"}`}>
+                    {lane.paused ? "paused" : "active"}
+                  </span>
+                </div>
+                <div className="lane-status-metrics">
+                  <div>
+                    <span className="stat-label">Queued</span>
+                    <strong>{lane.queuedCount}</strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Leased</span>
+                    <strong>{lane.leasedCount}</strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Oldest queued</span>
+                    <strong>{formatDate(lane.oldestQueuedAt)}</strong>
+                  </div>
+                  <div>
+                    <span className="stat-label">Oldest leased</span>
+                    <strong>{formatDate(lane.oldestLeasedAt)}</strong>
+                  </div>
+                </div>
+                <p className="lane-status-note">{lane.reason || "Workers active and accepting jobs."}</p>
+              </article>
             ))}
           </div>
         </section>
@@ -534,7 +662,12 @@ function QueueCard({ snapshot }: { snapshot: WorkflowQueueSnapshot }) {
   );
 }
 
-export default async function Home() {
+type HomePageProps = {
+  searchParams?: Promise<SearchParams>;
+};
+
+export default async function Home({ searchParams }: HomePageProps) {
+  const resolvedSearchParams = (await searchParams) || {};
   const [benchmark, shadow, replay, runs, queue] = await Promise.all([
     getLatestEvaluationRunByLane("benchmark"),
     getLatestEvaluationRunByLane("shadow"),
@@ -549,6 +682,21 @@ export default async function Home() {
       : metric(shadow?.summary ?? {}, "recommendation") !== "n/a"
         ? metric(shadow?.summary ?? {}, "recommendation")
         : metric(replayDecision(replay?.summary ?? {}), "recommendation");
+
+  const noticeMessage = searchParamValue(
+    resolvedSearchParams,
+    "queueActionMessage",
+  );
+  const noticeStatus = searchParamValue(
+    resolvedSearchParams,
+    "queueActionStatus",
+  );
+  const queueNotice: QueueActionNotice | null = noticeMessage
+    ? {
+        tone: noticeStatus === "success" ? "completed" : "failed",
+        message: noticeMessage,
+      }
+    : null;
 
   return (
     <main className="shell">
@@ -588,7 +736,7 @@ export default async function Home() {
         <ReplayCard replay={replay} />
       </section>
 
-      <QueueCard snapshot={queue} />
+      <QueueCard notice={queueNotice} snapshot={queue} />
 
       <section className="panel">
         <div className="section-head">

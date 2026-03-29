@@ -311,6 +311,118 @@ details summary {
   margin-bottom: 18px;
 }
 
+.queue-notice {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 18px 0 0;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(125, 179, 255, 0.16);
+  background: rgba(5, 13, 24, 0.72);
+}
+
+.queue-notice-completed {
+  border-color: rgba(105, 226, 173, 0.22);
+  background: rgba(105, 226, 173, 0.08);
+}
+
+.queue-notice-failed {
+  border-color: rgba(255, 136, 153, 0.22);
+  background: rgba(255, 136, 153, 0.08);
+}
+
+.control-actions-shell {
+  margin: 20px 0 18px;
+}
+
+.control-actions-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.control-action-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(125, 179, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(12, 24, 44, 0.78), rgba(7, 15, 29, 0.84));
+}
+
+.control-action-head,
+.lane-status-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.control-button {
+  appearance: none;
+  border: 0;
+  border-radius: 16px;
+  padding: 12px 16px;
+  background:
+    linear-gradient(135deg, rgba(69, 184, 255, 0.92), rgba(119, 243, 255, 0.92));
+  color: #04101c;
+  font-family: var(--mono-font);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    filter 120ms ease;
+  box-shadow: 0 14px 32px rgba(69, 184, 255, 0.2);
+}
+
+.control-button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.02);
+}
+
+.control-button:active {
+  transform: translateY(0);
+}
+
+.lane-status-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lane-status-card {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(119, 243, 255, 0.16);
+  background: rgba(2, 10, 19, 0.42);
+}
+
+.lane-status-metrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.lane-status-metrics strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.lane-status-note {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .metric-cell,
 .selection-item,
 .runs-row,
@@ -546,7 +658,9 @@ details summary {
   .hero,
   .compact-hero,
   .lane-grid,
-  .card-grid {
+  .card-grid,
+  .control-actions-grid,
+  .lane-status-grid {
     grid-template-columns: 1fr;
   }
 }
