@@ -202,36 +202,46 @@ export default async function ReviewPage({
           </p>
         </div>
         <div className="review-toolbar-actions">
-          <Link
-            className={`portal-filter ${onlyUnreviewed ? "portal-filter-active" : ""}`}
-            href={statusFilter === "distributed" ? "/review?scope=unreviewed" : `/review?scope=unreviewed&status=${statusFilter}`}
-          >
-            Unreviewed only
-          </Link>
-          <Link
-            className={`portal-filter ${onlyUnreviewed ? "" : "portal-filter-active"}`}
-            href={statusFilter === "distributed" ? "/review" : `/review?status=${statusFilter}`}
-          >
-            All recent
-          </Link>
-          <Link
-            className={`portal-filter ${statusFilter === "distributed" ? "portal-filter-active" : ""}`}
-            href={onlyUnreviewed ? "/review?scope=unreviewed" : "/review"}
-          >
-            Distributed
-          </Link>
-          <Link
-            className={`portal-filter ${statusFilter === "draft" ? "portal-filter-active" : ""}`}
-            href={onlyUnreviewed ? "/review?scope=unreviewed&status=draft" : "/review?status=draft"}
-          >
-            Drafts
-          </Link>
-          <Link
-            className={`portal-filter ${statusFilter === "all" ? "portal-filter-active" : ""}`}
-            href={onlyUnreviewed ? "/review?scope=unreviewed&status=all" : "/review?status=all"}
-          >
-            All statuses
-          </Link>
+          <div className="review-filter-group">
+            <p className="eyebrow">Scope</p>
+            <div className="review-filter-row">
+              <Link
+                className={`portal-filter ${onlyUnreviewed ? "portal-filter-active" : ""}`}
+                href={statusFilter === "distributed" ? "/review?scope=unreviewed" : `/review?scope=unreviewed&status=${statusFilter}`}
+              >
+                Unreviewed only
+              </Link>
+              <Link
+                className={`portal-filter ${onlyUnreviewed ? "" : "portal-filter-active"}`}
+                href={statusFilter === "distributed" ? "/review" : `/review?status=${statusFilter}`}
+              >
+                All recent
+              </Link>
+            </div>
+          </div>
+          <div className="review-filter-group">
+            <p className="eyebrow">Status</p>
+            <div className="review-filter-row">
+              <Link
+                className={`portal-filter ${statusFilter === "distributed" ? "portal-filter-active" : ""}`}
+                href={onlyUnreviewed ? "/review?scope=unreviewed" : "/review"}
+              >
+                Distributed
+              </Link>
+              <Link
+                className={`portal-filter ${statusFilter === "draft" ? "portal-filter-active" : ""}`}
+                href={onlyUnreviewed ? "/review?scope=unreviewed&status=draft" : "/review?status=draft"}
+              >
+                Drafts
+              </Link>
+              <Link
+                className={`portal-filter ${statusFilter === "all" ? "portal-filter-active" : ""}`}
+                href={onlyUnreviewed ? "/review?scope=unreviewed&status=all" : "/review?status=all"}
+              >
+                All statuses
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
 

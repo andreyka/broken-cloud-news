@@ -551,17 +551,30 @@ details summary {
 }
 
 .review-toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
   margin-bottom: 18px;
 }
 
 .review-toolbar-actions {
-  display: inline-flex;
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+}
+
+.review-filter-group {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.review-filter-row {
+  display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .review-grid,
@@ -988,7 +1001,14 @@ details summary {
 }
 
 .review-history-item {
+  display: grid;
   gap: 10px;
+  align-content: start;
+}
+
+.review-history-head .lane-meta {
+  text-align: right;
+  line-height: 1.4;
 }
 
 .review-submit-row {
@@ -1181,6 +1201,19 @@ details summary {
   .review-block-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .review-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .review-toolbar-actions,
+  .review-filter-group {
+    justify-items: start;
+  }
+
+  .review-filter-row {
+    justify-content: flex-start;
   }
 
   .hero h1 {
