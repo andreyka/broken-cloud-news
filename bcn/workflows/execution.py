@@ -10,6 +10,7 @@ from uuid import UUID
 from bcn.contracts.workflow import WriterHandoff
 from bcn.contracts.workflow import WriterHandoffResult
 from bcn.workflows.automation import execute_scheduled_analysis
+from bcn.workflows.automation import execute_scheduled_ai_review_backfill
 from bcn.workflows.automation import execute_scheduled_collection
 from bcn.workflows.automation import execute_shadow_regular_briefing
 from bcn.workflows.catalog import WorkflowStepDefinition
@@ -94,6 +95,16 @@ async def _execute_shadow_regular_briefing_step(
     return state
 
 
+async def _execute_backfill_ai_reviews_step(
+    runtime: WorkflowRuntime,
+    args: dict[str, Any],
+    state: StepState,
+) -> StepState:
+    del args
+    await execute_scheduled_ai_review_backfill(runtime)
+    return state
+
+
 async def _execute_generation_step(
     runtime: WorkflowRuntime,
     args: dict[str, Any],
@@ -142,6 +153,7 @@ _STEP_EXECUTORS: dict[tuple[str, str], StepExecutor] = {
     ("collector", "collect"): _execute_collect_step,
     ("analyst", "analyze_pending"): _execute_analyze_pending_step,
     ("workflow", "shadow_regular_briefing"): _execute_shadow_regular_briefing_step,
+    ("workflow", "backfill_ai_reviews"): _execute_backfill_ai_reviews_step,
     ("writer", "generate_release_candidate"): _execute_generation_step,
     ("distributor", "deliver"): _execute_distribution_step,
 }

@@ -10,6 +10,8 @@ from typing import Any
 from bcn.common.config import Settings
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.workflows.ai_review import get_ai_review_config
+from bcn.workflows.automation import build_ai_review_backfill_trigger
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
 from bcn.workflows.automation import build_shadow_regular_briefing_trigger
@@ -179,6 +181,26 @@ _CATALOG: tuple[ScheduledWorkflowDefinition, ...] = (
         build_trigger=_interval_minutes("analyst_interval_minutes"),
         lane="analysis",
         priority=40,
+    ),
+    ScheduledWorkflowDefinition(
+        workflow_id="weekly_ai_review_backfill",
+        description="Queue weekly AI reviews for distributed briefings missing auto reviews.",
+        steps=(
+            WorkflowStepDefinition(
+                "backfill_ai_reviews",
+                "workflow",
+                "backfill_ai_reviews",
+            ),
+        ),
+        build_trigger=build_ai_review_backfill_trigger,
+        enabled_when=lambda settings: bool(
+            settings.ai_review_backfill_enabled
+            and settings.ai_review_auto_enabled
+            and get_ai_review_config(settings).enabled
+        ),
+        lane="evaluation",
+        priority=15,
+        max_attempts=1,
     ),
     ScheduledWorkflowDefinition(
         workflow_id=f"{REGULAR_DAILY_BRIEFING_MODE}_shadow",

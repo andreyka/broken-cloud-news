@@ -14,11 +14,14 @@ from click.testing import CliRunner
 import bcn.cli as cli_module
 from bcn.common.config import Settings
 from bcn.workflows.automation import build_regular_briefing_trigger
+from bcn.workflows.automation import build_ai_review_backfill_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
 from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.automation import configure_scheduler_runtime
+from bcn.workflows.automation import execute_scheduled_ai_review_backfill
 from bcn.workflows.automation import extract_briefing_id
 from bcn.workflows.automation import job_analyze_items
+from bcn.workflows.automation import job_backfill_ai_reviews
 from bcn.workflows.automation import job_collect_ghsa
 from bcn.workflows.automation import job_collect_reddit
 from bcn.workflows.automation import job_collect_rss
@@ -123,6 +126,27 @@ def test_build_shadow_regular_briefing_trigger_wraps_before_midnight():
     assert trigger.hour == "23"
     assert trigger.minute == 30
     assert str(trigger.timezone) == "UTC"
+
+
+def test_build_ai_review_backfill_trigger():
+    start = datetime(2026, 3, 7, 2, 0, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch(
+        "bcn.workflows.automation.schedule_start_time",
+        return_value=start,
+    ):
+        settings = Settings(
+            ai_review_backfill_weekday="fri",
+            ai_review_backfill_hour=4,
+            ai_review_backfill_minute=30,
+            ai_review_backfill_timezone="America/Los_Angeles",
+        )
+        trigger = build_ai_review_backfill_trigger(settings)
+
+    assert trigger.start_time == start
+    assert trigger.day_of_week == "fri"
+    assert trigger.hour == 4
+    assert trigger.minute == 30
+    assert str(trigger.timezone) == "America/Los_Angeles"
 
 
 def test_extract_briefing_id_from_writer_message():
@@ -298,6 +322,9 @@ def test_iter_scheduled_workflows_reflects_enabled_optional_jobs():
     settings = Settings(
         shadow_enabled=True,
         monthly_newsletter_enabled=True,
+        ai_review_auto_enabled=True,
+        ai_review_api_key="test-key",
+        ai_review_backfill_enabled=True,
     )
 
     definitions = iter_scheduled_workflows(settings)
@@ -308,6 +335,7 @@ def test_iter_scheduled_workflows_reflects_enabled_optional_jobs():
     assert "reddit_collector" in ids
     assert "twitter_collector" in ids
     assert "analyst" in ids
+    assert "weekly_ai_review_backfill" in ids
     assert f"{REGULAR_DAILY_BRIEFING_MODE}_shadow" in ids
     assert REGULAR_DAILY_BRIEFING_MODE in ids
     assert REGULAR_MONTHLY_NEWSLETTER_MODE in ids
@@ -324,10 +352,13 @@ def test_iter_scheduled_workflows_skips_disabled_optional_jobs():
     settings = Settings(
         shadow_enabled=False,
         monthly_newsletter_enabled=False,
+        ai_review_auto_enabled=False,
+        ai_review_backfill_enabled=False,
     )
 
     ids = {definition.workflow_id for definition in iter_scheduled_workflows(settings)}
 
+    assert "weekly_ai_review_backfill" not in ids
     assert f"{REGULAR_DAILY_BRIEFING_MODE}_shadow" not in ids
     assert REGULAR_MONTHLY_NEWSLETTER_MODE not in ids
 
@@ -394,6 +425,58 @@ async def test_job_analyze_items_uses_control_plane(monkeypatch):
         source="scheduler",
         manage_pool=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_execute_scheduled_ai_review_backfill_enqueues_missing_reviews(monkeypatch):
+    settings = Settings(
+        ai_review_auto_enabled=True,
+        ai_review_api_key="test-key",
+        ai_review_backfill_enabled=True,
+        ai_review_backfill_max_briefings=2,
+    )
+    runtime = configure_scheduler_runtime(settings)
+    briefing_a = uuid4()
+    briefing_b = uuid4()
+    list_mock = AsyncMock(
+        return_value=[
+            {"id": briefing_a},
+            {"id": briefing_b},
+        ]
+    )
+    enqueue_mock = AsyncMock(side_effect=[uuid4(), uuid4()])
+    monkeypatch.setattr(
+        "bcn.workflows.automation.get_distributed_briefings_without_ai_review",
+        list_mock,
+    )
+    monkeypatch.setattr("bcn.workflows.queue.enqueue_ai_review_job", enqueue_mock)
+
+    await execute_scheduled_ai_review_backfill(runtime)
+
+    list_mock.assert_awaited_once_with(limit=2, source="auto_distribution")
+    assert enqueue_mock.await_count == 2
+    first_call = enqueue_mock.await_args_list[0].kwargs
+    assert first_call["briefing_id"] == briefing_a
+    assert first_call["source"] == "auto_distribution"
+
+
+@pytest.mark.asyncio
+async def test_job_backfill_ai_reviews_uses_control_plane(monkeypatch):
+    settings = Settings(
+        ai_review_auto_enabled=True,
+        ai_review_api_key="test-key",
+        ai_review_backfill_enabled=True,
+    )
+    runtime = configure_scheduler_runtime(settings)
+    backfill_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "bcn.workflows.automation.execute_scheduled_ai_review_backfill",
+        backfill_mock,
+    )
+
+    await job_backfill_ai_reviews(runtime)
+
+    backfill_mock.assert_awaited_once_with(runtime)
 
 
 @pytest.mark.asyncio

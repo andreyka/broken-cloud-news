@@ -361,6 +361,36 @@ async def has_ai_review(
     return bool(row["present"]) if row else False
 
 
+async def get_distributed_briefings_without_ai_review(
+    *,
+    limit: int = 25,
+    source: str = "auto_distribution",
+) -> list[asyncpg.Record]:
+    """Return recent distributed briefings missing an AI review from the given source."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT
+            b.id,
+            b.created_at,
+            b.distributed_at
+        FROM briefings b
+        WHERE b.status = 'DISTRIBUTED'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM briefing_ai_reviews ar
+              WHERE ar.briefing_id = b.id
+                AND ar.source = $2
+          )
+        ORDER BY b.created_at DESC
+        LIMIT $1
+        """,
+        max(1, int(limit)),
+        str(source or "auto_distribution").strip(),
+    )
+
+
 async def insert_ai_review(
     *,
     briefing_id: UUID,

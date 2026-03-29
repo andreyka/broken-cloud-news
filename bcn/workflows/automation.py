@@ -20,10 +20,13 @@ from bcn.common.config import Settings
 from bcn.evaluation.lanes import load_settings_with_overrides
 from bcn.persistence.evaluation import complete_evaluation_run
 from bcn.persistence.evaluation import create_evaluation_run
+from bcn.persistence.training import get_distributed_briefings_without_ai_review
 from bcn.workflows.analysis import execute_analysis
+from bcn.workflows.ai_review import get_ai_review_config
 from bcn.workflows.collection import execute_collection
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.workflows.modes.common import extract_briefing_id
+from bcn.workflows.modes._schedule import schedule_start_time
 from bcn.workflows.modes.regular_daily_briefing import (
     build_trigger as build_regular_briefing_trigger,
 )
@@ -47,13 +50,16 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "configure_scheduler_runtime",
     "execute_scheduled_analysis",
+    "execute_scheduled_ai_review_backfill",
     "execute_scheduled_collection",
     "execute_shadow_regular_briefing",
+    "build_ai_review_backfill_trigger",
     "job_collect_ghsa",
     "job_collect_rss",
     "job_collect_twitter",
     "job_collect_reddit",
     "job_analyze_items",
+    "job_backfill_ai_reviews",
     "job_publish_regular_briefing",
     "job_publish_regular_monthly_newsletter",
     "job_shadow_regular_briefing",
@@ -76,6 +82,19 @@ def _llm_provider_for_role(settings: Settings, role: str) -> str:
 def _llm_base_url_for_role(settings: Settings, role: str) -> str:
     override = str(getattr(settings, f"llm_base_url_{role}", "") or "").strip()
     return override or str(settings.llm_base_url or "").strip()
+
+
+def build_ai_review_backfill_trigger(settings: Settings):
+    """Return the weekly trigger used to backfill missing AI reviews."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    return CronTrigger(
+        day_of_week=str(settings.ai_review_backfill_weekday or "sun").strip().lower(),
+        hour=int(settings.ai_review_backfill_hour),
+        minute=int(settings.ai_review_backfill_minute),
+        timezone=settings.ai_review_backfill_timezone,
+        start_time=schedule_start_time(settings.ai_review_backfill_timezone),
+    )
 
 
 async def _probe_openai_compat_endpoint(base_url: str) -> str | None:
@@ -204,6 +223,51 @@ async def execute_scheduled_analysis(runtime: WorkflowRuntime) -> None:
 async def job_analyze_items(runtime: WorkflowRuntime) -> None:
     """Scheduled job: trigger item analysis."""
     await execute_scheduled_analysis(runtime)
+
+
+async def execute_scheduled_ai_review_backfill(runtime: WorkflowRuntime) -> None:
+    """Queue AI reviews for distributed briefings that still lack them."""
+    from bcn.workflows.queue import enqueue_ai_review_job
+
+    settings = runtime.settings
+    if not bool(settings.ai_review_backfill_enabled):
+        logger.info("AI review backfill scheduler triggered while disabled; skipping.")
+        return
+
+    config = get_ai_review_config(settings)
+    if not bool(settings.ai_review_auto_enabled) or not config.enabled:
+        logger.info("AI review backfill skipped: AI review backend is not configured.")
+        return
+
+    backlog = await get_distributed_briefings_without_ai_review(
+        limit=int(settings.ai_review_backfill_max_briefings),
+        source="auto_distribution",
+    )
+    if not backlog:
+        logger.info("AI review backfill found no missing distributed briefings.")
+        return
+
+    queued = 0
+    for row in backlog:
+        briefing_id = row["id"]
+        job_id = await enqueue_ai_review_job(
+            settings,
+            briefing_id=briefing_id,
+            source="auto_distribution",
+            notes="Queued by weekly scheduled AI review backfill.",
+        )
+        if job_id is not None:
+            queued += 1
+    logger.info(
+        "AI review backfill scanned=%s queued=%s source=auto_distribution",
+        len(backlog),
+        queued,
+    )
+
+
+async def job_backfill_ai_reviews(runtime: WorkflowRuntime) -> None:
+    """Scheduled job: queue weekly backfill AI reviews for distributed briefings."""
+    await execute_scheduled_ai_review_backfill(runtime)
 
 
 async def execute_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:

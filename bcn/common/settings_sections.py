@@ -119,6 +119,7 @@ class BCNSettingsBase(BaseSettings):
     @field_validator(
         "distribute_timezone",
         "monthly_newsletter_timezone",
+        "ai_review_backfill_timezone",
         mode="before",
         check_fields=False,
     )
@@ -154,6 +155,41 @@ class BCNSettingsBase(BaseSettings):
         if minute < 0 or minute > 59:
             raise ValueError("monthly_newsletter_minute must be between 0 and 59")
         return minute
+
+    @field_validator("ai_review_backfill_hour", check_fields=False)
+    @classmethod
+    def _validate_ai_review_backfill_hour(cls, value: int) -> int:
+        hour = int(value)
+        if hour < 0 or hour > 23:
+            raise ValueError("ai_review_backfill_hour must be between 0 and 23")
+        return hour
+
+    @field_validator("ai_review_backfill_minute", check_fields=False)
+    @classmethod
+    def _validate_ai_review_backfill_minute(cls, value: int) -> int:
+        minute = int(value)
+        if minute < 0 or minute > 59:
+            raise ValueError("ai_review_backfill_minute must be between 0 and 59")
+        return minute
+
+    @field_validator("ai_review_backfill_weekday", mode="before", check_fields=False)
+    @classmethod
+    def _validate_ai_review_backfill_weekday(cls, value: str) -> str:
+        raw = str(value or "").strip().lower() or "sun"
+        allowed = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+        if raw not in allowed:
+            raise ValueError(
+                "ai_review_backfill_weekday must be one of: mon, tue, wed, thu, fri, sat, sun"
+            )
+        return raw
+
+    @field_validator("ai_review_backfill_max_briefings", check_fields=False)
+    @classmethod
+    def _validate_ai_review_backfill_max_briefings(cls, value: int) -> int:
+        limit = int(value)
+        if limit <= 0:
+            raise ValueError("ai_review_backfill_max_briefings must be > 0")
+        return limit
 
     @field_validator("shadow_minutes_before_publish", check_fields=False)
     @classmethod
@@ -462,6 +498,12 @@ class SchedulingSettingsMixin:
     shadow_minutes_before_publish: int = 45
     shadow_candidate_overrides_path: str = ""
     shadow_include_text: bool = False
+    ai_review_backfill_enabled: bool = True
+    ai_review_backfill_weekday: str = "sun"
+    ai_review_backfill_hour: int = 4
+    ai_review_backfill_minute: int = 0
+    ai_review_backfill_timezone: str = "UTC"
+    ai_review_backfill_max_briefings: int = 25
     generation_run_stale_pending_minutes: int = 180
     analysis_retry_max_attempts: int = 5
     analysis_retry_base_delay_seconds: int = 300
