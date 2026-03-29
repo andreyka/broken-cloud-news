@@ -571,7 +571,8 @@ details summary {
 }
 
 .review-grid {
-  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+  align-items: start;
 }
 
 .review-detail-grid {
@@ -594,6 +595,15 @@ details summary {
   gap: 12px;
 }
 
+.review-queue-panel .section-head {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.review-queue-panel .section-head .muted {
+  max-width: 34ch;
+}
+
 .review-queue-card,
 .review-block {
   border-radius: 20px;
@@ -604,6 +614,7 @@ details summary {
 .review-queue-card {
   display: grid;
   gap: 10px;
+  min-width: 0;
   padding: 16px;
   text-decoration: none;
   transition:
@@ -634,6 +645,28 @@ details summary {
 
 .review-block {
   padding: 18px;
+}
+
+.review-queue-head {
+  align-items: center;
+}
+
+.review-queue-head .lane-meta {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.review-queue-card .lane-copy {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+}
+
+.review-queue-meta {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
 }
 
 .review-ai-meta {
