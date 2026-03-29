@@ -126,6 +126,8 @@ export type BriefingReviewQueueEntry = {
   lastReviewAt: string | null;
 };
 
+export type BriefingReviewStatusFilter = "distributed" | "draft" | "all";
+
 export type BriefingReviewDetail = {
   briefing: {
     id: string;
@@ -982,10 +984,18 @@ export async function enqueueWorkflowControlAction(
 export async function getHumanReviewQueue(
   limit = 20,
   onlyUnreviewed = false,
+  statusFilter: BriefingReviewStatusFilter = "distributed",
 ): Promise<BriefingReviewQueueEntry[]> {
-  const where = onlyUnreviewed
-    ? "WHERE COALESCE(rv.review_count, 0) = 0"
-    : "";
+  const filters: string[] = [];
+  if (onlyUnreviewed) {
+    filters.push("COALESCE(rv.review_count, 0) = 0");
+  }
+  if (statusFilter === "distributed") {
+    filters.push("b.status = 'DISTRIBUTED'");
+  } else if (statusFilter === "draft") {
+    filters.push("b.status = 'DRAFT'");
+  }
+  const where = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
   const result = await getPool().query(
     `
       SELECT

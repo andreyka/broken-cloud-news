@@ -8,6 +8,7 @@ import {
   getHumanReviewQueue,
   type AIReviewSummary,
   type BriefingReviewQueueEntry,
+  type BriefingReviewStatusFilter,
 } from "@/lib/db";
 import { REVIEW_ISSUE_TAGS } from "@/lib/review-taxonomy";
 
@@ -96,10 +97,22 @@ function reviewTone(
 function queueLink(
   entry: BriefingReviewQueueEntry,
   onlyUnreviewed: boolean,
+  statusFilter: BriefingReviewStatusFilter,
 ): string {
-  const query = new URLSearchParams({ briefingId: entry.id });
+  return reviewDetailLink(entry.id, onlyUnreviewed, statusFilter);
+}
+
+function reviewDetailLink(
+  briefingId: string,
+  onlyUnreviewed: boolean,
+  statusFilter: BriefingReviewStatusFilter,
+): string {
+  const query = new URLSearchParams({ briefingId });
   if (onlyUnreviewed) {
     query.set("scope", "unreviewed");
+  }
+  if (statusFilter !== "distributed") {
+    query.set("status", statusFilter);
   }
   return `/review?${query.toString()}`;
 }
@@ -113,11 +126,16 @@ export default async function ReviewPage({
 }: ReviewPageProps) {
   const resolvedSearchParams = (await searchParams) || {};
   const onlyUnreviewed = searchParamValue(resolvedSearchParams, "scope") === "unreviewed";
+  const requestedStatus = searchParamValue(resolvedSearchParams, "status");
+  const statusFilter: BriefingReviewStatusFilter =
+    requestedStatus === "draft" || requestedStatus === "all"
+      ? requestedStatus
+      : "distributed";
   const requestedBriefingId = searchParamValue(resolvedSearchParams, "briefingId");
   const noticeMessage = searchParamValue(resolvedSearchParams, "reviewMessage");
   const noticeStatus = searchParamValue(resolvedSearchParams, "reviewStatus");
 
-  const queue = await getHumanReviewQueue(18, onlyUnreviewed);
+  const queue = await getHumanReviewQueue(18, onlyUnreviewed, statusFilter);
   const selectedBriefingId = requestedBriefingId || queue[0]?.id || null;
   const detail = selectedBriefingId
     ? await getHumanReviewBriefing(selectedBriefingId)
@@ -156,6 +174,12 @@ export default async function ReviewPage({
           <strong>{queue.length}</strong>
           <small>
             {reviewedCount} reviewed in this view · {onlyUnreviewed ? "unreviewed only" : "all recent briefings"}
+            {" · "}
+            {statusFilter === "distributed"
+              ? "distributed only"
+              : statusFilter === "draft"
+                ? "drafts only"
+                : "all statuses"}
           </small>
         </div>
       </section>
@@ -180,15 +204,33 @@ export default async function ReviewPage({
         <div className="review-toolbar-actions">
           <Link
             className={`portal-filter ${onlyUnreviewed ? "portal-filter-active" : ""}`}
-            href="/review?scope=unreviewed"
+            href={statusFilter === "distributed" ? "/review?scope=unreviewed" : `/review?scope=unreviewed&status=${statusFilter}`}
           >
             Unreviewed only
           </Link>
           <Link
             className={`portal-filter ${onlyUnreviewed ? "" : "portal-filter-active"}`}
-            href="/review"
+            href={statusFilter === "distributed" ? "/review" : `/review?status=${statusFilter}`}
           >
             All recent
+          </Link>
+          <Link
+            className={`portal-filter ${statusFilter === "distributed" ? "portal-filter-active" : ""}`}
+            href={onlyUnreviewed ? "/review?scope=unreviewed" : "/review"}
+          >
+            Distributed
+          </Link>
+          <Link
+            className={`portal-filter ${statusFilter === "draft" ? "portal-filter-active" : ""}`}
+            href={onlyUnreviewed ? "/review?scope=unreviewed&status=draft" : "/review?status=draft"}
+          >
+            Drafts
+          </Link>
+          <Link
+            className={`portal-filter ${statusFilter === "all" ? "portal-filter-active" : ""}`}
+            href={onlyUnreviewed ? "/review?scope=unreviewed&status=all" : "/review?status=all"}
+          >
+            All statuses
           </Link>
         </div>
       </div>
@@ -209,7 +251,7 @@ export default async function ReviewPage({
               {queue.map((entry) => (
                 <Link
                   className={`review-queue-card ${selectedId === entry.id ? "review-queue-card-active" : ""}`}
-                  href={queueLink(entry, onlyUnreviewed)}
+                  href={queueLink(entry, onlyUnreviewed, statusFilter)}
                   key={entry.id}
                 >
                   <div className="review-queue-head">
@@ -317,11 +359,7 @@ export default async function ReviewPage({
                       <input
                         name="redirectTo"
                         type="hidden"
-                        value={
-                          onlyUnreviewed
-                            ? `/review?scope=unreviewed&briefingId=${detail.briefing.id}`
-                            : `/review?briefingId=${detail.briefing.id}`
-                        }
+                        value={reviewDetailLink(detail.briefing.id, onlyUnreviewed, statusFilter)}
                       />
 
                       <label className="review-field">
@@ -434,11 +472,7 @@ export default async function ReviewPage({
                         <input
                           name="redirectTo"
                           type="hidden"
-                          value={
-                            onlyUnreviewed
-                              ? `/review?scope=unreviewed&briefingId=${detail.briefing.id}`
-                              : `/review?briefingId=${detail.briefing.id}`
-                          }
+                          value={reviewDetailLink(detail.briefing.id, onlyUnreviewed, statusFilter)}
                         />
                         <div className="review-submit-row">
                           <button className="control-button" type="submit">

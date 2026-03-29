@@ -33,30 +33,24 @@ export type AIReviewResult = {
   rawResponse: Record<string, unknown>;
 };
 
-type OpenAIToolCall = {
-  function?: {
-    name?: string;
-    arguments?: string;
-  };
+type OpenAIResponseOutputItem = {
+  type?: string;
+  content?: Array<{
+    type?: string;
+    text?: string;
+  }>;
 };
 
-type OpenAIChatChoice = {
-  message?: {
-    content?: string | null;
-    tool_calls?: OpenAIToolCall[];
-  };
-};
-
-type OpenAIChatResponse = {
+type OpenAIResponsesResponse = {
   id?: string;
   model?: string;
-  choices?: OpenAIChatChoice[];
+  output_text?: string;
+  output?: OpenAIResponseOutputItem[];
   usage?: Record<string, unknown>;
 };
 
 const OPENAI_API_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_TIMEOUT_MS = 180_000;
-const OPENAI_TOOL_NAME = "submit_editorial_review";
 
 function envValue(name: string): string | null {
   const raw = process.env[name];
@@ -95,7 +89,7 @@ function buildSystemPrompt(): string {
     "You are a strict security editorial reviewer for a cloud security news briefing.",
     "You are not the original writer. You are the reviewer and rewrite editor.",
     "Review the supplied final BCN markdown as if you were deciding whether it should stand as-is, be lightly rewritten, need substantial rework, or be rejected.",
-    "Return exactly one tool call.",
+    "Return a single JSON object that matches the requested review schema.",
     "Allowed decisions:",
     "- accept: strong, publishable, no rewrite needed.",
     "- edit: mostly good; a rewrite improves accuracy, clarity, or formatting.",
@@ -161,21 +155,103 @@ function parseJsonLike(value: string): Record<string, unknown> | null {
   return null;
 }
 
-function parseToolArguments(response: OpenAIChatResponse): Record<string, unknown> | null {
-  const firstChoice = response.choices?.[0];
-  const toolCalls = firstChoice?.message?.tool_calls || [];
-  for (const call of toolCalls) {
-    if (call.function?.name !== OPENAI_TOOL_NAME) {
-      continue;
-    }
-    const argumentsText = call.function.arguments || "";
-    const parsed = parseJsonLike(argumentsText);
-    if (parsed) {
-      return parsed;
+function reviewJsonSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      decision: {
+        type: "string",
+        enum: [...REVIEW_DECISIONS],
+      },
+      issue_tags: {
+        type: "array",
+        items: {
+          type: "string",
+          enum: [...REVIEW_ISSUE_TAGS],
+        },
+      },
+      verdict_summary: {
+        type: "string",
+        description:
+          "2-5 sentence overall assessment. State whether the draft works as cloud security news and whether any claims are too strong.",
+      },
+      notes: {
+        type: "string",
+        description:
+          "Concise editorial notes and recommended fixes.",
+      },
+      recommended_fixes: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Concrete edits that would improve the draft without inventing facts.",
+      },
+      cloud_angle_strength: {
+        type: "string",
+        enum: ["strong", "moderate", "weak", "mostly_absent"],
+      },
+      cloud_angle_rationale: {
+        type: "string",
+        description:
+          "Why the cloud angle is strong, moderate, weak, or mostly absent, and how to strengthen it without inventing facts.",
+      },
+      strong_claims_to_soften: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            original: { type: "string" },
+            why: { type: "string" },
+            safer_replacement: { type: "string" },
+          },
+          required: ["original", "why", "safer_replacement"],
+        },
+        description:
+          "Specific phrases from the draft that should be softened.",
+      },
+      assumptions: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Any assumptions made, verification gaps, or claims that should not be stated without checking an advisory.",
+      },
+      edited_markdown: {
+        type: "string",
+        description:
+          "Optional full corrected markdown rewrite. Omit this field if no rewrite is needed.",
+      },
+      alternate_markdown: {
+        type: "string",
+        description:
+          "Optional second full rewrite with a slightly different voice.",
+      },
+    },
+    required: [
+      "decision",
+      "issue_tags",
+      "verdict_summary",
+      "notes",
+      "cloud_angle_strength",
+      "cloud_angle_rationale",
+      "assumptions",
+    ],
+  };
+}
+
+function responseOutputText(response: OpenAIResponsesResponse): string | null {
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text;
+  }
+  for (const item of response.output || []) {
+    for (const content of item.content || []) {
+      if (content.type === "output_text" && typeof content.text === "string" && content.text.trim()) {
+        return content.text;
+      }
     }
   }
-  const content = firstChoice?.message?.content || "";
-  return typeof content === "string" ? parseJsonLike(content) : null;
+  return null;
 }
 
 function asString(value: unknown): string | null {
@@ -217,7 +293,7 @@ function sanitizeDecision(value: unknown): ReviewDecision | null {
 
 function normalizeAIReviewResult(
   config: AIReviewConfig,
-  response: OpenAIChatResponse,
+  response: OpenAIResponsesResponse,
   payload: Record<string, unknown>,
 ): AIReviewResult {
   const decision = sanitizeDecision(payload.decision);
@@ -245,6 +321,63 @@ function normalizeAIReviewResult(
   };
 }
 
+async function requestAIReviewResponse(
+  config: AIReviewConfig,
+  apiKey: string,
+  input: AIReviewInput,
+  structured: boolean,
+): Promise<OpenAIResponsesResponse> {
+  const instructions = structured
+    ? buildSystemPrompt()
+    : `${buildSystemPrompt()}\nReturn only one JSON object and no surrounding prose or markdown fences.`;
+
+  const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/responses`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      reasoning: config.reasoningEffort
+        ? {
+            effort: config.reasoningEffort,
+          }
+        : undefined,
+      max_output_tokens: 8000,
+      instructions,
+      input: buildUserPrompt(input),
+      text: structured
+        ? {
+            format: {
+              type: "json_schema",
+              name: "briefing_review",
+              schema: reviewJsonSchema(),
+              strict: true,
+            },
+          }
+        : undefined,
+    }),
+    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    const canRetryUnstructured =
+      structured &&
+      response.status === 400 &&
+      /structured outputs|json_schema|text\.format/i.test(body);
+    if (canRetryUnstructured) {
+      return requestAIReviewResponse(config, apiKey, input, false);
+    }
+    throw new Error(
+      `OpenAI review request failed (${response.status}): ${body.slice(0, 400)}`,
+    );
+  }
+
+  return (await response.json()) as OpenAIResponsesResponse;
+}
+
 export async function runOpenAIEditorialReview(
   input: AIReviewInput,
 ): Promise<AIReviewResult> {
@@ -256,138 +389,10 @@ export async function runOpenAIEditorialReview(
     );
   }
 
-  const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      reasoning_effort: config.reasoningEffort || undefined,
-      temperature: 0.2,
-      max_completion_tokens: 8000,
-      tool_choice: {
-        type: "function",
-        function: { name: OPENAI_TOOL_NAME },
-      },
-      tools: [
-        {
-          type: "function",
-          function: {
-            name: OPENAI_TOOL_NAME,
-            description:
-              "Submit a structured editorial review for the supplied BCN briefing.",
-            parameters: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                decision: {
-                  type: "string",
-                  enum: [...REVIEW_DECISIONS],
-                },
-                issue_tags: {
-                  type: "array",
-                  items: {
-                    type: "string",
-                    enum: [...REVIEW_ISSUE_TAGS],
-                  },
-                },
-                verdict_summary: {
-                  type: "string",
-                  description:
-                    "2-5 sentence overall assessment. State whether the draft works as cloud security news and whether any claims are too strong.",
-                },
-                notes: {
-                  type: "string",
-                  description:
-                    "Concise editorial notes and recommended fixes.",
-                },
-                recommended_fixes: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "Concrete edits that would improve the draft without inventing facts.",
-                },
-                cloud_angle_strength: {
-                  type: "string",
-                  enum: ["strong", "moderate", "weak", "mostly_absent"],
-                },
-                cloud_angle_rationale: {
-                  type: "string",
-                  description:
-                    "Why the cloud angle is strong, moderate, weak, or mostly absent, and how to strengthen it without inventing facts.",
-                },
-                strong_claims_to_soften: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    additionalProperties: false,
-                    properties: {
-                      original: { type: "string" },
-                      why: { type: "string" },
-                      safer_replacement: { type: "string" },
-                    },
-                    required: ["original", "why", "safer_replacement"],
-                  },
-                  description:
-                    "Specific phrases from the draft that should be softened.",
-                },
-                assumptions: {
-                  type: "array",
-                  items: { type: "string" },
-                  description:
-                    "Any assumptions made, verification gaps, or claims that should not be stated without checking an advisory.",
-                },
-                edited_markdown: {
-                  type: "string",
-                  description:
-                    "Optional full corrected markdown rewrite. Omit this field if no rewrite is needed.",
-                },
-                alternate_markdown: {
-                  type: "string",
-                  description:
-                    "Optional second full rewrite with a slightly different voice.",
-                },
-              },
-              required: [
-                "decision",
-                "issue_tags",
-                "verdict_summary",
-                "notes",
-                "cloud_angle_strength",
-                "cloud_angle_rationale",
-                "assumptions",
-              ],
-            },
-          },
-        },
-      ],
-      messages: [
-        {
-          role: "system",
-          content: buildSystemPrompt(),
-        },
-        {
-          role: "user",
-          content: buildUserPrompt(input),
-        },
-      ],
-    }),
-    signal: AbortSignal.timeout(OPENAI_TIMEOUT_MS),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `OpenAI review request failed (${response.status}): ${body.slice(0, 400)}`,
-    );
-  }
-
-  const payload = (await response.json()) as OpenAIChatResponse;
-  const extracted = parseToolArguments(payload);
+  const payload = await requestAIReviewResponse(config, apiKey, input, true);
+  const extracted = parseJsonLike(responseOutputText(payload) || "");
   if (!extracted) {
-    throw new Error("OpenAI review did not return a parsable tool result.");
+    throw new Error("OpenAI review did not return a parsable JSON result.");
   }
   return normalizeAIReviewResult(config, payload, extracted);
 }
