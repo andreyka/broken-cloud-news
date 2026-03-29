@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { MarkdownPreview } from "@/app/_components/markdown-preview";
 import { PortalTabs } from "@/app/_components/portal-tabs";
 import {
   getHumanReviewBriefing,
@@ -262,12 +263,16 @@ export default async function ReviewPage({
               <div className="review-detail-grid">
                 <section className="review-block">
                   <div className="review-block-head">
-                    <h3>Current markdown</h3>
+                    <h3>Rendered preview</h3>
                     <span className="lane-meta">
-                      Use this as the reference draft when you add labels.
+                      Review the actual formatting first. Raw markdown stays available below.
                     </span>
                   </div>
-                  <pre className="briefing-markdown">{detail.briefing.contentMarkdown}</pre>
+                  <MarkdownPreview markdown={detail.briefing.contentMarkdown} />
+                  <details className="review-optional">
+                    <summary>Show raw markdown</summary>
+                    <pre className="briefing-markdown">{detail.briefing.contentMarkdown}</pre>
+                  </details>
                 </section>
 
                 <section className="review-block">
@@ -387,8 +392,9 @@ export default async function ReviewPage({
                         <strong>{review.issueTags.length > 0 ? review.issueTags.join(", ") : "No issue tags"}</strong>
                         {review.notes ? <p className="lane-copy">{review.notes}</p> : null}
                         {review.editedMarkdown ? (
-                          <details>
+                          <details className="review-optional">
                             <summary>Show edited markdown</summary>
+                            <MarkdownPreview compact markdown={review.editedMarkdown} />
                             <pre className="briefing-markdown briefing-markdown-compact">
                               {review.editedMarkdown}
                             </pre>
