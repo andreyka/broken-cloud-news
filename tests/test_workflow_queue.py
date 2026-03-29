@@ -12,9 +12,11 @@ from bcn.contracts.workflow import WriterHandoff
 from bcn.contracts.workflow import WriterHandoffResult
 from bcn.workflows.catalog import get_scheduled_workflow_definition
 from bcn.workflows.queue import execute_claimed_workflow_job
+from bcn.workflows.queue import enqueue_ai_review_job
 from bcn.workflows.queue import enqueue_benchmark_job
 from bcn.workflows.queue import enqueue_scheduled_workflow_job
 from bcn.workflows.queue import enqueue_simulation_job
+from bcn.workflows.queue import JOB_TYPE_BRIEFING_AI_REVIEW
 from bcn.workflows.queue import JOB_TYPE_SCHEDULED_WORKFLOW
 from bcn.workflows.runtime import WorkflowRuntime
 
@@ -123,6 +125,26 @@ async def test_enqueue_evaluation_jobs_use_lane_deadline_and_lease(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_enqueue_ai_review_job_uses_evaluation_lane_and_dedupe_key(monkeypatch):
+    create_mock = AsyncMock(return_value=uuid4())
+    monkeypatch.setattr("bcn.workflows.queue.create_workflow_job", create_mock)
+    settings = Settings(
+        workflow_job_evaluation_deadline_seconds=7200,
+        workflow_job_evaluation_lease_seconds=900,
+    )
+    briefing_id = uuid4()
+
+    await enqueue_ai_review_job(settings, briefing_id=briefing_id)
+
+    kwargs = create_mock.await_args.kwargs
+    assert kwargs["lane"] == "evaluation"
+    assert kwargs["job_type"] == "briefing_ai_review"
+    assert kwargs["dedupe_key"] == f"ai_review:auto:{briefing_id}"
+    assert kwargs["lease_duration_seconds"] == 900
+    assert kwargs["payload"]["briefing_id"] == str(briefing_id)
+
+
+@pytest.mark.asyncio
 async def test_execute_claimed_workflow_job_serializes_workflow_state(monkeypatch):
     update_mock = AsyncMock()
     execute_mock = AsyncMock(
@@ -177,3 +199,40 @@ async def test_execute_claimed_workflow_job_serializes_workflow_state(monkeypatc
     assert result["completed_steps"] == 1
     assert result["state"]["writer_handoff"]["decision"] == "publish"
     assert result["state"]["writer_handoff"]["human_message"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_execute_claimed_workflow_job_runs_ai_review_handler(monkeypatch):
+    review_mock = AsyncMock(
+        return_value={
+            "status": "stored",
+            "review_id": str(uuid4()),
+            "decision": "edit",
+        }
+    )
+    update_mock = AsyncMock()
+    monkeypatch.setattr("bcn.workflows.queue.run_briefing_ai_review", review_mock)
+    monkeypatch.setattr("bcn.workflows.queue.update_workflow_job_progress", update_mock)
+
+    briefing_id = uuid4()
+    job = {
+        "id": uuid4(),
+        "job_type": JOB_TYPE_BRIEFING_AI_REVIEW,
+        "payload": {
+            "briefing_id": str(briefing_id),
+            "source": "auto_distribution",
+        },
+        "attempt_id": 7,
+    }
+
+    result = await execute_claimed_workflow_job(
+        Settings(),
+        WorkflowRuntime(settings=Settings()),
+        job,
+        worker_id="worker:test",
+    )
+
+    review_mock.assert_awaited_once()
+    assert review_mock.await_args.kwargs["briefing_id"] == briefing_id
+    assert result["status"] == "stored"
+    update_mock.assert_awaited_once()

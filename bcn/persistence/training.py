@@ -301,6 +301,130 @@ async def insert_human_review(
     return row["id"]
 
 
+async def get_briefing_review_context(briefing_id: UUID) -> asyncpg.Record | None:
+    """Return briefing markdown and latest generation-run context for review workflows."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    return await pool.fetchrow(
+        """
+        SELECT
+          b.id,
+          b.created_at,
+          b.distributed_at,
+          b.status,
+          b.content_markdown,
+          b.cover_image_url,
+          b.cover_image_prompt,
+          gr.id AS run_id,
+          gr.created_at AS run_created_at,
+          gr.decision AS run_decision,
+          gr.rewrite_count AS run_rewrite_count,
+          gr.llm_model AS run_llm_model
+        FROM briefings b
+        LEFT JOIN LATERAL (
+          SELECT id, created_at, decision, rewrite_count, llm_model
+          FROM generation_runs
+          WHERE briefing_id = b.id
+          ORDER BY created_at DESC
+          LIMIT 1
+        ) gr ON TRUE
+        WHERE b.id = $1
+        LIMIT 1
+        """,
+        briefing_id,
+    )
+
+
+async def has_ai_review(
+    *,
+    briefing_id: UUID,
+    source: str | None = None,
+) -> bool:
+    """Return whether the briefing already has a stored AI review."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["briefing_id = $1"]
+    params: list[object] = [briefing_id]
+    if source is not None:
+        params.append(str(source).strip())
+        where.append(f"source = ${len(params)}")
+    row = await pool.fetchrow(
+        f"""
+        SELECT EXISTS(
+            SELECT 1
+            FROM briefing_ai_reviews
+            WHERE {" AND ".join(where)}
+        ) AS present
+        """,
+        *params,
+    )
+    return bool(row["present"]) if row else False
+
+
+async def insert_ai_review(
+    *,
+    briefing_id: UUID,
+    reviewer_provider: str,
+    reviewer_model: str,
+    decision: str,
+    issue_tags: list[str] | None = None,
+    edited_markdown: str | None = None,
+    notes: str | None = None,
+    raw_response: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    source: str = "auto",
+    run_id: UUID | None = None,
+) -> UUID:
+    """Store one AI review row tied to a briefing/run."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    tags = [str(tag).strip() for tag in (issue_tags or []) if str(tag).strip()]
+    resolved_run_id = run_id
+    if resolved_run_id is None:
+        run_row = await pool.fetchrow(
+            """
+            SELECT id
+            FROM generation_runs
+            WHERE briefing_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            briefing_id,
+        )
+        resolved_run_id = run_row["id"] if run_row else None
+    row = await pool.fetchrow(
+        """
+        INSERT INTO briefing_ai_reviews (
+            briefing_id,
+            run_id,
+            source,
+            reviewer_provider,
+            reviewer_model,
+            reasoning_effort,
+            decision,
+            issue_tags,
+            edited_markdown,
+            notes,
+            raw_response
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10, $11::jsonb)
+        RETURNING id
+        """,
+        briefing_id,
+        resolved_run_id,
+        str(source or "auto").strip(),
+        str(reviewer_provider or "openai").strip(),
+        str(reviewer_model or "").strip(),
+        str(reasoning_effort).strip() if reasoning_effort else None,
+        str(decision or "").strip().lower(),
+        tags,
+        edited_markdown,
+        notes,
+        json.dumps(raw_response or {}, ensure_ascii=False, default=str),
+    )
+    return row["id"]
+
+
 async def get_review_queue(
     *,
     limit: int = 20,

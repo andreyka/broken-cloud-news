@@ -28,6 +28,7 @@ from bcn.persistence.workflow_jobs import reclaim_expired_workflow_job_leases
 from bcn.persistence.workflow_jobs import renew_workflow_job_lease
 from bcn.persistence.workflow_jobs import requeue_workflow_job
 from bcn.persistence.workflow_jobs import update_workflow_job_progress
+from bcn.workflows.ai_review import run_briefing_ai_review
 from bcn.workflows.catalog import ScheduledWorkflowDefinition
 from bcn.workflows.catalog import WorkflowStepDefinition
 from bcn.workflows.catalog import get_scheduled_workflow_definition
@@ -40,6 +41,7 @@ logger = logging.getLogger("bcn")
 JOB_TYPE_SCHEDULED_WORKFLOW = "scheduled_workflow"
 JOB_TYPE_EVALUATION_BENCHMARK = "evaluation_benchmark"
 JOB_TYPE_EVALUATION_SIMULATION = "evaluation_simulation"
+JOB_TYPE_BRIEFING_AI_REVIEW = "briefing_ai_review"
 DEFAULT_WORKER_LANES = ("publish", "collection", "analysis", "evaluation")
 _LANE_LEASE_ATTRS: dict[str, tuple[str, ...]] = {
     "publish": ("workflow_job_publish_lease_seconds", "workflow_job_default_lease_seconds"),
@@ -291,6 +293,34 @@ async def enqueue_simulation_job(
             "include_text": bool(include_text),
             "with_critic_rewrites": bool(with_critic_rewrites),
             "reanalyze_items": bool(reanalyze_items),
+            "source": source,
+            "notes": notes,
+        },
+        notes=notes,
+        deadline_at=_lane_deadline_at(settings, "evaluation"),
+    )
+
+
+async def enqueue_ai_review_job(
+    settings: Settings,
+    *,
+    briefing_id: UUID,
+    source: str = "auto_distribution",
+    notes: str | None = None,
+) -> UUID:
+    """Queue one automatic AI review job for a distributed briefing."""
+    return await create_workflow_job(
+        lane="evaluation",
+        priority=18,
+        job_type=JOB_TYPE_BRIEFING_AI_REVIEW,
+        source=source,
+        dedupe_key=f"ai_review:auto:{briefing_id}",
+        max_attempts=2,
+        lease_duration_seconds=max(
+            60, int(settings.workflow_job_evaluation_lease_seconds)
+        ),
+        payload={
+            "briefing_id": str(briefing_id),
             "source": source,
             "notes": notes,
         },
@@ -596,6 +626,38 @@ async def _execute_simulation_job(
     return report
 
 
+async def _execute_ai_review_job(
+    settings: Settings,
+    job: dict[str, Any],
+    *,
+    worker_id: str,
+) -> dict[str, Any]:
+    payload = dict(job.get("payload") or {})
+    briefing_id_raw = str(payload.get("briefing_id") or "").strip()
+    if not briefing_id_raw:
+        raise ValueError("AI review job missing briefing_id")
+    source = str(payload.get("source") or job.get("source") or "auto_distribution").strip()
+    result = await run_briefing_ai_review(
+        settings,
+        briefing_id=UUID(briefing_id_raw),
+        source=source,
+    )
+    await update_workflow_job_progress(
+        job["id"],
+        worker_id=worker_id,
+        state={
+            "briefing_id": briefing_id_raw,
+            "source": source,
+            "result": result,
+        },
+        attempt_id=job.get("attempt_id"),
+        artifact_key="ai_review:final",
+        artifact_type="ai_review",
+        artifact_payload=result,
+    )
+    return result
+
+
 async def execute_claimed_workflow_job(
     settings: Settings,
     runtime: WorkflowRuntime,
@@ -616,6 +678,8 @@ async def execute_claimed_workflow_job(
         return await _execute_benchmark_job(settings, job, worker_id=worker_id)
     if job_type == JOB_TYPE_EVALUATION_SIMULATION:
         return await _execute_simulation_job(settings, job, worker_id=worker_id)
+    if job_type == JOB_TYPE_BRIEFING_AI_REVIEW:
+        return await _execute_ai_review_job(settings, job, worker_id=worker_id)
     raise ValueError(f"Unsupported workflow job type: {job_type}")
 
 
@@ -748,9 +812,11 @@ async def run_worker(
 
 __all__ = [
     "DEFAULT_WORKER_LANES",
+    "JOB_TYPE_BRIEFING_AI_REVIEW",
     "JOB_TYPE_EVALUATION_BENCHMARK",
     "JOB_TYPE_EVALUATION_SIMULATION",
     "JOB_TYPE_SCHEDULED_WORKFLOW",
+    "enqueue_ai_review_job",
     "enqueue_benchmark_job",
     "enqueue_scheduled_workflow_job",
     "enqueue_simulation_job",

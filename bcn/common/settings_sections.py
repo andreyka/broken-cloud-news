@@ -298,6 +298,46 @@ class ComfyUISettingsMixin:
     comfyui_poll_interval: int = 2
 
 
+class AIReviewSettingsMixin:
+    """OpenAI-backed editorial review settings."""
+
+    ai_review_api_key: str = ""
+    ai_review_base_url: str = "https://api.openai.com/v1"
+    ai_review_model: str = "gpt-5.4"
+    ai_review_reasoning_effort: str = "high"
+    ai_review_timeout_seconds: int = 180
+    ai_review_auto_enabled: bool = True
+
+    @field_validator("ai_review_base_url", mode="before", check_fields=False)
+    @classmethod
+    def _validate_ai_review_base_url(cls, value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return "https://api.openai.com/v1"
+        parsed = urlsplit(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"Invalid AI review base URL '{raw}'")
+        return raw.rstrip("/")
+
+    @field_validator("ai_review_reasoning_effort", mode="before", check_fields=False)
+    @classmethod
+    def _validate_ai_review_reasoning_effort(cls, value: str) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in {"", "low", "medium", "high", "xhigh"}:
+            return raw
+        raise ValueError(
+            "ai_review_reasoning_effort must be one of: '', low, medium, high, xhigh"
+        )
+
+    @field_validator("ai_review_timeout_seconds", mode="before", check_fields=False)
+    @classmethod
+    def _validate_ai_review_timeout_seconds(cls, value: int) -> int:
+        timeout = int(value)
+        if timeout <= 0:
+            raise ValueError("ai_review_timeout_seconds must be > 0")
+        return timeout
+
+
 class TrustedImageSourceSettingsMixin:
     """Trusted upstream image hosts used by distribution clients."""
 

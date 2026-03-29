@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from datetime import timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 from uuid import uuid4
@@ -113,6 +114,82 @@ async def test_execute_distribution_persists_attempts_and_marks_success():
     )
     mock_publish.assert_awaited_once_with([item_id])
     mock_release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_distribution_enqueues_auto_ai_review_when_configured():
+    settings = _make_settings(ai_review_api_key="test-key", ai_review_auto_enabled=True)
+    briefing_id = uuid4()
+    distributor = AsyncMock()
+    distributor.deliver.return_value = DeliveryResult(
+        mode="regular_daily_briefing",
+        results={"telegram": "ok"},
+        attempts=(
+            ChannelDeliveryResult(
+                channel="telegram",
+                status="ok",
+                external_message_id="99",
+                metadata={},
+            ),
+        ),
+        all_ok=True,
+        message="Distributed to: {'telegram': 'ok'} (mode=regular_daily_briefing)",
+    )
+
+    with (
+        patch("bcn.workflows.distribution.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.distribution.claim_latest_draft_briefing",
+            new_callable=AsyncMock,
+            return_value={
+                "id": briefing_id,
+                "created_at": datetime.now(timezone.utc),
+                "content_markdown": "**Draft**",
+                "content_html": "<p>Draft</p>",
+                "cover_image_url": "",
+                "item_ids": [],
+            },
+        ),
+        patch(
+            "bcn.workflows.distribution.get_distribution_outcomes",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.distribution.upsert_distribution_outcome",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.distribution.mark_briefing_distributed",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.distribution.mark_items_published",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.distribution.release_briefing_for_retry",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.ai_review.get_ai_review_config",
+            return_value=SimpleNamespace(enabled=True),
+        ),
+        patch(
+            "bcn.workflows.queue.enqueue_ai_review_job",
+            new_callable=AsyncMock,
+        ) as mock_enqueue_review,
+    ):
+        await execute_distribution(
+            settings,
+            mode="regular_daily_briefing",
+            distributor_service=distributor,
+            manage_pool=False,
+        )
+
+    mock_enqueue_review.assert_awaited_once()
+    assert mock_enqueue_review.await_args.kwargs["briefing_id"] == briefing_id
+    assert mock_enqueue_review.await_args.kwargs["source"] == "auto_distribution"
 
 
 @pytest.mark.asyncio

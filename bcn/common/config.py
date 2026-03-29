@@ -5,6 +5,7 @@ from __future__ import annotations
 from bcn.common.settings_sections import BCNSettingsBase
 from bcn.common.settings_sections import CollectionSourceSettingsMixin
 from bcn.common.settings_sections import ComfyUISettingsMixin
+from bcn.common.settings_sections import AIReviewSettingsMixin
 from bcn.common.settings_sections import DatabaseSettingsMixin
 from bcn.common.settings_sections import DeliveryChannelSettingsMixin
 from bcn.common.settings_sections import DistributionPolicySettingsMixin
@@ -24,6 +25,7 @@ class Settings(
     SharedLLMSettingsMixin,
     RemoteComponentEndpointSettingsMixin,
     ServiceTransportSettingsMixin,
+    AIReviewSettingsMixin,
     ComfyUISettingsMixin,
     TrustedImageSourceSettingsMixin,
     CollectionSourceSettingsMixin,

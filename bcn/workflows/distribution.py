@@ -172,6 +172,23 @@ async def execute_distribution(
                     else []
                 )
                 await mark_items_published(item_ids)
+                if settings.ai_review_auto_enabled:
+                    try:
+                        from bcn.workflows.ai_review import get_ai_review_config
+                        from bcn.workflows.queue import enqueue_ai_review_job
+
+                        if get_ai_review_config(settings).enabled:
+                            await enqueue_ai_review_job(
+                                settings,
+                                briefing_id=claimed_briefing["id"],
+                                source="auto_distribution",
+                                notes="Queued after successful distribution.",
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Failed to enqueue automatic AI review for briefing %s",
+                            claimed_briefing["id"],
+                        )
                 should_release_for_retry = False
             else:
                 failed_channels = sorted(
