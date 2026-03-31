@@ -20,6 +20,7 @@ from bcn.persistence.briefings import insert_briefing
 from bcn.persistence.news_items import get_analyzed_items
 from bcn.persistence.news_items import get_recent_published_items
 from bcn.persistence.news_items import get_top_items_for_period
+from bcn.persistence.news_items import preview_generation_candidate_pool
 from bcn.persistence.news_items import release_items_from_writing
 from bcn.persistence.runtime import close_pool
 from bcn.persistence.runtime import get_pool
@@ -29,6 +30,7 @@ from bcn.persistence.training import finalize_generation_run
 from bcn.persistence.training import finalize_stale_pending_generation_runs
 from bcn.persistence.training import insert_generation_preference_pair
 from bcn.service_registry import build_writer_workflow
+from bcn.services.writer.selection import build_selection_trace
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +226,39 @@ async def _persist_generation_trace(
         )
 
 
+async def _create_trace_run(
+    *,
+    source: str,
+    mode: str,
+    selected_items: list[dict[str, Any]],
+    trace_metadata: Any,
+    config_snapshot: dict[str, Any],
+    selection_trace: dict[str, Any],
+    git_sha: str | None,
+    initial_draft: str | None,
+) -> UUID:
+    """Create one generation trace run with structured selection diagnostics."""
+    return await create_generation_run(
+        trigger_source=source,
+        mode=mode,
+        selected_item_ids=[
+            item_id
+            for item_id in (
+                _coerce_uuid(item.get("id")) for item in selected_items
+            )
+            if item_id is not None
+        ],
+        selected_items=selected_items,
+        llm_model=trace_metadata.llm_model,
+        llm_model_version=trace_metadata.llm_model_version,
+        prompts=trace_metadata.prompts,
+        config_snapshot=config_snapshot,
+        selection_trace=selection_trace,
+        git_sha=git_sha,
+        initial_draft=initial_draft,
+    )
+
+
 async def execute_generation_result(
     settings: Settings,
     *,
@@ -237,6 +272,8 @@ async def execute_generation_result(
     active_service = writer_service or build_writer_workflow(settings)
     owns_service = writer_service is None
     claimed_item_ids: list[UUID] = []
+    candidate_pool_rows: list[dict[str, Any]] = []
+    recent_published_rows: list[dict[str, Any]] = []
 
     try:
         stale_minutes = int(
@@ -269,6 +306,14 @@ async def execute_generation_result(
             )
         else:
             claim_limit = max(int(settings.briefing_max_items) * 8, 40)
+            candidate_pool_rows = [
+                dict(row)
+                for row in await preview_generation_candidate_pool(
+                    min_score=settings.relevance_threshold,
+                    hours=settings.briefing_lookback_hours,
+                    limit=claim_limit,
+                )
+            ]
             items = await get_analyzed_items(
                 min_score=settings.relevance_threshold,
                 hours=settings.briefing_lookback_hours,
@@ -283,6 +328,17 @@ async def execute_generation_result(
                 )
                 if item_id is not None
             ]
+            recent_published_rows = [
+                dict(row)
+                for row in await get_recent_published_items(
+                    hours=settings.briefing_novelty_lookback_hours,
+                    limit=settings.briefing_novelty_max_items,
+                )
+            ]
+
+        trace_metadata = await active_service.get_trace_metadata()
+        config_snapshot = _component_config_snapshot(settings)
+        git_sha = _git_sha()
 
         if not items:
             if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
@@ -297,6 +353,64 @@ async def execute_generation_result(
                     "Skipping briefing."
                 )
             logger.info(message)
+            selection_trace = (
+                build_selection_trace(
+                    active_service,
+                    pool_items=candidate_pool_rows,
+                    writer_items=[],
+                    selected_items=[],
+                    recent_published=recent_published_rows,
+                    workflow_mode=workflow_mode,
+                    decision="skip",
+                    reason="no_items_in_writer_input_pool",
+                    message=message,
+                    selection_mode=(
+                        "monthly_newsletter"
+                        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE
+                        else "standard"
+                    ),
+                )
+                if workflow_mode != REGULAR_MONTHLY_NEWSLETTER_MODE
+                else {
+                    "workflow_mode": workflow_mode,
+                    "selection_mode": "monthly_newsletter",
+                    "decision": "skip",
+                    "reason": "no_items_in_writer_input_pool",
+                    "message": message,
+                    "pool_count": 0,
+                    "writer_input_count": 0,
+                    "selected_count": 0,
+                    "pool_high_signal_count": 0,
+                    "writer_high_signal_count": 0,
+                    "blocked_existing_briefing_count": 0,
+                    "source_floor_reject_count": 0,
+                    "recent_novelty_reject_count": 0,
+                    "selected_items": [],
+                    "excluded_items": [],
+                    "pool_items": [],
+                }
+            )
+            trace_run_id = await _create_trace_run(
+                source=source,
+                mode=workflow_mode,
+                selected_items=[],
+                trace_metadata=trace_metadata,
+                config_snapshot=config_snapshot,
+                selection_trace=selection_trace,
+                git_sha=git_sha,
+                initial_draft=None,
+            )
+            await finalize_generation_run(
+                run_id=trace_run_id,
+                decision="BLOCKED",
+                decision_reason=message,
+                rewrite_count=0,
+                final_draft=None,
+                final_gate={},
+                final_critique={},
+                final_verifier={},
+                briefing_id=None,
+            )
             return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="skip",
@@ -305,24 +419,53 @@ async def execute_generation_result(
             )
 
         item_dicts = [dict(item) for item in items]
-        recent_published_rows = []
-        if workflow_mode != REGULAR_MONTHLY_NEWSLETTER_MODE:
-            recent_published_rows = await get_recent_published_items(
-                hours=settings.briefing_novelty_lookback_hours,
-                limit=settings.briefing_novelty_max_items,
-            )
         selection_plan = await active_service.select_items_for_workflow(
             item_dicts=item_dicts,
             workflow_mode=workflow_mode,
-            recent_published=[dict(row) for row in recent_published_rows],
+            recent_published=recent_published_rows,
         )
         generation_mode = str(selection_plan.get("mode") or "standard")
         selected_items = list(selection_plan.get("selected_items") or [])
+        selection_reason = str(selection_plan.get("reason") or "").strip()
+        selection_message = str(selection_plan.get("message") or "").strip()
+        selection_trace = build_selection_trace(
+            active_service,
+            pool_items=candidate_pool_rows or item_dicts,
+            writer_items=item_dicts,
+            selected_items=selected_items,
+            recent_published=recent_published_rows,
+            workflow_mode=workflow_mode,
+            decision=str(selection_plan.get("decision") or "skip").strip().lower(),
+            reason=selection_reason,
+            message=selection_message,
+            selection_mode=generation_mode,
+        )
         if str(selection_plan.get("decision") or "skip").strip().lower() != "generate":
-            skip_message = str(selection_plan.get("message") or "").strip()
+            skip_message = selection_message
             if not skip_message:
                 skip_message = "Selection plan skipped generation."
             logger.info(skip_message)
+            trace_run_id = await _create_trace_run(
+                source=source,
+                mode=generation_mode,
+                selected_items=selected_items,
+                trace_metadata=trace_metadata,
+                config_snapshot=config_snapshot,
+                selection_trace=selection_trace,
+                git_sha=git_sha,
+                initial_draft=None,
+            )
+            await finalize_generation_run(
+                run_id=trace_run_id,
+                decision="BLOCKED",
+                decision_reason=skip_message,
+                rewrite_count=0,
+                final_draft=None,
+                final_gate={},
+                final_critique={},
+                final_verifier={},
+                briefing_id=None,
+            )
             return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="skip",
@@ -342,23 +485,26 @@ async def execute_generation_result(
                 mode=generation_mode,
             )
             final_selected_items = list(candidate.get("selected_items") or selected_items)
-            trace_metadata = await active_service.get_trace_metadata()
-            trace_run_id = await create_generation_run(
-                trigger_source=source,
-                mode=generation_mode,
-                selected_item_ids=[
-                    item_id
-                    for item_id in (
-                        _coerce_uuid(item.get("id")) for item in final_selected_items
-                    )
-                    if item_id is not None
-                ],
+            selection_trace = build_selection_trace(
+                active_service,
+                pool_items=candidate_pool_rows or item_dicts,
+                writer_items=item_dicts,
                 selected_items=final_selected_items,
-                llm_model=trace_metadata.llm_model,
-                llm_model_version=trace_metadata.llm_model_version,
-                prompts=trace_metadata.prompts,
-                config_snapshot=_component_config_snapshot(settings),
-                git_sha=_git_sha(),
+                recent_published=recent_published_rows,
+                workflow_mode=workflow_mode,
+                decision="generate",
+                reason=selection_reason or "selection_ready",
+                message=selection_message,
+                selection_mode=generation_mode,
+            )
+            trace_run_id = await _create_trace_run(
+                source=source,
+                mode=generation_mode,
+                selected_items=final_selected_items,
+                trace_metadata=trace_metadata,
+                config_snapshot=config_snapshot,
+                selection_trace=selection_trace,
+                git_sha=git_sha,
                 initial_draft=(
                     str(candidate["rounds"][0]["draft_input"])
                     if candidate.get("rounds")

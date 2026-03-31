@@ -38,7 +38,13 @@ def _make_writer_service(
     selection_plan: dict | None = None,
 ):
     service = SimpleNamespace()
-    service.selector = SimpleNamespace(high_signal_count=lambda items: 1)
+    service.settings = _make_settings()
+    service.selector = SimpleNamespace(
+        high_signal_count=lambda items: 1,
+        is_actionable=lambda item: True,
+        passes_source_floor=lambda item: True,
+        is_duplicate_of=lambda item, others: False,
+    )
     service.is_quiet_day = lambda items: False
     service.select_items_for_briefing = (
         lambda items, recent_published=None, quiet_mode=False: selected_items
@@ -187,6 +193,11 @@ async def test_execute_generation_publishes_and_persists_trace():
             ],
         ),
         patch(
+            "bcn.workflows.generation.preview_generation_candidate_pool",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
             "bcn.workflows.generation.get_recent_briefings",
             new_callable=AsyncMock,
             return_value=[],
@@ -303,6 +314,11 @@ async def test_execute_generation_blocks_publish_and_releases_claimed_items():
             ],
         ),
         patch(
+            "bcn.workflows.generation.preview_generation_candidate_pool",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
             "bcn.workflows.generation.get_recent_briefings",
             new_callable=AsyncMock,
             return_value=[],
@@ -410,6 +426,11 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
             ],
         ),
         patch(
+            "bcn.workflows.generation.preview_generation_candidate_pool",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
             "bcn.workflows.generation.get_recent_briefings",
             new_callable=AsyncMock,
             return_value=[],
@@ -466,6 +487,7 @@ async def test_execute_generation_finalizes_trace_when_publish_persist_fails():
 @pytest.mark.asyncio
 async def test_execute_generation_result_returns_typed_handoff():
     settings = _make_settings()
+    run_id = uuid4()
     service = _make_writer_service(
         selected_items=[],
         candidate={},
@@ -500,6 +522,11 @@ async def test_execute_generation_result_returns_typed_handoff():
             ],
         ),
         patch(
+            "bcn.workflows.generation.preview_generation_candidate_pool",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
             "bcn.workflows.generation.release_items_from_writing",
             new_callable=AsyncMock,
         ) as mock_release,
@@ -508,6 +535,15 @@ async def test_execute_generation_result_returns_typed_handoff():
             new_callable=AsyncMock,
             return_value=[],
         ),
+        patch(
+            "bcn.workflows.generation.create_generation_run",
+            new_callable=AsyncMock,
+            return_value=run_id,
+        ) as mock_create_run,
+        patch(
+            "bcn.workflows.generation.finalize_generation_run",
+            new_callable=AsyncMock,
+        ) as mock_finalize,
     ):
         result = await execute_generation_result(
             settings,
@@ -521,4 +557,13 @@ async def test_execute_generation_result_returns_typed_handoff():
     assert result.handoff.mode == "regular_daily_briefing"
     assert result.human_message == "No items remained after selection constraints. Skipping briefing."
     service.generate_release_candidate.assert_not_awaited()
+    assert mock_create_run.await_count == 1
+    selection_trace = mock_create_run.await_args.kwargs["selection_trace"]
+    assert selection_trace["decision"] == "skip"
+    assert selection_trace["reason"] == "no_items_remained_after_selection_constraints"
+    assert selection_trace["writer_input_count"] == 1
+    assert selection_trace["selected_count"] == 0
+    assert mock_finalize.await_count == 1
+    assert mock_finalize.await_args.kwargs["run_id"] == run_id
+    assert mock_finalize.await_args.kwargs["decision"] == "BLOCKED"
     mock_release.assert_awaited_once()

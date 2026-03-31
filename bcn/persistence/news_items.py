@@ -542,6 +542,54 @@ async def preview_analyzed_items(
     )
 
 
+async def preview_generation_candidate_pool(
+    min_score: int = 7,
+    hours: int = 24,
+    *,
+    limit: int = 250,
+) -> list[asyncpg.Record]:
+    """Read analyzed items in the lookback window with exclusion flags for selection trace."""
+    await ensure_news_items_indexes()
+    await _backfill_recent_story_identity(limit=max(250, int(limit) * 4))
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT
+            n.*,
+            EXISTS (
+                SELECT 1
+                FROM briefing_items bi
+                JOIN briefings b ON b.id = bi.briefing_id
+                JOIN news_items published_item ON published_item.id = bi.news_item_id
+                WHERE b.status IN ('DRAFT', 'DISTRIBUTING', 'DISTRIBUTED')
+                  AND (
+                      published_item.id = n.id
+                      OR (
+                          n.story_issue_key IS NOT NULL
+                          AND n.story_issue_key <> ''
+                          AND published_item.story_issue_key = n.story_issue_key
+                      )
+                      OR (
+                          n.story_url_key IS NOT NULL
+                          AND n.story_url_key <> ''
+                          AND published_item.story_url_key = n.story_url_key
+                      )
+                  )
+            ) AS blocked_by_existing_briefing
+        FROM news_items AS n
+        WHERE n.status = 'ANALYZED'
+          AND n.terminal_status IS NULL
+          AND n.relevance_score >= $1
+          AND n.published_at > NOW() - make_interval(hours => $2)
+        ORDER BY n.relevance_score DESC, n.published_at DESC
+        LIMIT $3
+        """,
+        min_score,
+        hours,
+        max(1, int(limit)),
+    )
+
+
 async def release_items_from_writing(ids: list[UUID]) -> None:
     """Release claimed ``WRITING`` items back to ``ANALYZED``."""
     if not ids:

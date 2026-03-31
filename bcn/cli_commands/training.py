@@ -69,6 +69,7 @@ def register_training_commands(cli: click.Group) -> None:
             from bcn.persistence.runtime import close_pool
             from bcn.persistence.runtime import get_pool
             from bcn.persistence.training import get_distribution_outcomes
+            from bcn.persistence.training import get_ai_reviews
             from bcn.persistence.training import get_generation_preference_pairs_for_runs
             from bcn.persistence.training import get_generation_rounds_for_runs
             from bcn.persistence.training import get_generation_runs_for_export
@@ -145,6 +146,10 @@ def register_training_commands(cli: click.Group) -> None:
             rounds = await get_generation_rounds_for_runs(run_ids)
             prefs = await get_generation_preference_pairs_for_runs(run_ids)
             reviews = await get_human_reviews(run_ids=run_ids)
+            ai_reviews = await get_ai_reviews(
+                run_ids=run_ids,
+                briefing_ids=briefing_ids,
+            )
             outcomes = (
                 await get_distribution_outcomes(briefing_ids=briefing_ids)
                 if briefing_ids
@@ -169,6 +174,19 @@ def register_training_commands(cli: click.Group) -> None:
                 if briefing_key:
                     reviews_by_briefing.setdefault(briefing_key, []).append(payload)
 
+            ai_reviews_by_run: dict[str, list[dict[str, Any]]] = {}
+            ai_reviews_by_briefing: dict[str, list[dict[str, Any]]] = {}
+            for row in ai_reviews:
+                payload = dict(row)
+                run_key = str(payload["run_id"]) if payload.get("run_id") else ""
+                briefing_key = (
+                    str(payload["briefing_id"]) if payload.get("briefing_id") else ""
+                )
+                if run_key:
+                    ai_reviews_by_run.setdefault(run_key, []).append(payload)
+                if briefing_key:
+                    ai_reviews_by_briefing.setdefault(briefing_key, []).append(payload)
+
             outcomes_by_briefing: dict[str, list[dict[str, Any]]] = {}
             for row in outcomes:
                 raw_payload = dict(row)
@@ -183,6 +201,10 @@ def register_training_commands(cli: click.Group) -> None:
                 payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
             for payloads in reviews_by_briefing.values():
                 payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
+            for payloads in ai_reviews_by_run.values():
+                payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
+            for payloads in ai_reviews_by_briefing.values():
+                payloads.sort(key=lambda row: row.get("created_at"), reverse=True)
 
             out_dir = Path(output_dir)
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -195,6 +217,17 @@ def register_training_commands(cli: click.Group) -> None:
 
             sft_rows: list[dict[str, Any]] = []
             trace_rows: list[dict[str, Any]] = []
+
+            def _choose_ai_review_target(
+                review_rows: list[dict[str, Any]],
+            ) -> dict[str, Any] | None:
+                for row in review_rows:
+                    edited = str(row.get("edited_markdown") or "").strip()
+                    decision = str(row.get("decision") or "").lower()
+                    if edited and decision in {"accept", "edit", "needs_work"}:
+                        return row
+                return None
+
             for run in runs:
                 run_dict = dict(run)
                 run_key = str(run_dict["id"])
@@ -204,9 +237,19 @@ def register_training_commands(cli: click.Group) -> None:
                 selected_items = _normalize_json(run_dict.get("selected_items"), [])
                 prompts = _normalize_json(run_dict.get("prompts"), {})
                 config_snapshot = _normalize_json(run_dict.get("config_snapshot"), {})
+                selection_trace = _normalize_json(
+                    run_dict.get("selection_trace"),
+                    {},
+                )
                 run_reviews = reviews_by_run.get(run_key, [])
                 briefing_reviews = reviews_by_briefing.get(briefing_key, [])
+                run_ai_reviews = ai_reviews_by_run.get(run_key, [])
+                briefing_ai_reviews = ai_reviews_by_briefing.get(briefing_key, [])
                 latest_review = (run_reviews or briefing_reviews or [None])[0]
+                latest_ai_review = (
+                    _choose_ai_review_target(run_ai_reviews)
+                    or _choose_ai_review_target(briefing_ai_reviews)
+                )
 
                 target_markdown = str(run_dict.get("final_draft") or "").strip()
                 if latest_review and latest_review.get("edited_markdown"):
@@ -216,6 +259,11 @@ def register_training_commands(cli: click.Group) -> None:
                             str(latest_review["edited_markdown"]).strip()
                             or target_markdown
                         )
+                elif latest_ai_review and latest_ai_review.get("edited_markdown"):
+                    target_markdown = (
+                        str(latest_ai_review["edited_markdown"]).strip()
+                        or target_markdown
+                    )
 
                 if target_markdown:
                     sft_rows.append(
@@ -254,10 +302,16 @@ def register_training_commands(cli: click.Group) -> None:
                                     if latest_review
                                     else None
                                 ),
+                                "ai_review_decision": (
+                                    latest_ai_review.get("decision")
+                                    if latest_ai_review
+                                    else None
+                                ),
                                 "distribution_outcomes": outcomes_by_briefing.get(
                                     briefing_key, []
                                 ),
                                 "config_snapshot": config_snapshot,
+                                "selection_trace": selection_trace,
                             },
                         }
                     )
@@ -276,6 +330,7 @@ def register_training_commands(cli: click.Group) -> None:
                         "selected_items": selected_items,
                         "prompt_versions": prompts,
                         "config_snapshot": config_snapshot,
+                        "selection_trace": selection_trace,
                         "initial_draft": run_dict.get("initial_draft"),
                         "final_draft": run_dict.get("final_draft"),
                         "final_gate": _normalize_json(run_dict.get("final_gate"), {}),
@@ -287,6 +342,7 @@ def register_training_commands(cli: click.Group) -> None:
                         ),
                         "rounds": rounds_by_run.get(run_key, []),
                         "human_reviews": run_reviews or briefing_reviews,
+                        "ai_reviews": run_ai_reviews or briefing_ai_reviews,
                         "distribution_outcomes": outcomes_by_briefing.get(
                             briefing_key, []
                         ),
@@ -366,6 +422,55 @@ def register_training_commands(cli: click.Group) -> None:
                             "metadata": {
                                 "review_id": str(review_row.get("id")),
                                 "created_at": _iso(review_row.get("created_at")),
+                            },
+                        }
+                    )
+
+            for review_list in ai_reviews_by_run.values():
+                for review_row in review_list:
+                    run_id_raw = review_row.get("run_id")
+                    if not run_id_raw:
+                        continue
+                    run_key = str(run_id_raw)
+                    run_context = run_lookup.get(run_key, {})
+                    edited = str(review_row.get("edited_markdown") or "").strip()
+                    final = str(run_context.get("final_draft") or "").strip()
+                    if not edited or not final or edited == final:
+                        continue
+                    decision = str(review_row.get("decision") or "").lower()
+                    if decision not in {"accept", "edit", "needs_work"}:
+                        continue
+                    pref_rows.append(
+                        {
+                            "id": f"ai-{review_row.get('id')}",
+                            "run_id": run_key,
+                            "source": "ai_review",
+                            "round_index": -1,
+                            "chosen": edited,
+                            "rejected": final,
+                            "rationale": str(
+                                review_row.get("notes")
+                                or "ai editorial rewrite preferred variant"
+                            ),
+                            "context": {
+                                "mode": str(run_context.get("mode") or "standard"),
+                                "selected_items": _normalize_json(
+                                    run_context.get("selected_items"), []
+                                ),
+                                "prompt_versions": _normalize_json(
+                                    run_context.get("prompts"), {}
+                                ),
+                            },
+                            "metadata": {
+                                "review_id": str(review_row.get("id")),
+                                "created_at": _iso(review_row.get("created_at")),
+                                "reviewer_provider": str(
+                                    review_row.get("reviewer_provider") or ""
+                                ),
+                                "reviewer_model": str(
+                                    review_row.get("reviewer_model") or ""
+                                ),
+                                "decision": decision,
                             },
                         }
                     )
@@ -636,6 +741,8 @@ def register_training_commands(cli: click.Group) -> None:
                 "sft_rows": len(sft_rows),
                 "preference_rows": len(pref_rows),
                 "trace_rows": len(trace_rows),
+                "human_review_rows": len(reviews),
+                "ai_review_rows": len(ai_reviews),
                 "shadow_trace_rows": len(shadow_trace_rows),
                 "shadow_preference_rows": shadow_preference_rows,
                 "optimization_trace_rows": len(optimization_trace_rows),
@@ -662,7 +769,8 @@ def register_training_commands(cli: click.Group) -> None:
             click.echo(
                 f"Export complete: runs={len(runs)} sft_rows={len(sft_rows)} "
                 f"preference_rows={len(pref_rows)} shadow_preference_rows={shadow_preference_rows} "
-                f"optimization_preference_rows={optimization_preference_rows}"
+                f"optimization_preference_rows={optimization_preference_rows} "
+                f"ai_review_rows={len(ai_reviews)}"
             )
             click.echo(f"  SFT: {sft_path}")
             click.echo(f"  Preference: {pref_path}")

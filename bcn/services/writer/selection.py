@@ -8,6 +8,133 @@ from urllib.parse import urlparse
 from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
 
 
+def _selection_item_summary(
+    service: Any,
+    item: dict[str, Any],
+    *,
+    recent_published: list[dict[str, Any]] | None = None,
+    writer_item_ids: set[str] | None = None,
+    selected_item_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    selector = service.selector
+    recent_items = list(recent_published or [])
+    writer_ids = writer_item_ids or set()
+    selected_ids = selected_item_ids or set()
+    item_id = str(item.get("id") or "")
+    source = str(item.get("source_type") or "").lower()
+    relevance = int(item.get("relevance_score", 0) or 0)
+    actionable = bool(selector.is_actionable(item))
+    source_floor_passed = bool(selector.passes_source_floor(item))
+    duplicate_recent = bool(selector.is_duplicate_of(item, recent_items))
+    blocked_existing = bool(item.get("blocked_by_existing_briefing", False))
+    in_writer_pool = item_id in writer_ids if item_id else False
+    selected = item_id in selected_ids if item_id else False
+
+    reasons: list[str] = []
+    if blocked_existing:
+        reasons.append("existing_briefing_story_duplicate")
+    if in_writer_pool and not source_floor_passed and not selected:
+        reasons.append("source_floor")
+    if in_writer_pool and duplicate_recent and not selected:
+        reasons.append("recent_briefing_novelty")
+
+    return {
+        "id": item_id or None,
+        "title": str(item.get("title") or ""),
+        "source_type": source,
+        "relevance_score": relevance,
+        "published_at": item.get("published_at"),
+        "url": str(item.get("url") or ""),
+        "story_issue_key": str(item.get("story_issue_key") or ""),
+        "story_url_key": str(item.get("story_url_key") or ""),
+        "in_writer_pool": in_writer_pool,
+        "selected": selected,
+        "actionable": actionable,
+        "high_signal": bool(
+            relevance >= int(service.settings.briefing_quiet_day_high_signal_threshold)
+            and (actionable or source == "ghsa")
+        ),
+        "source_floor_passed": source_floor_passed,
+        "blocked_by_existing_briefing": blocked_existing,
+        "duplicate_recent_briefing": duplicate_recent,
+        "exclusion_reasons": reasons,
+    }
+
+
+def build_selection_trace(
+    service: Any,
+    *,
+    pool_items: list[dict[str, Any]],
+    writer_items: list[dict[str, Any]],
+    selected_items: list[dict[str, Any]],
+    recent_published: list[dict[str, Any]] | None = None,
+    workflow_mode: str,
+    decision: str,
+    reason: str,
+    message: str,
+    selection_mode: str,
+) -> dict[str, Any]:
+    """Return structured selection diagnostics for training/export."""
+    writer_item_ids = {
+        str(item.get("id") or "") for item in writer_items if str(item.get("id") or "")
+    }
+    selected_item_ids = {
+        str(item.get("id") or "")
+        for item in selected_items
+        if str(item.get("id") or "")
+    }
+    summaries = [
+        _selection_item_summary(
+            service,
+            item,
+            recent_published=recent_published,
+            writer_item_ids=writer_item_ids,
+            selected_item_ids=selected_item_ids,
+        )
+        for item in pool_items
+    ]
+    writer_summaries = [item for item in summaries if item["in_writer_pool"]]
+    excluded_items = [item for item in summaries if item["exclusion_reasons"]]
+    selected_summaries = [item for item in summaries if item["selected"]]
+
+    return {
+        "workflow_mode": workflow_mode,
+        "selection_mode": selection_mode,
+        "decision": decision,
+        "reason": reason,
+        "message": message,
+        "pool_count": len(pool_items),
+        "writer_input_count": len(writer_items),
+        "selected_count": len(selected_items),
+        "high_signal_threshold": int(
+            service.settings.briefing_quiet_day_high_signal_threshold
+        ),
+        "min_high_signal_to_publish": max(
+            1, int(service.settings.briefing_min_high_signal_to_publish)
+        ),
+        "pool_high_signal_count": sum(1 for item in summaries if item["high_signal"]),
+        "writer_high_signal_count": sum(
+            1 for item in writer_summaries if item["high_signal"]
+        ),
+        "blocked_existing_briefing_count": sum(
+            1 for item in summaries if item["blocked_by_existing_briefing"]
+        ),
+        "source_floor_reject_count": sum(
+            1
+            for item in writer_summaries
+            if not item["source_floor_passed"] and not item["selected"]
+        ),
+        "recent_novelty_reject_count": sum(
+            1
+            for item in writer_summaries
+            if item["duplicate_recent_briefing"] and not item["selected"]
+        ),
+        "selected_items": selected_summaries,
+        "excluded_items": excluded_items,
+        "pool_items": summaries,
+    }
+
+
 def select_items_for_workflow(
     service: Any,
     item_dicts: list[dict[str, Any]],
@@ -175,6 +302,7 @@ def char_limits(
 
 
 __all__ = [
+    "build_selection_trace",
     "char_limits",
     "is_quiet_day",
     "passes_source_floor",

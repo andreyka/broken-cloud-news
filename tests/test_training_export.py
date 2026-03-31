@@ -58,6 +58,10 @@ def test_export_training_includes_shadow_preference_rows(monkeypatch, tmp_path):
         AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
+        "bcn.persistence.training.get_ai_reviews",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
         "bcn.persistence.training.get_distribution_outcomes",
         AsyncMock(return_value=[]),
     )
@@ -174,6 +178,10 @@ def test_export_training_includes_optimization_preference_rows(monkeypatch, tmp_
         AsyncMock(return_value=[]),
     )
     monkeypatch.setattr(
+        "bcn.persistence.training.get_ai_reviews",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
         "bcn.persistence.training.get_distribution_outcomes",
         AsyncMock(return_value=[]),
     )
@@ -242,3 +250,128 @@ def test_export_training_includes_optimization_preference_rows(monkeypatch, tmp_
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["optimization_preference_rows"] == 2
     assert manifest["optimization_trace_rows"] == 1
+
+
+def test_export_training_uses_ai_review_rewrites(monkeypatch, tmp_path):
+    runner = CliRunner()
+    created_at = datetime(2026, 3, 12, 8, 15, tzinfo=timezone.utc)
+    run_id = "run-1"
+    briefing_id = "briefing-1"
+    final_draft = "Original draft"
+    ai_edit = "AI improved draft"
+
+    monkeypatch.setattr("bcn.persistence.runtime.get_pool", AsyncMock())
+    monkeypatch.setattr("bcn.persistence.runtime.close_pool", AsyncMock())
+    monkeypatch.setattr(
+        "bcn.persistence.optimization.get_optimization_candidates_for_export",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.optimization.get_optimization_candidate_lane_results",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_generation_runs_for_export",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": run_id,
+                    "briefing_id": briefing_id,
+                    "created_at": created_at,
+                    "decision": "PUBLISHED",
+                    "mode": "standard",
+                    "rewrite_count": 0,
+                    "selected_items": [{"id": "item-1", "title": "Alpha"}],
+                    "prompts": {"writer": "v1"},
+                    "config_snapshot": {},
+                    "selection_trace": {
+                        "decision": "generate",
+                        "blocked_existing_briefing_count": 2,
+                    },
+                    "llm_model": "writer:model",
+                    "llm_model_version": "v1",
+                    "git_sha": "abc123",
+                    "initial_draft": final_draft,
+                    "final_draft": final_draft,
+                    "final_gate": {},
+                    "final_critique": {},
+                    "final_verifier": {},
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_generation_rounds_for_runs",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_generation_preference_pairs_for_runs",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_human_reviews",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_ai_reviews",
+        AsyncMock(
+            return_value=[
+                {
+                    "id": "ai-review-1",
+                    "briefing_id": briefing_id,
+                    "run_id": run_id,
+                    "reviewer_provider": "openai",
+                    "reviewer_model": "gpt-5.4",
+                    "decision": "needs_work",
+                    "edited_markdown": ai_edit,
+                    "notes": "Tighter editorial framing",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.training.get_distribution_outcomes",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "bcn.persistence.evaluation.get_evaluation_runs_for_export",
+        AsyncMock(return_value=[]),
+    )
+
+    result = runner.invoke(
+        cli_module.cli,
+        ["export-training", "--output-dir", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    assert "ai_review_rows=1" in result.output
+
+    sft_rows = [
+        json.loads(line)
+        for line in (tmp_path / "sft.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert sft_rows[0]["output_markdown"] == ai_edit
+    assert sft_rows[0]["metadata"]["ai_review_decision"] == "needs_work"
+    assert sft_rows[0]["metadata"]["selection_trace"]["blocked_existing_briefing_count"] == 2
+
+    pref_rows = [
+        json.loads(line)
+        for line in (tmp_path / "preference.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(pref_rows) == 1
+    assert pref_rows[0]["source"] == "ai_review"
+    assert pref_rows[0]["chosen"] == ai_edit
+    assert pref_rows[0]["rejected"] == final_draft
+
+    trace_rows = [
+        json.loads(line)
+        for line in (tmp_path / "trace_runs.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert trace_rows[0]["ai_reviews"][0]["reviewer_model"] == "gpt-5.4"
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["ai_review_rows"] == 1

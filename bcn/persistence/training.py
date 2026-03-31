@@ -31,6 +31,7 @@ async def create_generation_run(
     llm_model_version: str | None = None,
     prompts: dict[str, Any] | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    selection_trace: dict[str, Any] | None = None,
     git_sha: str | None = None,
     initial_draft: str | None = None,
 ) -> UUID:
@@ -48,10 +49,11 @@ async def create_generation_run(
             llm_model_version,
             prompts,
             config_snapshot,
+            selection_trace,
             git_sha,
             initial_draft
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11)
         RETURNING id
         """,
         trigger_source,
@@ -62,6 +64,7 @@ async def create_generation_run(
         llm_model_version,
         json.dumps(prompts or {}, ensure_ascii=False, default=str),
         json.dumps(config_snapshot or {}, ensure_ascii=False, default=str),
+        json.dumps(selection_trace or {}, ensure_ascii=False, default=str),
         git_sha,
         initial_draft,
     )
@@ -515,6 +518,35 @@ async def get_human_reviews(
 
     sql = (
         "SELECT * FROM briefing_human_reviews "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY created_at DESC"
+    )
+    if limit > 0:
+        params.append(max(1, int(limit)))
+        sql += f" LIMIT ${len(params)}"
+    return await pool.fetch(sql, *params)
+
+
+async def get_ai_reviews(
+    *,
+    briefing_ids: list[UUID] | None = None,
+    run_ids: list[UUID] | None = None,
+    limit: int = 0,
+) -> list[asyncpg.Record]:
+    """Fetch AI review rows for export/reporting."""
+    await ensure_training_tables()
+    pool = await get_pool()
+    where = ["TRUE"]
+    params: list[object] = []
+    if briefing_ids:
+        params.append(briefing_ids)
+        where.append(f"briefing_id = ANY(${len(params)}::uuid[])")
+    if run_ids:
+        params.append(run_ids)
+        where.append(f"run_id = ANY(${len(params)}::uuid[])")
+
+    sql = (
+        "SELECT * FROM briefing_ai_reviews "
         f"WHERE {' AND '.join(where)} "
         "ORDER BY created_at DESC"
     )
