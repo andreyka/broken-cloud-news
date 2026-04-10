@@ -58,7 +58,7 @@ Current Compose services:
 - `dashboard`
 - `egress_proxy`
 - `dns_resolver`
-- `spark_bridge`
+- `model_bridge`
 
 Default exposed ports:
 
@@ -77,7 +77,7 @@ The default stack in `docker-compose.yaml` runs:
 - `dashboard` against the same database
 - `egress_proxy` as the outbound web proxy
 - `dns_resolver` as the internal DNS resolver
-- `spark_bridge` as an internal bridge to a host-local OpenAI-compatible model endpoint
+- `model_bridge` as an internal bridge to a host-local OpenAI-compatible model endpoint
 
 Every BCN runtime container is configured with:
 
@@ -111,7 +111,7 @@ BCN supports:
 If you proxy a host-local model into the Compose network, use:
 
 ```bash
-SPARK_BRIDGE_UPSTREAM=http://host.docker.internal:8000
+MODEL_BRIDGE_UPSTREAM=http://host.docker.internal:8000
 ```
 
 The bridge is model-agnostic. It can point at Qwen, Nemotron, or any other compatible upstream.

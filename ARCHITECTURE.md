@@ -131,7 +131,7 @@ flowchart TB
         Dash["dashboard"]:::node
         Proxy["egress_proxy"]:::infra
         DNS["dns_resolver"]:::infra
-        Bridge["spark_bridge / host-local model bridge"]:::infra
+        Bridge["model_bridge / host-local model bridge"]:::infra
     end
 
     LocalWorkflow --> CollectorPool

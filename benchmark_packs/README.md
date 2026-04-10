@@ -8,7 +8,7 @@ Phase 1 can run against:
 
 Current curated pack:
 - `core_v1.json`
-  - built from live SBC generation history
+  - built from reviewed live generation history
   - focuses on repeat handling, factual overclaim, same-product/new-advisory
     separation, and clean publishable controls
   - intended as the first stable offline quality gate for prompt/policy variants

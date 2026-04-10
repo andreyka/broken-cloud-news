@@ -6,8 +6,8 @@ x-bcn-base: &bcn-base
     - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
     - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
     - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
-    - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge,comfy_bridge
-    - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},spark_bridge,comfy_bridge
+    - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,comfy_bridge
+    - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,comfy_bridge
   dns:
     - 172.29.0.53
   depends_on:
@@ -17,7 +17,7 @@ x-bcn-base: &bcn-base
       condition: service_started
     dns_resolver:
       condition: service_started
-    spark_bridge:
+    model_bridge:
       condition: service_started
     comfy_bridge:
       condition: service_started
@@ -66,13 +66,13 @@ services:
         ipv4_address: 172.29.0.53
       egress_public:
 
-  spark_bridge:
+  model_bridge:
     image: nginx:1.27-alpine
     restart: always
     environment:
-      - SPARK_BRIDGE_UPSTREAM=${SPARK_BRIDGE_UPSTREAM:-http://host.docker.internal:8000}
+      - MODEL_BRIDGE_UPSTREAM=${MODEL_BRIDGE_UPSTREAM:-http://host.docker.internal:8000}
     volumes:
-      - ./infra/nginx/spark_bridge.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./infra/nginx/model_bridge.conf.template:/etc/nginx/templates/default.conf.template:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:

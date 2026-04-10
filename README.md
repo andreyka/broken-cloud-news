@@ -57,7 +57,7 @@ Default local services:
 - `bcn` -> publish worker
 - `ingest_worker` -> collection and analysis worker
 - `evaluation_worker` -> benchmark, shadow, and replay worker
-- `dashboard`, `postgres`, `egress_proxy`, `dns_resolver`, `spark_bridge`
+- `dashboard`, `postgres`, `egress_proxy`, `dns_resolver`, `model_bridge`
 
 ## Common Commands
 
@@ -65,7 +65,7 @@ Default local services:
 bcn collect --source all
 bcn analyze
 bcn write --mode regular_daily_briefing
-bcn shadow --candidate-overrides bcn/config/shadow_nemotron_spark.json --store-db
+bcn shadow --candidate-overrides bcn/config/shadow_nemotron_bridge.json --store-db
 bcn simulate --limit 30
 bcn benchmark --cases benchmark_packs/core_v1.json
 ```

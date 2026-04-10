@@ -106,6 +106,13 @@ prompt_yes_no() {
     [[ "$yn" =~ ^[Yy] ]]
 }
 
+env_quote() {
+    local value="${1-}"
+    value="${value//$'\n'/\\n}"
+    value="${value//\'/\'\"\'\"\'}"
+    printf "'%s'" "$value"
+}
+
 check_command() {
     if ! command -v "$1" &>/dev/null; then
         err "$1 is not installed. Please install it first."
@@ -224,7 +231,7 @@ warn_managed_db_sslmode() {
 }
 
 validate_database_access() {
-    local output
+    local output=""
     if ! output="$(compose_run exec -T bcn sh -lc "python - <<'PY'
 import asyncio
 import os
@@ -248,7 +255,7 @@ async def main() -> int:
         await conn.execute('SELECT 1')
         for table, column in REQUIRED:
             row = await conn.fetchrow(
-                'SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2',
+                'SELECT 1 FROM information_schema.columns WHERE table_name = \$1 AND column_name = \$2',
                 table,
                 column,
             )
@@ -264,7 +271,8 @@ try:
 except Exception as exc:
     print(f'exception:{type(exc).__name__}:{exc}')
     raise
-PY" 2>&1)"; then
+PY
+" 2>&1)"; then
         err "Database connectivity/schema validation failed."
         echo "$output"
         return 1
@@ -370,19 +378,42 @@ cmd_check() {
     fi
 
     # LLM
+    if [[ -n "${BCN_LLM_PROVIDER:-}" ]]; then
+        ok "BCN_LLM_PROVIDER = ${BCN_LLM_PROVIDER}"
+    else
+        warn "BCN_LLM_PROVIDER not set (defaulting to openai_compat)"
+    fi
     if [[ -n "${BCN_LLM_BASE_URL:-}" ]]; then
         ok "BCN_LLM_BASE_URL = $BCN_LLM_BASE_URL"
-        if curl -sf --connect-timeout 5 "${BCN_LLM_BASE_URL}/models" >/dev/null 2>&1; then
+        if [[ "${BCN_LLM_BASE_URL}" == http://model_bridge:* ]]; then
+            info "LLM endpoint uses the internal model bridge; host-side curl validation is skipped."
+        elif curl -sf --connect-timeout 5 "${BCN_LLM_BASE_URL}/models" >/dev/null 2>&1; then
             ok "LLM endpoint is reachable"
         else
-            warn "LLM endpoint is not reachable (may be on local network)"
+            warn "LLM endpoint is not reachable from the host (may still work from containers)"
         fi
     else
         warn "BCN_LLM_BASE_URL not set (using default)"
     fi
+    if [[ -n "${MODEL_BRIDGE_UPSTREAM:-}" ]]; then
+        ok "MODEL_BRIDGE_UPSTREAM = ${MODEL_BRIDGE_UPSTREAM}"
+    fi
+
+    # ComfyUI
+    if [[ -n "${BCN_COMFYUI_URL:-}" ]]; then
+        ok "BCN_COMFYUI_URL = ${BCN_COMFYUI_URL}"
+        if [[ "${BCN_COMFYUI_URL}" == http://comfy_bridge:* ]]; then
+            info "ComfyUI endpoint uses internal comfy_bridge; host-side curl validation is skipped."
+        fi
+    else
+        warn "BCN_COMFYUI_URL not set"
+    fi
+    if [[ -n "${COMFYUI_BRIDGE_UPSTREAM:-}" ]]; then
+        ok "COMFYUI_BRIDGE_UPSTREAM = ${COMFYUI_BRIDGE_UPSTREAM}"
+    fi
 
     # GitHub
-    if [[ -n "${BCN_GITHUB_TOKEN:-}" && "${BCN_GITHUB_TOKEN}" != "ghp_xxxxxxxxxxxx" ]]; then
+    if [[ -n "${BCN_GITHUB_TOKEN:-}" && "${BCN_GITHUB_TOKEN}" != "ghp_xxxxxxxxxxxx" && "${BCN_GITHUB_TOKEN}" != "<github-token>" ]]; then
         ok "BCN_GITHUB_TOKEN is set"
         local gh_status
         gh_status=$(curl -sf -o /dev/null -w "%{http_code}" \
@@ -405,7 +436,7 @@ cmd_check() {
     fi
 
     # Telegram
-    if [[ -n "${BCN_TELEGRAM_BOT_TOKEN:-}" && "${BCN_TELEGRAM_BOT_TOKEN}" != "123456:ABC-xxxxxxxxxxxx" ]]; then
+    if [[ -n "${BCN_TELEGRAM_BOT_TOKEN:-}" && "${BCN_TELEGRAM_BOT_TOKEN}" != "123456:ABC-xxxxxxxxxxxx" && "${BCN_TELEGRAM_BOT_TOKEN}" != "<telegram-bot-token>" ]]; then
         ok "BCN_TELEGRAM_BOT_TOKEN is set"
         if [[ -n "${BCN_TELEGRAM_CHAT_ID:-}" ]]; then
             ok "BCN_TELEGRAM_CHAT_ID = ${BCN_TELEGRAM_CHAT_ID}"
@@ -428,6 +459,28 @@ cmd_check() {
         warn "Discord not configured (distribution disabled)"
     fi
 
+    # Ghost
+    if [[ "${BCN_GHOST_ENABLED:-false}" == "true" ]]; then
+        if [[ -n "${BCN_GHOST_ADMIN_API_URL:-}" && -n "${BCN_GHOST_ADMIN_API_KEY:-}" ]]; then
+            ok "Ghost publishing is configured"
+        else
+            err "Ghost is enabled but BCN_GHOST_ADMIN_API_URL / BCN_GHOST_ADMIN_API_KEY is incomplete"; ((issues++))
+        fi
+    else
+        warn "Ghost not configured (distribution disabled)"
+    fi
+
+    # Substack
+    if [[ "${BCN_SUBSTACK_ENABLED:-false}" == "true" ]]; then
+        if [[ -n "${BCN_SUBSTACK_SID:-}" && -n "${BCN_SUBSTACK_PUBLICATION_URL:-}" ]]; then
+            ok "Substack publishing is configured"
+        else
+            err "Substack is enabled but BCN_SUBSTACK_SID / BCN_SUBSTACK_PUBLICATION_URL is incomplete"; ((issues++))
+        fi
+    else
+        warn "Substack not configured (distribution disabled)"
+    fi
+
     # Email
     if [[ -n "${BCN_SMTP_HOST:-}" ]]; then
         ok "Email configured: ${BCN_SMTP_HOST}:${BCN_SMTP_PORT:-587}"
@@ -440,6 +493,14 @@ cmd_check() {
         ok "Slack webhook is set"
     else
         warn "Slack not configured (distribution disabled)"
+    fi
+
+    # AI review
+    if [[ -n "${BCN_AI_REVIEW_API_KEY:-}" || -n "${OPENAI_API_KEY:-}" ]]; then
+        ok "AI review API key is configured"
+        ok "BCN_AI_REVIEW_MODEL = ${BCN_AI_REVIEW_MODEL:-gpt-5.4}"
+    else
+        warn "AI review API key not configured (review lab auto-review disabled)"
     fi
 
     echo ""
@@ -460,6 +521,26 @@ cmd_check() {
             if ! validate_database_access; then
                 warn "If this is a reused or stale DB volume, run ./setup.sh --reset."
                 runtime_issues=$((runtime_issues + 1))
+            fi
+            if compose_run exec -T bcn python - <<'PY' >/dev/null 2>&1
+import asyncio
+import httpx
+import os
+
+async def main():
+    base = os.environ.get("BCN_LLM_BASE_URL", "").rstrip("/")
+    if not base:
+        raise SystemExit(0)
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{base}/models")
+        resp.raise_for_status()
+
+asyncio.run(main())
+PY
+            then
+                ok "In-container LLM validation passed."
+            else
+                warn "In-container LLM validation failed."
             fi
         else
             warn "bcn container is not running; skipped runtime DB/schema validation."
@@ -506,6 +587,9 @@ cmd_setup() {
     header "Database Configuration"
     DB_MODE="docker"
     DB_URL=""
+    PG_USER="postgres"
+    PG_PASSWORD="postgres"
+    PG_DB="broken_cloud_news"
     if prompt_yes_no "Use a managed/external PostgreSQL database?" "n"; then
         DB_MODE="managed"
         info "Managed DB mode skips local postgres startup and connects directly."
@@ -526,15 +610,35 @@ cmd_setup() {
     fi
 
     header "LLM Configuration"
-    info "OpenAI-compatible or hosted LLM endpoint used by analyst/writer/critic/verifier."
-    prompt_value BCN_LLM_BASE_URL "LLM API base URL" "http://localhost:8000/v1"
-    LLM_URL="$REPLY_VALUE"
-    prompt_value BCN_LLM_MODEL "Model name" "Qwen/Qwen3-VL-30B-A3B-Instruct"
-    LLM_MODEL="$REPLY_VALUE"
+    info "This config is written for the Docker stack. Use bridge service URLs for local host-proxied models."
+    prompt_value BCN_LLM_PROVIDER "LLM provider (openai_compat / vertexai / openai)" "openai_compat"
+    LLM_PROVIDER="$REPLY_VALUE"
+    if [[ "$LLM_PROVIDER" == "openai_compat" ]]; then
+        prompt_value BCN_LLM_BASE_URL "LLM API base URL (inside Docker network)" "http://model_bridge:8000/v1"
+        LLM_URL="$REPLY_VALUE"
+        prompt_value MODEL_BRIDGE_UPSTREAM "Model bridge upstream (host-local or remote OpenAI-compatible endpoint)" "http://host.docker.internal:8000"
+        MODEL_BRIDGE_UPSTREAM="$REPLY_VALUE"
+        prompt_value BCN_LLM_API_KEY "LLM API key (leave blank for unauthenticated local upstreams)" "" "true"
+        LLM_API_KEY="$REPLY_VALUE"
+        prompt_value BCN_LLM_MODEL "Model name" "Qwen/Qwen3-VL-30B-A3B-Instruct"
+        LLM_MODEL="$REPLY_VALUE"
+    else
+        prompt_value BCN_LLM_BASE_URL "LLM API base URL" ""
+        LLM_URL="$REPLY_VALUE"
+        prompt_value BCN_LLM_API_KEY "LLM API key (optional if your provider uses external auth)" "" "true"
+        LLM_API_KEY="$REPLY_VALUE"
+        prompt_value BCN_LLM_MODEL "Model name" "gemini-3.1-pro-preview"
+        LLM_MODEL="$REPLY_VALUE"
+        MODEL_BRIDGE_UPSTREAM=""
+    fi
+    prompt_value BCN_LLM_MODEL_COVER "Optional cover model override (leave blank to use BCN default)" ""
+    LLM_COVER_MODEL="$REPLY_VALUE"
 
     header "ComfyUI Configuration"
-    prompt_value BCN_COMFYUI_URL "ComfyUI API URL" "http://localhost:8188"
+    prompt_value BCN_COMFYUI_URL "ComfyUI API URL (inside Docker network)" "http://comfy_bridge:8188"
     COMFYUI_URL="$REPLY_VALUE"
+    prompt_value COMFYUI_BRIDGE_UPSTREAM "ComfyUI bridge upstream (host-local ComfyUI endpoint)" "http://host.docker.internal:8188"
+    COMFYUI_BRIDGE_UPSTREAM="$REPLY_VALUE"
 
     header "GitHub Token (for GHSA advisory collection)"
     info "Create a token at: https://github.com/settings/tokens"
@@ -578,6 +682,30 @@ cmd_setup() {
         DISCORD_CHANNEL_ID="$REPLY_VALUE"
     fi
 
+    # Ghost
+    GHOST_ENABLED="false"
+    GHOST_ADMIN_API_URL=""
+    GHOST_ADMIN_API_KEY=""
+    if prompt_yes_no "Configure Ghost publishing?" "n"; then
+        GHOST_ENABLED="true"
+        prompt_value BCN_GHOST_ADMIN_API_URL "Ghost Admin API URL (e.g. https://yourpub.ghost.io)" ""
+        GHOST_ADMIN_API_URL="$REPLY_VALUE"
+        prompt_value BCN_GHOST_ADMIN_API_KEY "Ghost Admin API key (<id>:<secret>)" "" "true"
+        GHOST_ADMIN_API_KEY="$REPLY_VALUE"
+    fi
+
+    # Substack
+    SUBSTACK_ENABLED="false"
+    SUBSTACK_SID=""
+    SUBSTACK_PUBLICATION_URL=""
+    if prompt_yes_no "Configure Substack publishing?" "n"; then
+        SUBSTACK_ENABLED="true"
+        prompt_value BCN_SUBSTACK_SID "Substack SID cookie" "" "true"
+        SUBSTACK_SID="$REPLY_VALUE"
+        prompt_value BCN_SUBSTACK_PUBLICATION_URL "Substack publication URL (e.g. https://yourpub.substack.com)" ""
+        SUBSTACK_PUBLICATION_URL="$REPLY_VALUE"
+    fi
+
     # Email
     SMTP_HOST=""
     SMTP_PORT="587"
@@ -610,6 +738,25 @@ cmd_setup() {
         SLACK_WEBHOOK="$REPLY_VALUE"
     fi
 
+    header "AI Review"
+    AI_REVIEW_API_KEY=""
+    AI_REVIEW_MODEL="gpt-5.4"
+    AI_REVIEW_REASONING_EFFORT="high"
+    AI_REVIEW_AUTO_ENABLED="false"
+    if prompt_yes_no "Configure OpenAI-backed AI review?" "n"; then
+        prompt_value BCN_AI_REVIEW_API_KEY "OpenAI API key for AI review" "" "true"
+        AI_REVIEW_API_KEY="$REPLY_VALUE"
+        prompt_value BCN_AI_REVIEW_MODEL "AI review model" "gpt-5.4"
+        AI_REVIEW_MODEL="$REPLY_VALUE"
+        prompt_value BCN_AI_REVIEW_REASONING_EFFORT "AI review reasoning effort" "high"
+        AI_REVIEW_REASONING_EFFORT="$REPLY_VALUE"
+        if [[ -n "$AI_REVIEW_API_KEY" ]]; then
+            AI_REVIEW_AUTO_ENABLED="true"
+        else
+            warn "AI review key was blank; automatic AI review will stay disabled."
+        fi
+    fi
+
     # ------------------------------------------------------------------
     # Write .env
     # ------------------------------------------------------------------
@@ -621,43 +768,68 @@ cmd_setup() {
 # Generated by setup.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 # Database
-BCN_SETUP_DATABASE_MODE=$DB_MODE
-BCN_DATABASE_URL=$DB_URL
+BCN_SETUP_DATABASE_MODE=$(env_quote "$DB_MODE")
+BCN_POSTGRES_USER=$(env_quote "$PG_USER")
+BCN_POSTGRES_PASSWORD=$(env_quote "$PG_PASSWORD")
+BCN_POSTGRES_DB=$(env_quote "$PG_DB")
+BCN_DATABASE_URL=$(env_quote "$DB_URL")
 
-# LLM (OpenAI-compatible API)
-BCN_LLM_BASE_URL=$LLM_URL
-BCN_LLM_MODEL=$LLM_MODEL
+# LLM
+BCN_LLM_PROVIDER=$(env_quote "$LLM_PROVIDER")
+BCN_LLM_BASE_URL=$(env_quote "$LLM_URL")
+BCN_LLM_MODEL=$(env_quote "$LLM_MODEL")
+BCN_LLM_API_KEY=$(env_quote "$LLM_API_KEY")
+BCN_LLM_MODEL_COVER=$(env_quote "$LLM_COVER_MODEL")
+MODEL_BRIDGE_UPSTREAM=$(env_quote "$MODEL_BRIDGE_UPSTREAM")
 
-# ComfyUI (Flux image generation)
-BCN_COMFYUI_URL=$COMFYUI_URL
+# ComfyUI bridge
+BCN_COMFYUI_URL=$(env_quote "$COMFYUI_URL")
+COMFYUI_BRIDGE_UPSTREAM=$(env_quote "$COMFYUI_BRIDGE_UPSTREAM")
 
 # GitHub API token (GHSA collection)
-BCN_GITHUB_TOKEN=$GH_TOKEN
+BCN_GITHUB_TOKEN=$(env_quote "$GH_TOKEN")
 
 # X API Bearer Token (Twitter/X collection)
-BCN_TWITTER_BEARER_TOKEN=$TWITTER_BEARER_TOKEN
+BCN_TWITTER_BEARER_TOKEN=$(env_quote "$TWITTER_BEARER_TOKEN")
 
 # Telegram distribution
-BCN_TELEGRAM_BOT_TOKEN=$TELEGRAM_TOKEN
-BCN_TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID
+BCN_TELEGRAM_BOT_TOKEN=$(env_quote "$TELEGRAM_TOKEN")
+BCN_TELEGRAM_CHAT_ID=$(env_quote "$TELEGRAM_CHAT_ID")
 
 # Discord distribution
-BCN_DISCORD_BOT_TOKEN=$DISCORD_TOKEN
-BCN_DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+BCN_DISCORD_BOT_TOKEN=$(env_quote "$DISCORD_TOKEN")
+BCN_DISCORD_CHANNEL_ID=$(env_quote "$DISCORD_CHANNEL_ID")
+
+# Ghost distribution
+BCN_GHOST_ENABLED=$(env_quote "$GHOST_ENABLED")
+BCN_GHOST_ADMIN_API_URL=$(env_quote "$GHOST_ADMIN_API_URL")
+BCN_GHOST_ADMIN_API_KEY=$(env_quote "$GHOST_ADMIN_API_KEY")
+
+# Substack distribution
+BCN_SUBSTACK_ENABLED=$(env_quote "$SUBSTACK_ENABLED")
+BCN_SUBSTACK_SID=$(env_quote "$SUBSTACK_SID")
+BCN_SUBSTACK_PUBLICATION_URL=$(env_quote "$SUBSTACK_PUBLICATION_URL")
 
 # Email distribution (SMTP)
-BCN_SMTP_HOST=$SMTP_HOST
-BCN_SMTP_PORT=$SMTP_PORT
-BCN_SMTP_USER=$SMTP_USER
-BCN_SMTP_PASSWORD=$SMTP_PASS
-BCN_EMAIL_FROM=$EMAIL_FROM
-BCN_EMAIL_RECIPIENTS=$EMAIL_RECIPIENTS
+BCN_SMTP_HOST=$(env_quote "$SMTP_HOST")
+BCN_SMTP_PORT=$(env_quote "$SMTP_PORT")
+BCN_SMTP_USER=$(env_quote "$SMTP_USER")
+BCN_SMTP_PASSWORD=$(env_quote "$SMTP_PASS")
+BCN_EMAIL_FROM=$(env_quote "$EMAIL_FROM")
+BCN_EMAIL_RECIPIENTS=$(env_quote "$EMAIL_RECIPIENTS")
 
 # Slack distribution
-BCN_SLACK_WEBHOOK_URL=$SLACK_WEBHOOK
+BCN_SLACK_WEBHOOK_URL=$(env_quote "$SLACK_WEBHOOK")
+
+# AI review
+BCN_AI_REVIEW_API_KEY=$(env_quote "$AI_REVIEW_API_KEY")
+BCN_AI_REVIEW_MODEL=$(env_quote "$AI_REVIEW_MODEL")
+BCN_AI_REVIEW_REASONING_EFFORT=$(env_quote "$AI_REVIEW_REASONING_EFFORT")
+BCN_AI_REVIEW_AUTO_ENABLED=$(env_quote "$AI_REVIEW_AUTO_ENABLED")
 
 # Scheduling (uncomment to override defaults)
 # BCN_GHSA_INTERVAL_HOURS=4
+# BCN_REDDIT_INTERVAL_HOURS=3
 # BCN_RSS_INTERVAL_HOURS=2
 # BCN_TWITTER_INTERVAL_HOURS=6
 # BCN_ANALYST_INTERVAL_MINUTES=15
@@ -693,17 +865,19 @@ start_services() {
     fi
 
     if [[ "$db_mode" == "managed" ]]; then
-        info "Starting infra + app in managed DB mode (without local postgres dependency)..."
-        compose_run up -d --build egress_proxy dns_resolver
-        compose_run up -d --build --no-deps bcn
+        info "Starting split stack in managed DB mode (without local postgres dependency)..."
+        compose_run up -d --build egress_proxy dns_resolver model_bridge comfy_bridge
+        compose_run up -d --build --no-deps scheduler bcn ingest_worker evaluation_worker dashboard
     else
         info "Building and starting containers..."
         compose_run up -d --build
 
         info "Waiting for PostgreSQL to be ready..."
         local retries=30
+        local pg_user="${BCN_POSTGRES_USER:-postgres}"
+        local pg_db="${BCN_POSTGRES_DB:-broken_cloud_news}"
         while [[ $retries -gt 0 ]]; do
-            if compose_run exec -T postgres pg_isready -U postgres -d broken_cloud_news >/dev/null 2>&1; then
+            if compose_run exec -T postgres pg_isready -U "$pg_user" -d "$pg_db" >/dev/null 2>&1; then
                 ok "PostgreSQL is ready!"
                 break
             fi
@@ -747,20 +921,28 @@ show_next_steps() {
     echo -e "
 ${BOLD}Quick commands:${NC}
   ${GREEN}${compose_cmd} up -d${NC}           Start all services
-  ${GREEN}${compose_cmd} logs -f bcn${NC}     Follow application logs
+  ${GREEN}${compose_cmd} logs -f scheduler bcn ingest_worker evaluation_worker${NC}
+                                Follow control-plane and worker logs
   ${GREEN}${compose_cmd} down${NC}            Stop services
   ${GREEN}./setup.sh --check${NC}             Validate configuration
   ${GREEN}./setup.sh --reset${NC}             Reset DB volume + re-setup
   ${GREEN}./setup.sh --nuke${NC}              Remove everything
 
-${BOLD}Manual pipeline (without Docker app container):${NC}
-  ${GREEN}pip install -e .${NC}               Install BCN locally
-  ${GREEN}bcn collect${NC}                    Collect news items
-  ${GREEN}bcn analyze${NC}                    Analyze with LLM
-  ${GREEN}bcn write${NC}                      Generate briefing
-  ${GREEN}bcn distribute${NC}                 Send to channels
-  ${GREEN}bcn pipeline${NC}                   Run full cycle once
-  ${GREEN}bcn run${NC}                        Start daemon (agents + scheduler)
+${BOLD}Current worker topology:${NC}
+  ${GREEN}${compose_cmd} exec -T bcn python -m bcn workflow-jobs --limit 10${NC}
+                                Inspect queue state
+  ${GREEN}${compose_cmd} exec -T bcn python -m bcn workflow-lanes list${NC}
+                                Inspect lane pause controls
+  ${GREEN}${compose_cmd} exec -T bcn python -m bcn distribute --briefing-id <uuid>${NC}
+                                Retry distribution for one draft briefing
+
+${BOLD}Local compatibility mode (advanced):${NC}
+  ${GREEN}bcn scheduler${NC}                  Run enqueue-only scheduler locally
+  ${GREEN}bcn worker --lane publish${NC}      Run publish worker locally
+  ${GREEN}bcn worker --lane collection --lane analysis${NC}
+                                Run ingest worker locally
+  ${GREEN}bcn worker --lane evaluation${NC}   Run evaluation worker locally
+  ${GREEN}bcn run${NC}                        Compatibility mode (single process)
 "
 }
 

@@ -747,7 +747,7 @@ export default async function Home({ searchParams }: HomePageProps) {
             <p className="eyebrow">Recent runs</p>
             <h2>Persisted benchmark and shadow history</h2>
           </div>
-          <p className="muted">Read-only view from Postgres on the SBC.</p>
+          <p className="muted">Read-only view from the control-plane database.</p>
         </div>
         <div className="runs-table">
           <div className="runs-row runs-head">

@@ -648,7 +648,7 @@ async def test_job_shadow_regular_briefing_stores_unavailable_when_candidate_end
 ):
     overrides_path = tmp_path / "candidate.json"
     overrides_path.write_text(
-        '{"llm_provider_writer":"openai_compat","llm_base_url_writer":"http://spark_bridge:8000/v1"}',
+        '{"llm_provider_writer":"openai_compat","llm_base_url_writer":"http://model_bridge:8000/v1"}',
         encoding="utf-8",
     )
     settings = Settings(
@@ -657,7 +657,7 @@ async def test_job_shadow_regular_briefing_stores_unavailable_when_candidate_end
     )
     runtime = configure_scheduler_runtime(settings)
 
-    probe_mock = AsyncMock(return_value="http://spark_bridge:8000/v1/models returned 502")
+    probe_mock = AsyncMock(return_value="http://model_bridge:8000/v1/models returned 502")
     store_mock = AsyncMock()
     run_mock = AsyncMock()
     monkeypatch.setattr(
@@ -678,7 +678,7 @@ async def test_job_shadow_regular_briefing_stores_unavailable_when_candidate_end
     assert store_kwargs["workflow_mode"] == REGULAR_DAILY_BRIEFING_MODE
     assert store_kwargs["candidate_overrides"] == {
         "llm_provider_writer": "openai_compat",
-        "llm_base_url_writer": "http://spark_bridge:8000/v1",
+        "llm_base_url_writer": "http://model_bridge:8000/v1",
     }
     assert store_kwargs["notes"] == "Scheduled pre-publish shadow evaluation."
     assert "candidate_endpoint_unavailable" in store_kwargs["reason"]

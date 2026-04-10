@@ -5,7 +5,7 @@
     "type": "curated_from_sbc_benchmark_pack",
     "base_pack_count": 20,
     "base_pack_generated_at": "2026-03-13T04:07:41.153098+00:00",
-    "notes": "Initial reviewed core benchmark pack built from live SBC generation history on 2026-03-12."
+    "notes": "Initial reviewed core benchmark pack built from live generation history on 2026-03-12."
   },
   "cases": [
     {
