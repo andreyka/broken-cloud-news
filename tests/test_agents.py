@@ -163,10 +163,11 @@ class TestCollectorService:
         settings = _make_settings(
             rss_feeds=["https://example.com/security.rss"],
             twitter_required_keywords=["cloud", "kubernetes", "cve"],
+            collector_rss_max_item_age_days=365,
         )
         service = CollectorService(settings)
 
-        rss_body = """
+        rss_body = f"""
         <rss version="2.0"><channel>
           <item>
             <title>Kubernetes CVE write-up</title>
@@ -201,6 +202,7 @@ class TestCollectorService:
         settings = _make_settings(
             rss_feeds=["https://example.com/security.atom"],
             twitter_required_keywords=["cloud", "kubernetes", "cve"],
+            collector_rss_max_item_age_days=365,
         )
         service = CollectorService(settings)
 
@@ -242,7 +244,7 @@ class TestCollectorService:
         )
         service = CollectorService(settings)
 
-        rss_body = """
+        rss_body = f"""
         <rss version="2.0"><channel>
           <item>
             <title>Kubernetes CVE write-up</title>
@@ -273,7 +275,7 @@ class TestCollectorService:
         )
         service = CollectorService(settings)
 
-        rss_body = """
+        rss_body = f"""
         <rss version="2.0"><channel>
           <item>
             <title>Kubernetes CVE write-up</title>
@@ -299,6 +301,11 @@ class TestCollectorService:
     async def test_collect_rss_bounds_entry_age_and_full_scrapes_per_feed(self):
         from bcn.services.collector.service import CollectorService
 
+        now = datetime.now(timezone.utc)
+        recent_one = (now - timedelta(days=1)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        recent_two = (now - timedelta(days=2)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        old_entry = (now - timedelta(days=120)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+
         settings = _make_settings(
             rss_feeds=["https://example.com/security.rss"],
             twitter_required_keywords=["cloud", "kubernetes", "cve"],
@@ -309,27 +316,27 @@ class TestCollectorService:
         )
         service = CollectorService(settings)
 
-        rss_body = """
+        rss_body = f"""
         <rss version="2.0"><channel>
           <item>
             <title>Kubernetes CVE write-up</title>
             <link>https://example.com/advisory-1</link>
             <guid>rss-1</guid>
-            <pubDate>Fri, 06 Mar 2026 13:00:01 GMT</pubDate>
+            <pubDate>{recent_one}</pubDate>
             <description>Cloud-native exploit chain details</description>
           </item>
           <item>
             <title>Cloud container CVE follow-up</title>
             <link>https://example.com/advisory-2</link>
             <guid>rss-2</guid>
-            <pubDate>Thu, 05 Mar 2026 12:00:00 GMT</pubDate>
+            <pubDate>{recent_two}</pubDate>
             <description>Kubernetes advisory details</description>
           </item>
           <item>
             <title>Old kubernetes CVE archive</title>
             <link>https://example.com/advisory-old</link>
             <guid>rss-old</guid>
-            <pubDate>Wed, 01 Jan 2025 12:00:00 GMT</pubDate>
+            <pubDate>{old_entry}</pubDate>
             <description>Cloud archive details</description>
           </item>
         </channel></rss>
