@@ -152,6 +152,37 @@ class TestChat:
         assert second_request["messages"][3]["tool_call_id"] == "call_1"
         assert second_request["messages"][3]["content"] == "content for https://example.com"
 
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_qwen_models_disable_thinking_mode(self):
+        llm = LLMClient(
+            base_url="http://fake-llm:8000/v1",
+            model="Qwen/Qwen3.6-35B-A3B-FP8",
+            timeout=5,
+        )
+        route = respx.post("http://fake-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response("ok")
+        )
+
+        result = await llm.chat("system", "user")
+
+        assert result == "ok"
+        body = json.loads(route.calls[0].request.content)
+        assert body["chat_template_kwargs"]["enable_thinking"] is False
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_non_qwen_models_do_not_set_thinking_override(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response("ok")
+        )
+
+        result = await llm.chat("system", "user")
+
+        assert result == "ok"
+        body = json.loads(route.calls[0].request.content)
+        assert "chat_template_kwargs" not in body
+
 
 class TestAnalyzeItem:
     @respx.mock

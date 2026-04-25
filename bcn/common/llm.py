@@ -321,6 +321,7 @@ class LLMClient:
             "model": endpoint.model,
             "messages": messages,
         }
+        self._apply_openai_compat_model_overrides(endpoint, request)
         if tools:
             tool_schemas = [self._build_openai_tool_schema(tool) for tool in tools]
             request["tools"] = tool_schemas
@@ -375,6 +376,22 @@ class LLMClient:
         )
         response.raise_for_status()
         return self._extract_openai_content(response.json()["choices"][0]["message"])
+
+    @staticmethod
+    def _apply_openai_compat_model_overrides(
+        endpoint: _EndpointConfig, request: dict[str, Any]
+    ) -> None:
+        model_name = str(endpoint.model or "").strip().lower()
+
+        # Qwen 3/3.6 models default to thinking mode on vLLM/OpenAI-compatible APIs.
+        # BCN expects final assistant text in `message.content`, so request
+        # non-thinking mode explicitly for these models.
+        if model_name.startswith("qwen/") and "qwen3" in model_name:
+            chat_template_kwargs = request.get("chat_template_kwargs")
+            if not isinstance(chat_template_kwargs, dict):
+                chat_template_kwargs = {}
+                request["chat_template_kwargs"] = chat_template_kwargs
+            chat_template_kwargs.setdefault("enable_thinking", False)
 
     @staticmethod
     def _build_openai_tool_schema(tool: Callable[..., Any]) -> dict[str, Any]:
