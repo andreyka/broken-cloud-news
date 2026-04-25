@@ -1,0 +1,11 @@
+{
+  "llm_provider_writer": "openai_compat",
+  "llm_base_url_writer": "http://model_bridge:8000/v1",
+  "llm_model_writer": "Qwen/Qwen3.6-35B-A3B",
+  "llm_provider_critic": "openai_compat",
+  "llm_base_url_critic": "http://model_bridge:8000/v1",
+  "llm_model_critic": "Qwen/Qwen3.6-35B-A3B",
+  "llm_provider_verifier": "openai_compat",
+  "llm_base_url_verifier": "http://model_bridge:8000/v1",
+  "llm_model_verifier": "Qwen/Qwen3.6-35B-A3B"
+}
