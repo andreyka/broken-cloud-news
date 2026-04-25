@@ -322,10 +322,11 @@ async def get_briefing_review_context(briefing_id: UUID) -> asyncpg.Record | Non
           gr.created_at AS run_created_at,
           gr.decision AS run_decision,
           gr.rewrite_count AS run_rewrite_count,
-          gr.llm_model AS run_llm_model
+          gr.llm_model AS run_llm_model,
+          gr.selected_items AS run_selected_items
         FROM briefings b
         LEFT JOIN LATERAL (
-          SELECT id, created_at, decision, rewrite_count, llm_model
+          SELECT id, created_at, decision, rewrite_count, llm_model, selected_items
           FROM generation_runs
           WHERE briefing_id = b.id
           ORDER BY created_at DESC

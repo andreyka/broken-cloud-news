@@ -343,6 +343,7 @@ class AIReviewSettingsMixin:
     ai_review_reasoning_effort: str = "high"
     ai_review_timeout_seconds: int = 180
     ai_review_auto_enabled: bool = True
+    ai_review_publish_gate_enabled: bool = False
 
     @field_validator("ai_review_base_url", mode="before", check_fields=False)
     @classmethod

@@ -8,6 +8,7 @@ import pytest
 
 from bcn.common.config import Settings
 from bcn.workflows.ai_review import AIReviewResult
+from bcn.workflows.ai_review import run_prepublish_ai_review_gate
 from bcn.workflows.ai_review import run_briefing_ai_review
 
 
@@ -53,6 +54,18 @@ async def test_run_briefing_ai_review_skips_if_already_reviewed(monkeypatch):
 async def test_run_briefing_ai_review_persists_review(monkeypatch):
     briefing_id = uuid4()
     run_id = uuid4()
+    review_mock = AsyncMock(
+        return_value=AIReviewResult(
+            reviewer_provider="openai",
+            reviewer_model="gpt-5.4-2026-03-05",
+            reasoning_effort="high",
+            decision="edit",
+            issue_tags=["unsupported_claim", "weak_cloud_focus"],
+            notes="Tighten claims.",
+            edited_markdown="**Edited**",
+            raw_response={"extracted_review": {"decision": "edit"}},
+        )
+    )
     monkeypatch.setattr(
         "bcn.workflows.ai_review.get_briefing_review_context",
         AsyncMock(
@@ -64,6 +77,13 @@ async def test_run_briefing_ai_review_persists_review(monkeypatch):
                 "run_llm_model": "nemotron",
                 "run_decision": "PUBLISHED",
                 "run_rewrite_count": 2,
+                "run_selected_items": [
+                    {
+                        "title": "Axios package compromise",
+                        "summary": "Malicious axios release briefly shipped.",
+                        "url": "https://example.com/axios",
+                    }
+                ],
             }
         ),
     )
@@ -71,21 +91,7 @@ async def test_run_briefing_ai_review_persists_review(monkeypatch):
         "bcn.workflows.ai_review.has_ai_review",
         AsyncMock(return_value=False),
     )
-    monkeypatch.setattr(
-        "bcn.workflows.ai_review.run_openai_editorial_review",
-        AsyncMock(
-            return_value=AIReviewResult(
-                reviewer_provider="openai",
-                reviewer_model="gpt-5.4-2026-03-05",
-                reasoning_effort="high",
-                decision="edit",
-                issue_tags=["unsupported_claim", "weak_cloud_focus"],
-                notes="Tighten claims.",
-                edited_markdown="**Edited**",
-                raw_response={"extracted_review": {"decision": "edit"}},
-            )
-        ),
-    )
+    monkeypatch.setattr("bcn.workflows.ai_review.run_openai_editorial_review", review_mock)
     insert_mock = AsyncMock(return_value=uuid4())
     monkeypatch.setattr("bcn.workflows.ai_review.insert_ai_review", insert_mock)
 
@@ -97,6 +103,78 @@ async def test_run_briefing_ai_review_persists_review(monkeypatch):
 
     assert result["status"] == "stored"
     assert result["decision"] == "edit"
+    assert (
+        review_mock.await_args.args[1].selected_items_context[0]["title"]
+        == "Axios package compromise"
+    )
     insert_mock.assert_awaited_once()
     assert insert_mock.await_args.kwargs["briefing_id"] == briefing_id
     assert insert_mock.await_args.kwargs["run_id"] == run_id
+
+
+@pytest.mark.asyncio
+async def test_run_prepublish_ai_review_gate_rewrites_on_edit(monkeypatch):
+    monkeypatch.setattr(
+        "bcn.workflows.ai_review.run_openai_editorial_review",
+        AsyncMock(
+            return_value=AIReviewResult(
+                reviewer_provider="openai",
+                reviewer_model="gpt-5.4-2026-03-05",
+                reasoning_effort="high",
+                decision="edit",
+                issue_tags=["unsupported_claim"],
+                notes="Rewrite the opener and tighten claims.",
+                edited_markdown="**Edited draft**",
+                raw_response={"extracted_review": {"decision": "edit"}},
+            )
+        ),
+    )
+
+    result = await run_prepublish_ai_review_gate(
+        _make_settings(),
+        content_markdown="**Draft**",
+        selected_items=[
+            {
+                "title": "Traefik middleware escape",
+                "summary": "Bad middleware path opens the wrong backend.",
+                "url": "https://example.com/traefik",
+            }
+        ],
+        latest_run_model="nemotron",
+        rewrite_count=2,
+    )
+
+    assert result.action == "rewrite"
+    assert result.markdown == "**Edited draft**"
+    assert result.as_gate_payload()["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_prepublish_ai_review_gate_blocks_on_needs_work(monkeypatch):
+    monkeypatch.setattr(
+        "bcn.workflows.ai_review.run_openai_editorial_review",
+        AsyncMock(
+            return_value=AIReviewResult(
+                reviewer_provider="openai",
+                reviewer_model="gpt-5.4-2026-03-05",
+                reasoning_effort="high",
+                decision="needs_work",
+                issue_tags=["weak_cloud_focus"],
+                notes="This draft is too loose for publish.",
+                edited_markdown="**Unused rewrite**",
+                raw_response={"extracted_review": {"decision": "needs_work"}},
+            )
+        ),
+    )
+
+    result = await run_prepublish_ai_review_gate(
+        _make_settings(),
+        content_markdown="**Draft**",
+        selected_items=[],
+        latest_run_model="nemotron",
+        rewrite_count=1,
+    )
+
+    assert result.action == "block"
+    assert result.markdown == "**Draft**"
+    assert result.as_gate_payload()["passed"] is False

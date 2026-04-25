@@ -44,11 +44,12 @@ class AIReviewConfig:
 
 @dataclass(slots=True)
 class AIReviewInput:
-    briefing_id: UUID
+    briefing_id: UUID | None
     content_markdown: str
     latest_run_model: str | None = None
     latest_run_decision: str | None = None
     rewrite_count: int | None = None
+    selected_items_context: list[dict[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -61,6 +62,32 @@ class AIReviewResult:
     notes: str | None
     edited_markdown: str | None
     raw_response: dict[str, Any]
+
+
+@dataclass(slots=True)
+class AIPublishGateResult:
+    action: str
+    markdown: str
+    reason: str
+    review: AIReviewResult | None = None
+
+    def as_gate_payload(self) -> dict[str, Any]:
+        review = self.review
+        return {
+            "passed": self.action != "block",
+            "action": self.action,
+            "reason": self.reason,
+            "decision": review.decision if review is not None else "error",
+            "reviewer_provider": (
+                review.reviewer_provider if review is not None else "openai"
+            ),
+            "reviewer_model": review.reviewer_model if review is not None else "",
+            "reasoning_effort": (
+                review.reasoning_effort if review is not None else None
+            ),
+            "issue_tags": list(review.issue_tags) if review is not None else [],
+            "notes": review.notes if review is not None else None,
+        }
 
 
 def _env_value(name: str) -> str | None:
@@ -98,7 +125,7 @@ def _build_system_prompt() -> str:
             "- needs_work: useful, but not ready without substantive fixes.",
             "- reject: do not use this draft as a publish candidate.",
             "Rules:",
-            "- Judge only from the provided markdown and metadata. No source material is provided.",
+            "- Judge only from the provided markdown, metadata, and any selected-item context supplied with the request.",
             "- Do not invent facts, URLs, incidents, or organizations.",
             "- Treat unsupported certainty conservatively. If a claim appears stronger than the draft justifies, say so.",
             "- Distinguish between confirmed exploitation, proof-of-concept exploitation, theoretical impact, configuration-dependent risk, default-only risk, exposed-only risk, and authenticated versus unauthenticated attack paths when the draft suggests them.",
@@ -115,26 +142,66 @@ def _build_system_prompt() -> str:
     )
 
 
+def _render_selected_items_context(items: list[dict[str, Any]] | None) -> str | None:
+    if not isinstance(items, list) or not items:
+        return None
+    rendered: list[str] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        lines = [f"Item {index}"]
+        title = _as_string(item.get("title"))
+        if title:
+            lines.append(f"Title: {title}")
+        summary = _as_string(item.get("summary"))
+        if summary:
+            lines.append(f"Summary: {summary}")
+        source = _as_string(item.get("source"))
+        if source:
+            lines.append(f"Source: {source}")
+        url = _as_string(item.get("url"))
+        if url:
+            lines.append(f"URL: {url}")
+        if len(lines) > 1:
+            rendered.append("\n".join(lines))
+    if not rendered:
+        return None
+    return "\n\n".join(rendered)
+
+
 def _build_user_prompt(input_data: AIReviewInput) -> str:
-    return "\n".join(
+    briefing_label = str(input_data.briefing_id) if input_data.briefing_id else "pre-publish draft"
+    item_context = _render_selected_items_context(input_data.selected_items_context)
+    prompt_lines = [
+        f"Briefing ID: {briefing_label}",
+        f"Latest model: {input_data.latest_run_model or 'unknown'}",
+        f"Latest generation decision: {input_data.latest_run_decision or 'unknown'}",
+        f"Rewrite count: {int(input_data.rewrite_count or 0)}",
+        "",
+        "Evaluate the markdown below against BCN editorial standards:",
+        "- factual grounding and scope accuracy",
+        "- whether attack prerequisites are stated clearly",
+        "- whether impact is overstated or understated",
+        "- whether remediation advice is appropriately scoped",
+        "- cloud relevance and cloud-security framing strength",
+        "- opener strength, structure, readability, and tone precision",
+    ]
+    if item_context:
+        prompt_lines.extend(
+            [
+                "",
+                "Selected item context (treat this as the factual grounding for the review and rewrite):",
+                item_context,
+            ]
+        )
+    prompt_lines.extend(
         [
-            f"Briefing ID: {input_data.briefing_id}",
-            f"Latest model: {input_data.latest_run_model or 'unknown'}",
-            f"Latest generation decision: {input_data.latest_run_decision or 'unknown'}",
-            f"Rewrite count: {int(input_data.rewrite_count or 0)}",
-            "",
-            "Evaluate the markdown below against BCN editorial standards:",
-            "- factual grounding and scope accuracy",
-            "- whether attack prerequisites are stated clearly",
-            "- whether impact is overstated or understated",
-            "- whether remediation advice is appropriately scoped",
-            "- cloud relevance and cloud-security framing strength",
-            "- opener strength, structure, readability, and tone precision",
             "",
             "Markdown:",
             input_data.content_markdown,
         ]
     )
+    return "\n".join(prompt_lines)
 
 
 def _review_json_schema() -> dict[str, Any]:
@@ -376,6 +443,57 @@ async def run_openai_editorial_review(
     return _normalize_ai_review_result(config, response, extracted)
 
 
+async def run_prepublish_ai_review_gate(
+    settings: Settings,
+    *,
+    content_markdown: str,
+    selected_items: list[dict[str, Any]],
+    latest_run_model: str | None = None,
+    latest_run_decision: str | None = "PUBLISHED",
+    rewrite_count: int | None = None,
+) -> AIPublishGateResult:
+    """Run the AI editor before publish and convert it into a strict gate decision."""
+    review = await run_openai_editorial_review(
+        settings,
+        AIReviewInput(
+            briefing_id=None,
+            content_markdown=content_markdown,
+            latest_run_model=latest_run_model,
+            latest_run_decision=latest_run_decision,
+            rewrite_count=rewrite_count,
+            selected_items_context=selected_items,
+        ),
+    )
+    if review.decision == "accept":
+        return AIPublishGateResult(
+            action="approve",
+            markdown=content_markdown,
+            reason="AI editorial gate accepted the draft.",
+            review=review,
+        )
+    if review.decision == "edit":
+        rewritten = _as_string(review.edited_markdown)
+        if not rewritten:
+            return AIPublishGateResult(
+                action="block",
+                markdown=content_markdown,
+                reason="AI editorial gate returned edit without a full rewritten draft.",
+                review=review,
+            )
+        return AIPublishGateResult(
+            action="rewrite",
+            markdown=rewritten,
+            reason="AI editorial gate supplied a rewritten draft.",
+            review=review,
+        )
+    return AIPublishGateResult(
+        action="block",
+        markdown=content_markdown,
+        reason=f"AI editorial gate returned {review.decision}.",
+        review=review,
+    )
+
+
 async def run_briefing_ai_review(
     settings: Settings,
     *,
@@ -409,6 +527,11 @@ async def run_briefing_ai_review(
                 str(briefing.get("run_decision") or "").strip() or None
             ),
             rewrite_count=int(briefing.get("run_rewrite_count") or 0),
+            selected_items_context=(
+                list(briefing.get("run_selected_items") or [])
+                if isinstance(briefing.get("run_selected_items"), list)
+                else None
+            ),
         ),
     )
     review_id = await insert_ai_review(
@@ -437,9 +560,11 @@ __all__ = [
     "AIReviewConfig",
     "AIReviewInput",
     "AIReviewResult",
+    "AIPublishGateResult",
     "REVIEW_DECISIONS",
     "REVIEW_ISSUE_TAGS",
     "get_ai_review_config",
+    "run_prepublish_ai_review_gate",
     "run_briefing_ai_review",
     "run_openai_editorial_review",
 ]

@@ -29,8 +29,10 @@ from bcn.persistence.training import create_generation_run
 from bcn.persistence.training import finalize_generation_run
 from bcn.persistence.training import finalize_stale_pending_generation_runs
 from bcn.persistence.training import insert_generation_preference_pair
+from bcn.persistence.training import insert_ai_review
 from bcn.service_registry import build_writer_workflow
 from bcn.services.writer.selection import build_selection_trace
+from bcn.workflows.ai_review import run_prepublish_ai_review_gate
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,53 @@ def _handoff_result(
         ),
         human_message=human_message,
     )
+
+
+def _ai_publish_gate_feedback(review_payload: dict[str, Any] | None) -> list[str]:
+    """Convert one AI gate review payload into trace-friendly feedback strings."""
+    if not isinstance(review_payload, dict):
+        return []
+    feedback: list[str] = []
+    decision = str(review_payload.get("decision") or "").strip()
+    if decision:
+        feedback.append(f"AI editorial decision: {decision}")
+    for tag in review_payload.get("issue_tags") or []:
+        text = str(tag).strip()
+        if text:
+            feedback.append(f"AI issue tag: {text}")
+    notes = str(review_payload.get("notes") or "").strip()
+    if notes:
+        feedback.append(notes)
+    return feedback
+
+
+def _append_ai_publish_gate_round(
+    candidate: dict[str, Any],
+    *,
+    draft_input: str,
+    gate_result: dict[str, Any],
+    critique_result: dict[str, Any],
+    verifier_result: dict[str, Any],
+    feedback: list[str],
+    rewrite_output: str | None,
+    passed: bool,
+) -> None:
+    """Append one synthetic trace round for the pre-publish AI gate."""
+    rounds = list(candidate.get("rounds") or [])
+    rounds.append(
+        {
+            "round_index": len(rounds),
+            "phase": "ai_review_gate",
+            "draft_input": draft_input,
+            "gate_result": gate_result,
+            "critique_result": critique_result,
+            "verifier_result": verifier_result,
+            "feedback": feedback,
+            "rewrite_output": rewrite_output,
+            "passed": passed,
+        }
+    )
+    candidate["rounds"] = rounds
 
 
 async def _persist_generation_trace(
@@ -478,6 +527,7 @@ async def execute_generation_result(
         trace_run_id: UUID | None = None
         candidate: dict[str, Any] | None = None
         final_selected_items = list(selected_items)
+        ai_publish_gate_result = None
         try:
             candidate = await active_service.generate_release_candidate(
                 selected_items=selected_items,
@@ -511,6 +561,148 @@ async def execute_generation_result(
                     else str(candidate.get("markdown") or "")
                 ),
             )
+            if (
+                bool(candidate.get("release_passed", False))
+                and bool(settings.ai_review_publish_gate_enabled)
+            ):
+                original_markdown = str(candidate.get("markdown") or "")
+                try:
+                    ai_publish_gate_result = await run_prepublish_ai_review_gate(
+                        settings,
+                        content_markdown=original_markdown,
+                        selected_items=final_selected_items,
+                        latest_run_model=trace_metadata.llm_model,
+                        latest_run_decision="PUBLISHED",
+                        rewrite_count=int(candidate.get("rewrites", 0)),
+                    )
+                except Exception as exc:
+                    logger.exception("Pre-publish AI editorial gate failed")
+                    ai_gate_payload = {
+                        "passed": False,
+                        "action": "error",
+                        "reason": (
+                            "AI editorial gate failed before publish: "
+                            f"{type(exc).__name__}"
+                        ),
+                        "decision": "error",
+                        "reviewer_provider": "openai",
+                        "reviewer_model": str(settings.ai_review_model or "").strip(),
+                        "reasoning_effort": (
+                            str(settings.ai_review_reasoning_effort or "").strip()
+                            or None
+                        ),
+                        "issue_tags": [],
+                        "notes": str(exc)[:400],
+                    }
+                    gate = (
+                        dict(candidate.get("gate"))
+                        if isinstance(candidate.get("gate"), dict)
+                        else {}
+                    )
+                    gate["ai_review_gate"] = ai_gate_payload
+                    candidate["gate"] = gate
+                    candidate["release_passed"] = False
+                    candidate["critic_threshold_passed"] = False
+                    _append_ai_publish_gate_round(
+                        candidate,
+                        draft_input=original_markdown,
+                        gate_result=gate,
+                        critique_result=(
+                            dict(candidate.get("critique"))
+                            if isinstance(candidate.get("critique"), dict)
+                            else {}
+                        ),
+                        verifier_result=(
+                            dict(candidate.get("verifier"))
+                            if isinstance(candidate.get("verifier"), dict)
+                            else {}
+                        ),
+                        feedback=[ai_gate_payload["reason"], str(exc)[:400]],
+                        rewrite_output=None,
+                        passed=False,
+                    )
+                else:
+                    ai_gate_payload = ai_publish_gate_result.as_gate_payload()
+                    if ai_publish_gate_result.action == "rewrite":
+                        rewritten_markdown = str(ai_publish_gate_result.markdown or "").strip()
+                        rewritten_evaluation = await active_service.evaluate_existing_markdown(
+                            markdown=rewritten_markdown,
+                            selected_items=final_selected_items,
+                            history=history_items,
+                            mode=generation_mode,
+                        )
+                        gate = (
+                            dict(rewritten_evaluation.get("gate"))
+                            if isinstance(rewritten_evaluation.get("gate"), dict)
+                            else {}
+                        )
+                        gate["ai_review_gate"] = ai_gate_payload
+                        critique = (
+                            dict(rewritten_evaluation.get("critique"))
+                            if isinstance(rewritten_evaluation.get("critique"), dict)
+                            else {}
+                        )
+                        verifier = (
+                            dict(rewritten_evaluation.get("verifier"))
+                            if isinstance(rewritten_evaluation.get("verifier"), dict)
+                            else {}
+                        )
+                        candidate["markdown"] = str(
+                            rewritten_evaluation.get("markdown") or rewritten_markdown
+                        )
+                        candidate["gate"] = gate
+                        candidate["critique"] = critique
+                        candidate["verifier"] = verifier
+                        candidate["release_passed"] = bool(
+                            rewritten_evaluation.get("release_passed", False)
+                        )
+                        candidate["critic_threshold_passed"] = bool(
+                            rewritten_evaluation.get("critic_threshold_passed", False)
+                        )
+                        candidate["selected_items"] = list(
+                            rewritten_evaluation.get("selected_items")
+                            or final_selected_items
+                        )
+                        final_selected_items = list(candidate["selected_items"])
+                        _append_ai_publish_gate_round(
+                            candidate,
+                            draft_input=original_markdown,
+                            gate_result=gate,
+                            critique_result=critique,
+                            verifier_result=verifier,
+                            feedback=_ai_publish_gate_feedback(ai_gate_payload),
+                            rewrite_output=candidate["markdown"],
+                            passed=bool(candidate.get("release_passed", False)),
+                        )
+                    else:
+                        gate = (
+                            dict(candidate.get("gate"))
+                            if isinstance(candidate.get("gate"), dict)
+                            else {}
+                        )
+                        gate["ai_review_gate"] = ai_gate_payload
+                        candidate["gate"] = gate
+                        if ai_publish_gate_result.action == "block":
+                            candidate["release_passed"] = False
+                            candidate["critic_threshold_passed"] = False
+                        _append_ai_publish_gate_round(
+                            candidate,
+                            draft_input=original_markdown,
+                            gate_result=gate,
+                            critique_result=(
+                                dict(candidate.get("critique"))
+                                if isinstance(candidate.get("critique"), dict)
+                                else {}
+                            ),
+                            verifier_result=(
+                                dict(candidate.get("verifier"))
+                                if isinstance(candidate.get("verifier"), dict)
+                                else {}
+                            ),
+                            feedback=_ai_publish_gate_feedback(ai_gate_payload),
+                            rewrite_output=None,
+                            passed=ai_publish_gate_result.action != "block",
+                        )
             await _persist_generation_trace(run_id=trace_run_id, candidate=candidate)
 
             if not bool(candidate.get("release_passed", False)):
@@ -529,13 +721,27 @@ async def execute_generation_result(
                     if isinstance(candidate.get("verifier"), dict)
                     else {}
                 )
-                message = (
-                    "Blocking publish: briefing did not meet release thresholds after "
-                    f"{int(candidate.get('rewrites', 0))} rewrite(s). "
-                    f"gate={bool(gate.get('passed', False))} "
-                    f"critic={bool(candidate.get('critic_threshold_passed', False))} "
-                    f"verifier={bool(verifier.get('passed', True))}"
+                ai_review_gate = (
+                    dict(gate.get("ai_review_gate"))
+                    if isinstance(gate.get("ai_review_gate"), dict)
+                    else {}
                 )
+                if ai_review_gate and not bool(ai_review_gate.get("passed", True)):
+                    message = (
+                        "Blocking publish: AI editorial gate rejected the draft. "
+                        f"action={str(ai_review_gate.get('action') or 'block')} "
+                        f"decision={str(ai_review_gate.get('decision') or 'error')} "
+                        f"reviewer={str(ai_review_gate.get('reviewer_model') or 'unknown')} "
+                        f"reason={str(ai_review_gate.get('reason') or '').strip()}"
+                    )
+                else:
+                    message = (
+                        "Blocking publish: briefing did not meet release thresholds after "
+                        f"{int(candidate.get('rewrites', 0))} rewrite(s). "
+                        f"gate={bool(gate.get('passed', False))} "
+                        f"critic={bool(candidate.get('critic_threshold_passed', False))} "
+                        f"verifier={bool(verifier.get('passed', True))}"
+                    )
                 logger.warning(message)
                 await finalize_generation_run(
                     run_id=trace_run_id,
@@ -587,6 +793,26 @@ async def execute_generation_result(
             )
             message = f"Briefing created: id={briefing_id} items={len(final_selected_items)}"
             logger.info(message)
+            if ai_publish_gate_result is not None and ai_publish_gate_result.review is not None:
+                try:
+                    await insert_ai_review(
+                        briefing_id=briefing_id,
+                        run_id=trace_run_id,
+                        source="pre_publish_gate",
+                        reviewer_provider=ai_publish_gate_result.review.reviewer_provider,
+                        reviewer_model=ai_publish_gate_result.review.reviewer_model,
+                        reasoning_effort=ai_publish_gate_result.review.reasoning_effort,
+                        decision=ai_publish_gate_result.review.decision,
+                        issue_tags=ai_publish_gate_result.review.issue_tags,
+                        edited_markdown=ai_publish_gate_result.review.edited_markdown,
+                        notes=ai_publish_gate_result.review.notes,
+                        raw_response=ai_publish_gate_result.review.raw_response,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist pre-publish AI review for briefing %s",
+                        briefing_id,
+                    )
             return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="publish",
