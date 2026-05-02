@@ -6,8 +6,8 @@ x-bcn-base: &bcn-base
     - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
     - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
     - BCN_PLAYWRIGHT_PROXY=${BCN_PLAYWRIGHT_PROXY:-http://egress_proxy:3128}
-    - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,comfy_bridge
-    - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,comfy_bridge
+    - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,spark_bridge,comfy_bridge
+    - no_proxy=${NO_PROXY:-localhost,127.0.0.1,::1,postgres,comfy,comfyui},model_bridge,spark_bridge,comfy_bridge
   dns:
     - 172.29.0.53
   depends_on:
@@ -76,8 +76,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - app_internal
-      - egress_public
+      app_internal:
+        aliases:
+          - spark_bridge
+      egress_public:
 
   comfy_bridge:
     image: nginx:1.27-alpine
