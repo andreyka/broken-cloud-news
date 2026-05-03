@@ -16,6 +16,19 @@ from bcn.distributors.telegram import TelegramDistributor
 
 
 class TestTelegramDistributor:
+    def test_render_telegram_text_strips_markdown_entities(self):
+        text = (
+            "**Alert**\n"
+            "[ConsentFix](https://example.com/consentfix)\n"
+            "Use `AF_ALG` and inspect `_dmarc`."
+        )
+        rendered = TelegramDistributor._render_telegram_text(text)
+        assert rendered == (
+            "Alert\n"
+            "ConsentFix: https://example.com/consentfix\n"
+            "Use AF_ALG and inspect _dmarc."
+        )
+
     def test_split_message_short(self):
         chunks = TelegramDistributor._split_message("short message")
         assert chunks == ["short message"]
@@ -177,8 +190,8 @@ class TestTelegramDistributor:
         assert len(calls) == 1
         assert calls[0][0].endswith("/sendPhoto")
         data = calls[0][1]["data"]
-        assert data["caption"] == "*Title*\n\nBody text here"
-        assert data["parse_mode"] == "Markdown"
+        assert data["caption"] == "Title\n\nBody text here"
+        assert "parse_mode" not in data
         assert dist.last_result["overflow_sent"] is False
 
     @pytest.mark.asyncio
@@ -224,6 +237,9 @@ class TestTelegramDistributor:
         assert ok is True
         assert any(url.endswith("/sendPhoto") for url, _ in calls)
         assert any(url.endswith("/sendMessage") for url, _ in calls)
+        message_payloads = [kwargs["json"] for url, kwargs in calls if url.endswith("/sendMessage")]
+        assert message_payloads
+        assert "parse_mode" not in message_payloads[0]
         assert dist.last_result["overflow_sent"] is True
         assert dist.last_result["message_ids"] == [401, 402]
 

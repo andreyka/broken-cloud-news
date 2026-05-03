@@ -71,8 +71,7 @@ class TelegramDistributor:
         markdown = str(briefing.get("content_markdown") or "")
         cover_image_url = briefing.get("cover_image_url")
 
-        # Strip markdown image tags — Telegram doesn't render them.
-        clean_text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown).strip()
+        clean_text = self._render_telegram_text(markdown)
         result: dict[str, object] = {
             "ok": False,
             "chat_id": self.chat_id,
@@ -100,7 +99,6 @@ class TelegramDistributor:
                         data={
                             "chat_id": self.chat_id,
                             "caption": caption,
-                            "parse_mode": "Markdown",
                         },
                         files={"photo": (filename, img_bytes, mime_type)},
                     )
@@ -130,7 +128,6 @@ class TelegramDistributor:
                             json={
                                 "chat_id": self.chat_id,
                                 "text": chunk,
-                                "parse_mode": "Markdown",
                                 "disable_web_page_preview": True,
                                 "reply_to_message_id": photo_msg_id,
                             },
@@ -149,7 +146,6 @@ class TelegramDistributor:
                         json={
                             "chat_id": self.chat_id,
                             "text": chunk,
-                            "parse_mode": "Markdown",
                             "disable_web_page_preview": True,
                         },
                     )
@@ -201,6 +197,26 @@ class TelegramDistributor:
         ext = content_type.rsplit("/", 1)[-1] if "/" in content_type else "png"
         filename = f"cover.{ext}"
         return filename, content_type, img_resp.content
+
+    @staticmethod
+    def _render_telegram_text(markdown: str) -> str:
+        """Render BCN markdown into Telegram-safe plain text.
+
+        BCN drafts are authored in Markdown intended for other channels. Telegram's
+        legacy Markdown parser is brittle and rejects valid BCN content such as
+        `AF_ALG`, `_dmarc`, or chunks split near formatting markers. Convert to
+        plain text with explicit URLs instead of forwarding raw markdown.
+        """
+        text = re.sub(r"!\[[^\]]*\]\([^)]*\)\n*", "", markdown or "")
+        text = re.sub(
+            r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+            lambda m: f"{m.group(1)}: {m.group(2)}",
+            text,
+        )
+        text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+        text = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", text)
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+        return text.strip()
 
     @staticmethod
     def _decode_data_image_uri(value: str) -> tuple[str, str, bytes]:
