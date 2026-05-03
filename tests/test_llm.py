@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from unittest.mock import AsyncMock
 from unittest.mock import patch
@@ -236,6 +237,63 @@ class TestAnalyzeItem:
         )
         result = await AnalystLLM(llm).analyze_item("title", "content", "url")
         assert result.relevance_score == 10
+
+
+class TestCoverImageGeneration:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_openai_image_generation_uses_images_api(self):
+        llm = LLMClient(
+            base_url="https://api.openai.com/v1",
+            model="fallback-model",
+            timeout=5,
+            role_overrides={
+                "cover": {
+                    "provider": "openai_compat",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-image-2",
+                    "api_key": "test-key",
+                }
+            },
+        )
+        route = respx.post("https://api.openai.com/v1/images/generations").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"png-bytes").decode("ascii")
+                        }
+                    ]
+                },
+            )
+        )
+
+        writer = WriterLLM(llm)
+        assert writer.supports_cover_image_generation() is True
+        result = await writer.generate_cover_image_data_url("cover prompt")
+
+        assert result == "data:image/png;base64,cG5nLWJ5dGVz"
+        body = json.loads(route.calls[0].request.content)
+        assert body["model"] == "gpt-image-2"
+        assert body["size"] == "1536x1024"
+
+    def test_openai_image_models_are_detected_for_cover_role(self):
+        llm = LLMClient(
+            base_url="https://api.openai.com/v1",
+            model="fallback-model",
+            timeout=5,
+            role_overrides={
+                "cover": {
+                    "provider": "openai_compat",
+                    "base_url": "https://api.openai.com/v1",
+                    "model": "gpt-image-2",
+                    "api_key": "test-key",
+                }
+            },
+        )
+
+        assert WriterLLM(llm).supports_cover_image_generation() is True
 
     @respx.mock
     @pytest.mark.asyncio

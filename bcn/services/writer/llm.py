@@ -260,21 +260,28 @@ class WriterLLM:
         return self._finalize_cover_prompt(raw)
 
     def supports_cover_image_generation(self) -> bool:
-        """Return True when the cover role points to a Gemini image-capable model."""
+        """Return True when the cover role points to a supported image-capable model."""
         endpoint = self.client._endpoint("cover")
-        if endpoint.provider not in {"gemini", "vertexai"}:
-            return False
         model = (endpoint.model or "").lower()
-        return any(hint in model for hint in _IMAGE_MODEL_HINTS)
+        if endpoint.provider in {"gemini", "vertexai"}:
+            return any(hint in model for hint in _IMAGE_MODEL_HINTS)
+        if endpoint.provider == "openai_compat":
+            return model.startswith("gpt-image") or model.startswith("chatgpt-image")
+        return False
 
     async def generate_cover_image_data_url(self, prompt_text: str) -> str | None:
-        """Generate cover image bytes via Gemini and return a data URL."""
+        """Generate cover image bytes via the configured image backend and return a data URL."""
         endpoint = self.client._endpoint("cover")
-        if endpoint.provider not in {"gemini", "vertexai"}:
+        if endpoint.provider in {"gemini", "vertexai"}:
+            mime_type, image_bytes = await self.client.generate_gemini_image(
+                endpoint, prompt_text
+            )
+        elif endpoint.provider == "openai_compat":
+            mime_type, image_bytes = await self.client.generate_openai_image(
+                endpoint, prompt_text
+            )
+        else:
             return None
-        mime_type, image_bytes = await self.client.generate_gemini_image(
-            endpoint, prompt_text
-        )
         encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{mime_type};base64,{encoded}"
 

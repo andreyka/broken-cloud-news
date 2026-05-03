@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timezone
@@ -586,6 +587,44 @@ class LLMClient:
                 return "image/png", generated_image.image.image_bytes
 
         raise RuntimeError("Gemini image response did not include image bytes")
+
+    async def generate_openai_image(
+        self,
+        endpoint: _EndpointConfig,
+        prompt_text: str,
+    ) -> tuple[str, bytes]:
+        request: dict[str, Any] = {
+            "model": endpoint.model,
+            "prompt": prompt_text,
+            "size": "1536x1024",
+        }
+        response = await self._client.post(
+            f"{endpoint.base_url}/images/generations",
+            headers=self._headers(endpoint),
+            json=request,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data") or []
+        if not data:
+            raise RuntimeError("OpenAI image response did not include image data")
+
+        first = data[0] or {}
+        if first.get("b64_json"):
+            return "image/png", base64.b64decode(first["b64_json"])
+        if first.get("b64"):
+            return "image/png", base64.b64decode(first["b64"])
+        image_url = str(first.get("url") or "").strip()
+        if image_url:
+            image_response = await self._client.get(
+                image_url,
+                headers=self._headers(endpoint),
+            )
+            image_response.raise_for_status()
+            mime_type = image_response.headers.get("content-type", "image/png")
+            return mime_type, image_response.content
+
+        raise RuntimeError("OpenAI image response did not include usable image bytes")
 
     @staticmethod
     def _is_gemini_vertex_endpoint(endpoint: _EndpointConfig) -> bool:
