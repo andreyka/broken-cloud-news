@@ -41,6 +41,19 @@ class TestSettings:
         assert s.llm_provider_critic == "openai_compat"
         assert s.ghsa_interval_hours == 6
 
+    def test_analyst_llm_request_policy_override(self, monkeypatch):
+        monkeypatch.setenv("BCN_LLM_TIMEOUT_ANALYST", "60")
+        monkeypatch.setenv("BCN_LLM_CHAT_RETRIES_ANALYST", "4")
+        monkeypatch.setenv("BCN_LLM_RETRY_MAX_WAIT_SECONDS_ANALYST", "45")
+        monkeypatch.setenv("BCN_LLM_RETRY_JITTER_MIN_SECONDS_ANALYST", "0.25")
+        monkeypatch.setenv("BCN_LLM_RETRY_JITTER_MAX_SECONDS_ANALYST", "1.5")
+        s = Settings()
+        assert s.llm_timeout_analyst == 60
+        assert s.llm_chat_retries_analyst == 4
+        assert s.llm_retry_max_wait_seconds_analyst == 45
+        assert s.llm_retry_jitter_min_seconds_analyst == 0.25
+        assert s.llm_retry_jitter_max_seconds_analyst == 1.5
+
     def test_vertex_provider_aliases(self, monkeypatch):
         monkeypatch.setenv("BCN_LLM_PROVIDER", "vertex")
         monkeypatch.setenv("BCN_LLM_PROVIDER_WRITER", "vertex_ai")

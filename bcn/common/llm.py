@@ -36,6 +36,15 @@ class _EndpointConfig:
     api_key: str = ""
 
 
+@dataclass(frozen=True)
+class _RequestPolicy:
+    timeout: float
+    chat_retries: int
+    retry_max_wait_seconds: float
+    retry_jitter_min_seconds: float
+    retry_jitter_max_seconds: float
+
+
 class LLMClient:
     """Role-aware LLM client supporting OpenAI-compatible, Gemini, and Vertex AI APIs."""
 
@@ -48,6 +57,7 @@ class LLMClient:
         provider: str = "openai_compat",
         api_key: str = "",
         role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
+        request_policy_overrides: dict[str, dict[str, Any] | _RequestPolicy] | None = None,
         chat_retries: int = 12,
         retry_max_wait_seconds: float = 300.0,
         retry_jitter_min_seconds: float = 0.1,
@@ -64,6 +74,13 @@ class LLMClient:
         self.retry_jitter_max_seconds = max(
             self.retry_jitter_min_seconds, float(retry_jitter_max_seconds)
         )
+        self._default_request_policy = _RequestPolicy(
+            timeout=float(self.timeout),
+            chat_retries=self.chat_retries,
+            retry_max_wait_seconds=self.retry_max_wait_seconds,
+            retry_jitter_min_seconds=self.retry_jitter_min_seconds,
+            retry_jitter_max_seconds=self.retry_jitter_max_seconds,
+        )
         self._default_endpoint = _EndpointConfig(
             base_url=self.base_url,
             model=self.model,
@@ -71,6 +88,7 @@ class LLMClient:
             api_key=self.api_key,
         )
         self._role_endpoints: dict[str, _EndpointConfig] = {}
+        self._role_request_policies: dict[str, _RequestPolicy] = {}
         for role, override in (role_overrides or {}).items():
             if role not in LLM_ROLES:
                 continue
@@ -87,6 +105,23 @@ class LLMClient:
             resolved = self._resolve_endpoint_override(payload)
             if resolved:
                 self._role_endpoints[role] = resolved
+        for role, override in (request_policy_overrides or {}).items():
+            if role not in LLM_ROLES:
+                continue
+            payload = (
+                {
+                    "timeout": override.timeout,
+                    "chat_retries": override.chat_retries,
+                    "retry_max_wait_seconds": override.retry_max_wait_seconds,
+                    "retry_jitter_min_seconds": override.retry_jitter_min_seconds,
+                    "retry_jitter_max_seconds": override.retry_jitter_max_seconds,
+                }
+                if isinstance(override, _RequestPolicy)
+                else override
+            )
+            resolved = self._resolve_request_policy_override(payload)
+            if resolved:
+                self._role_request_policies[role] = resolved
         self._client = httpx.AsyncClient(timeout=timeout)
         self._genai_client_lock = asyncio.Lock()
         self._genai_clients: dict[str, Any] = {}
@@ -96,6 +131,7 @@ class LLMClient:
     def from_settings(cls, settings: "Settings") -> "LLMClient":
         """Build a role-aware LLM client from application settings."""
         role_overrides: dict[str, dict[str, str]] = {}
+        request_policy_overrides: dict[str, dict[str, Any]] = {}
         for role in LLM_ROLES:
             role_overrides[role] = {
                 "provider": cls._resolve_role_value(settings, "llm_provider", role),
@@ -103,6 +139,20 @@ class LLMClient:
                 "model": cls._resolve_role_value(settings, "llm_model", role),
                 "api_key": cls._resolve_role_value(settings, "llm_api_key", role),
             }
+            if role == "analyst":
+                request_policy_overrides[role] = {
+                    "timeout": getattr(settings, "llm_timeout_analyst", None),
+                    "chat_retries": getattr(settings, "llm_chat_retries_analyst", None),
+                    "retry_max_wait_seconds": getattr(
+                        settings, "llm_retry_max_wait_seconds_analyst", None
+                    ),
+                    "retry_jitter_min_seconds": getattr(
+                        settings, "llm_retry_jitter_min_seconds_analyst", None
+                    ),
+                    "retry_jitter_max_seconds": getattr(
+                        settings, "llm_retry_jitter_max_seconds_analyst", None
+                    ),
+                }
         return cls(
             base_url=str(settings.llm_base_url or ""),
             model=str(settings.llm_model or ""),
@@ -110,6 +160,7 @@ class LLMClient:
             provider=str(settings.llm_provider or "openai_compat"),
             api_key=str(settings.llm_api_key or ""),
             role_overrides=role_overrides,
+            request_policy_overrides=request_policy_overrides,
             chat_retries=int(settings.llm_chat_retries),
             retry_max_wait_seconds=float(settings.llm_retry_max_wait_seconds),
             retry_jitter_min_seconds=float(settings.llm_retry_jitter_min_seconds),
@@ -151,14 +202,69 @@ class LLMClient:
             api_key=api_key,
         )
 
+    def _resolve_request_policy_override(
+        self, payload: dict[str, Any] | None
+    ) -> _RequestPolicy | None:
+        if not payload:
+            return None
+
+        def _present(value: Any) -> bool:
+            return value not in {None, ""}
+
+        if not any(_present(value) for value in payload.values()):
+            return None
+
+        timeout = float(payload.get("timeout") or self._default_request_policy.timeout)
+        chat_retries = int(
+            payload.get("chat_retries") or self._default_request_policy.chat_retries
+        )
+        retry_max_wait_seconds = float(
+            payload.get("retry_max_wait_seconds")
+            or self._default_request_policy.retry_max_wait_seconds
+        )
+        retry_jitter_min_seconds = float(
+            payload.get("retry_jitter_min_seconds")
+            or self._default_request_policy.retry_jitter_min_seconds
+        )
+        retry_jitter_max_seconds = float(
+            payload.get("retry_jitter_max_seconds")
+            or self._default_request_policy.retry_jitter_max_seconds
+        )
+        return _RequestPolicy(
+            timeout=max(0.1, timeout),
+            chat_retries=max(1, chat_retries),
+            retry_max_wait_seconds=max(1.0, retry_max_wait_seconds),
+            retry_jitter_min_seconds=max(0.0, retry_jitter_min_seconds),
+            retry_jitter_max_seconds=max(
+                max(0.0, retry_jitter_min_seconds),
+                retry_jitter_max_seconds,
+            ),
+        )
+
     def _endpoint(self, role: str | None = None) -> _EndpointConfig:
         if role and role in self._role_endpoints:
             return self._role_endpoints[role]
         return self._default_endpoint
 
+    def _request_policy(self, role: str | None = None) -> _RequestPolicy:
+        if role and role in self._role_request_policies:
+            return self._role_request_policies[role]
+        return self._default_request_policy
+
     def model_for_role(self, role: str) -> str:
         """Expose resolved model for trace/debug output."""
         return self._endpoint(role).model
+
+    def request_policy_for_role(self, role: str | None) -> dict[str, float | int]:
+        """Expose effective retry/timeout settings for trace/debug output."""
+        policy = self._request_policy(role)
+        return {
+            "timeout": policy.timeout,
+            "chat_retries": policy.chat_retries,
+            "retry_max_wait_seconds": policy.retry_max_wait_seconds,
+            "retry_jitter_min_seconds": policy.retry_jitter_min_seconds,
+            "retry_jitter_max_seconds": policy.retry_jitter_max_seconds,
+        }
 
     def endpoint_map(self) -> dict[str, dict[str, str]]:
         """Expose effective endpoint configuration by role."""
@@ -229,17 +335,21 @@ class LLMClient:
     ) -> str:
         """Send a role-specific chat request with automatic retries."""
         endpoint = self._endpoint(role)
-        max_retries = max(1, int(self.chat_retries if retries is None else retries))
+        policy = self._request_policy(role)
+        max_retries = max(1, int(policy.chat_retries if retries is None else retries))
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
             try:
                 if endpoint.provider in {"gemini", "vertexai"}:
-                    return await self._chat_gemini(
-                        endpoint,
-                        system_prompt,
-                        user_content,
-                        json_response=json_response,
-                        tools=tools,
+                    return await asyncio.wait_for(
+                        self._chat_gemini(
+                            endpoint,
+                            system_prompt,
+                            user_content,
+                            json_response=json_response,
+                            tools=tools,
+                        ),
+                        timeout=policy.timeout,
                     )
                 return await self._chat_openai_compat(
                     endpoint,
@@ -247,6 +357,7 @@ class LLMClient:
                     user_content,
                     json_response=json_response,
                     tools=tools,
+                    request_timeout=policy.timeout,
                 )
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code if exc.response is not None else 0
@@ -255,21 +366,23 @@ class LLMClient:
                     raise
                 last_exc = exc
                 if attempt < max_retries:
-                    wait = self._retry_wait_seconds(attempt, exc.response)
+                    wait = self._retry_wait_seconds(policy, attempt, exc.response)
                     logger.warning(
-                        "LLM request failed (attempt %d/%d, status=%d), retrying in %.2fs",
+                        "LLM request failed for role %s (attempt %d/%d, status=%d), retrying in %.2fs",
+                        role or "default",
                         attempt,
                         max_retries,
                         status,
                         wait,
                     )
                     await asyncio.sleep(wait)
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            except (asyncio.TimeoutError, httpx.TimeoutException, httpx.ConnectError) as exc:
                 last_exc = exc
                 if attempt < max_retries:
-                    wait = self._retry_wait_seconds(attempt)
+                    wait = self._retry_wait_seconds(policy, attempt)
                     logger.warning(
-                        "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
+                        "LLM request failed for role %s (attempt %d/%d, %s), retrying in %.2fs",
+                        role or "default",
                         attempt,
                         max_retries,
                         type(exc).__name__,
@@ -288,9 +401,10 @@ class LLMClient:
                 ):
                     last_exc = exc
                     if attempt < max_retries:
-                        wait = self._retry_wait_seconds(attempt)
+                        wait = self._retry_wait_seconds(policy, attempt)
                         logger.warning(
-                            "LLM request failed (attempt %d/%d, %s), retrying in %.2fs",
+                            "LLM request failed for role %s (attempt %d/%d, %s), retrying in %.2fs",
+                            role or "default",
                             attempt,
                             max_retries,
                             type(exc).__name__,
@@ -313,6 +427,7 @@ class LLMClient:
         *,
         json_response: bool = False,
         tools: list[Any] | None = None,
+        request_timeout: float | None = None,
     ) -> str:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -336,6 +451,7 @@ class LLMClient:
                     f"{endpoint.base_url}/chat/completions",
                     headers=self._headers(endpoint),
                     json=request,
+                    timeout=request_timeout,
                 )
                 response.raise_for_status()
                 choice = (response.json().get("choices") or [{}])[0]
@@ -374,6 +490,7 @@ class LLMClient:
             f"{endpoint.base_url}/chat/completions",
             headers=self._headers(endpoint),
             json=request,
+            timeout=request_timeout,
         )
         response.raise_for_status()
         return self._extract_openai_content(response.json()["choices"][0]["message"])
@@ -664,14 +781,18 @@ class LLMClient:
 
     def _retry_wait_seconds(
         self,
+        policy: _RequestPolicy,
         attempt: int,
         response: httpx.Response | None = None,
     ) -> float:
-        wait = min(self.retry_max_wait_seconds, float(2**attempt))
-        wait += random.uniform(self.retry_jitter_min_seconds, self.retry_jitter_max_seconds)
+        wait = min(policy.retry_max_wait_seconds, float(2**attempt))
+        wait += random.uniform(
+            policy.retry_jitter_min_seconds,
+            policy.retry_jitter_max_seconds,
+        )
         retry_after = self._parse_retry_after_seconds(response)
         if retry_after is not None:
-            wait = max(wait, min(self.retry_max_wait_seconds, retry_after))
+            wait = max(wait, min(policy.retry_max_wait_seconds, retry_after))
         return wait
 
     @staticmethod

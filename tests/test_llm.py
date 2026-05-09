@@ -546,6 +546,38 @@ def test_from_settings_retry_tuning():
     assert llm.retry_jitter_max_seconds == 3.0
 
 
+def test_from_settings_analyst_request_policy_overrides():
+    settings = Settings(
+        llm_base_url="http://default-llm:8000/v1",
+        llm_model="default-model",
+        llm_timeout=180,
+        llm_chat_retries=16,
+        llm_retry_max_wait_seconds=600,
+        llm_retry_jitter_min_seconds=0.5,
+        llm_retry_jitter_max_seconds=5.0,
+        llm_timeout_analyst=60,
+        llm_chat_retries_analyst=4,
+        llm_retry_max_wait_seconds_analyst=45,
+        llm_retry_jitter_min_seconds_analyst=0.25,
+        llm_retry_jitter_max_seconds_analyst=1.5,
+    )
+    llm = LLMClient.from_settings(settings)
+    assert llm.request_policy_for_role("writer") == {
+        "timeout": 180.0,
+        "chat_retries": 16,
+        "retry_max_wait_seconds": 600.0,
+        "retry_jitter_min_seconds": 0.5,
+        "retry_jitter_max_seconds": 5.0,
+    }
+    assert llm.request_policy_for_role("analyst") == {
+        "timeout": 60.0,
+        "chat_retries": 4,
+        "retry_max_wait_seconds": 45.0,
+        "retry_jitter_min_seconds": 0.25,
+        "retry_jitter_max_seconds": 1.5,
+    }
+
+
 class TestProviderRouting:
     @respx.mock
     @pytest.mark.asyncio
@@ -575,6 +607,75 @@ class TestProviderRouting:
         result = await AnalystLLM(llm).analyze_item("Title", "Body", "url")
         assert result.relevance_score == 8
         assert route.called
+
+
+@pytest.mark.asyncio
+async def test_analyst_request_timeout_is_passed_to_openai_calls():
+    llm = LLMClient(
+        base_url="http://default-llm:8000/v1",
+        model="default-model",
+        timeout=30,
+        request_policy_overrides={
+            "analyst": {
+                "timeout": 7,
+            }
+        },
+    )
+    llm._client.post = AsyncMock(
+        return_value=httpx.Response(
+            200,
+            request=httpx.Request(
+                "POST", "http://default-llm:8000/v1/chat/completions"
+            ),
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "ok",
+                                    "relevance_score": 8,
+                                    "tags": ["cloud"],
+                                    "image_prompt": "prompt",
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+    )
+
+    result = await AnalystLLM(llm).analyze_item("Title", "Body", "https://example.com")
+
+    assert result.relevance_score == 8
+    assert llm._client.post.await_args.kwargs["timeout"] == 7
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_analyst_retries_use_role_specific_budget():
+    llm = LLMClient(
+        base_url="http://default-llm:8000/v1",
+        model="default-model",
+        timeout=5,
+        chat_retries=6,
+        request_policy_overrides={
+            "analyst": {
+                "chat_retries": 2,
+                "retry_jitter_min_seconds": 0.0,
+                "retry_jitter_max_seconds": 0.0,
+            }
+        },
+    )
+    route = respx.post("http://default-llm:8000/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("fail")
+    )
+    with patch("bcn.common.llm.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(httpx.ConnectError):
+            await AnalystLLM(llm).analyze_item("Title", "Body", "https://example.com")
+
+    assert route.call_count == 2
 
 
 @pytest.mark.asyncio

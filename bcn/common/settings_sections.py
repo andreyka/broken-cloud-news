@@ -301,6 +301,11 @@ class SharedLLMSettingsMixin:
     llm_retry_max_wait_seconds: int = 600
     llm_retry_jitter_min_seconds: float = 0.5
     llm_retry_jitter_max_seconds: float = 5.0
+    llm_timeout_analyst: int | None = None
+    llm_chat_retries_analyst: int | None = None
+    llm_retry_max_wait_seconds_analyst: int | None = None
+    llm_retry_jitter_min_seconds_analyst: float | None = None
+    llm_retry_jitter_max_seconds_analyst: float | None = None
     llm_provider_analyst: str = ""
     llm_provider_writer: str = ""
     llm_provider_critic: str = ""
@@ -324,6 +329,63 @@ class SharedLLMSettingsMixin:
     writer_prompt_bundle_path: str = ""
     critic_prompt_path: str = ""
     verifier_prompt_path: str = ""
+
+    @field_validator("llm_timeout", "llm_timeout_analyst", mode="before", check_fields=False)
+    @classmethod
+    def _validate_llm_timeout(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        timeout = int(value)
+        if timeout <= 0:
+            raise ValueError("llm_timeout must be > 0")
+        return timeout
+
+    @field_validator(
+        "llm_chat_retries",
+        "llm_chat_retries_analyst",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _validate_llm_chat_retries(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        retries = int(value)
+        if retries <= 0:
+            raise ValueError("llm_chat_retries must be > 0")
+        return retries
+
+    @field_validator(
+        "llm_retry_max_wait_seconds",
+        "llm_retry_max_wait_seconds_analyst",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _validate_llm_retry_max_wait_seconds(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        seconds = int(value)
+        if seconds <= 0:
+            raise ValueError("llm_retry_max_wait_seconds must be > 0")
+        return seconds
+
+    @field_validator(
+        "llm_retry_jitter_min_seconds",
+        "llm_retry_jitter_max_seconds",
+        "llm_retry_jitter_min_seconds_analyst",
+        "llm_retry_jitter_max_seconds_analyst",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def _validate_llm_retry_jitter_seconds(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        seconds = float(value)
+        if seconds < 0:
+            raise ValueError("llm retry jitter seconds must be >= 0")
+        return seconds
 
 
 class ComfyUISettingsMixin:
