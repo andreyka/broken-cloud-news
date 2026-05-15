@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+import httpx
+
 from bcn.common.config import Settings
 from bcn.contracts.services import AnalystWorkflow
 from bcn.persistence.news_items import get_new_items
@@ -25,6 +27,13 @@ def _coerce_uuid(value: object) -> UUID | None:
         return UUID(str(value))
     except Exception:
         return None
+
+
+def _is_rate_limited_error(exc: Exception) -> bool:
+    """Return true when analysis failed due to upstream rate limiting."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+        return exc.response.status_code == 429
+    return "429 Too Many Requests" in str(exc)
 
 
 async def execute_analysis(
@@ -81,6 +90,7 @@ async def execute_analysis(
                                 max_delay_seconds=(
                                     settings.analysis_retry_max_delay_seconds
                                 ),
+                                discard_on_exhaustion=not _is_rate_limited_error(exc),
                             )
                         except Exception:
                             logger.exception(

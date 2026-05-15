@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import patch
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from bcn.common.config import Settings
@@ -140,6 +141,60 @@ async def test_execute_analysis_releases_failed_analyzing_items():
     assert mock_release.await_args.args == ([item_id],)
     assert mock_release.await_args.kwargs["error"] == "RuntimeError: llm down"
     assert mock_release.await_args.kwargs["max_retries"] == 4
+    assert mock_release.await_args.kwargs["discard_on_exhaustion"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_analysis_defers_rate_limited_items():
+    settings = _make_settings()
+    item_id = uuid4()
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(429, request=request)
+    service = _make_analyst_service(
+        side_effect=httpx.HTTPStatusError(
+            "Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'",
+            request=request,
+            response=response,
+        )
+    )
+
+    with (
+        patch("bcn.workflows.analysis.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.analysis.get_new_items",
+            new_callable=AsyncMock,
+            return_value=[
+                {
+                    "id": item_id,
+                    "title": "Rate limited",
+                    "full_content": "Original body",
+                    "url": "https://example.com/item",
+                    "source_type": "rss",
+                    "source_id": "rss-1",
+                    "raw_data": {},
+                    "status": "ANALYZING",
+                }
+            ],
+        ),
+        patch(
+            "bcn.workflows.analysis.update_item_analyzed",
+            new_callable=AsyncMock,
+        ) as mock_update,
+        patch(
+            "bcn.workflows.analysis.release_items_from_analyzing",
+            new_callable=AsyncMock,
+        ) as mock_release,
+    ):
+        result = await execute_analysis(
+            settings,
+            analyst_service=service,
+            manage_pool=False,
+        )
+
+    assert result == "Analyzed 0/1 items (1 failed)"
+    mock_update.assert_not_awaited()
+    mock_release.assert_awaited_once()
+    assert mock_release.await_args.kwargs["discard_on_exhaustion"] is False
 
 
 @pytest.mark.asyncio

@@ -274,6 +274,7 @@ async def release_items_from_analyzing(
     max_retries: int = 5,
     base_delay_seconds: int = 300,
     max_delay_seconds: int = 7200,
+    discard_on_exhaustion: bool = True,
 ) -> None:
     """Release claimed ``ANALYZING`` items using bounded retry metadata."""
     if not ids:
@@ -291,7 +292,7 @@ async def release_items_from_analyzing(
         SET retry_count = COALESCE(retry_count, 0) + 1,
             last_error = $2,
             next_retry_at = CASE
-                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN NULL
+                WHEN $7 AND COALESCE(retry_count, 0) + 1 >= $3 THEN NULL
                 ELSE NOW()
                     + make_interval(
                         secs => LEAST(
@@ -304,11 +305,11 @@ async def release_items_from_analyzing(
                     )
             END,
             terminal_status = CASE
-                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN $6
+                WHEN $7 AND COALESCE(retry_count, 0) + 1 >= $3 THEN $6
                 ELSE NULL
             END,
             status = CASE
-                WHEN COALESCE(retry_count, 0) + 1 >= $3 THEN 'DISCARDED'
+                WHEN $7 AND COALESCE(retry_count, 0) + 1 >= $3 THEN 'DISCARDED'
                 ELSE 'NEW'
             END,
             updated_at = NOW()
@@ -322,6 +323,7 @@ async def release_items_from_analyzing(
         base_delay,
         max_delay,
         _ANALYSIS_TERMINAL_STATUS,
+        discard_on_exhaustion,
     )
 
 

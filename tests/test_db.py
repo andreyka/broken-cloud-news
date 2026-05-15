@@ -624,6 +624,37 @@ async def test_release_items_from_analyzing_records_retry_metadata():
     assert args[3] == 3
     assert args[4] == 30
     assert args[5] == 300
+    assert args[7] is True
+
+
+@pytest.mark.asyncio
+async def test_release_items_from_analyzing_can_defer_without_discarding():
+    import bcn.persistence.news_items as db
+
+    fake_pool = AsyncMock()
+    fake_pool.execute = AsyncMock()
+
+    with _schema_ready_runtime(), patch(
+        "bcn.persistence.news_items.get_pool",
+        new_callable=AsyncMock,
+    ) as mock_get_pool:
+        mock_get_pool.return_value = fake_pool
+        item_id = uuid4()
+        await db.release_items_from_analyzing(
+            [item_id],
+            error="rate limited",
+            max_retries=3,
+            base_delay_seconds=30,
+            max_delay_seconds=300,
+            discard_on_exhaustion=False,
+        )
+
+    args, _kwargs = fake_pool.execute.await_args
+    sql = args[0]
+    assert "WHEN $7 AND COALESCE(retry_count, 0) + 1 >= $3 THEN 'DISCARDED'" in sql
+    assert "WHEN $7 AND COALESCE(retry_count, 0) + 1 >= $3 THEN $6" in sql
+    assert args[2] == "rate limited"
+    assert args[7] is False
 
 
 @pytest.mark.asyncio
