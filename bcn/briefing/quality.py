@@ -7,6 +7,8 @@ import re
 
 from bcn.briefing.text import canonical_url_key
 from bcn.briefing.text import extract_raw_urls
+from bcn.briefing.text import item_url_keys
+from bcn.briefing.text import preferred_item_url
 from bcn.common.config import Settings
 
 _AI_STAMP_PATTERNS = (
@@ -109,9 +111,7 @@ class BriefingQualityGate:
                     soft_issues.append(issue)
 
         selected_url_keys = {
-            canonical_url_key(str(item.get("url", "")))
-            for item in selected_items
-            if str(item.get("url", "")).strip()
+            key for item in selected_items for key in item_url_keys(item)
         }
 
         url_counts: Counter[str] = Counter()
@@ -132,14 +132,17 @@ class BriefingQualityGate:
             )
 
         for item in selected_items:
-            expected = canonical_url_key(str(item.get("url", "")))
-            if not expected:
+            expected_keys = item_url_keys(item)
+            if not expected_keys:
                 continue
-            count = url_counts.get(expected, 0)
+            count = sum(url_counts.get(key, 0) for key in expected_keys)
+            expected = canonical_url_key(preferred_item_url(item))
             if count == 0:
-                hard_issues.append(f"Missing selected URL: {expected}")
+                hard_issues.append(f"Missing selected URL: {expected or str(item.get('url', ''))}")
             elif count > 1:
-                hard_issues.append(f"Selected URL appears multiple times: {expected}")
+                hard_issues.append(
+                    f"Selected URL appears multiple times: {expected or str(item.get('url', ''))}"
+                )
 
         lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
         if lines:

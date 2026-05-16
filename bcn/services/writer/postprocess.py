@@ -191,9 +191,9 @@ class WriterPostprocessor:
     ) -> str:
         """Drop markdown-link formatting for any URL outside the selected item set."""
         selected_keys = {
-            briefing_text.canonical_url_key(str(item.get("url", "")))
+            key
             for item in selected_items
-            if item.get("url")
+            for key in briefing_text.item_url_keys(item)
         }
         selected_keys.discard("")
 

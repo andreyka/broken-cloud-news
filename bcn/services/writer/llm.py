@@ -7,6 +7,8 @@ import re
 import hashlib
 from typing import Any
 
+from bcn.briefing.text import preferred_item_url
+from bcn.briefing.text import sanitize_item_title
 from bcn.services.tools import allow_tool_urls
 from bcn.services.tools import fetch_page_content
 from bcn.services.writer.prompt import BRIEFING_ENRICHER_PROMPT
@@ -415,12 +417,13 @@ class WriterLLM:
 
     async def _build_briefing_entry(self, item: dict[str, Any]) -> str:
         """Build a single item block for briefing generation."""
-        main_url = str(item.get("url") or "").strip()
+        main_url = preferred_item_url(item) or str(item.get("url") or "").strip()
         ref_urls = self._extract_reference_urls(item.get("raw_data"), main_url)
         ref_urls = await self._filter_live_reference_urls(ref_urls)
+        title = sanitize_item_title(str(item.get("title") or ""))
 
         entry = (
-            f"- Title: {item.get('title', '')}\n"
+            f"- Title: {title}\n"
             f"  URL: {main_url}\n"
             f"  Summary: {item.get('summary', '')}\n"
             f"  Score: {item.get('relevance_score', 0)}/10\n"

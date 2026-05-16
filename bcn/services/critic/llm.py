@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Any
 
+from bcn.briefing.text import preferred_item_url
+from bcn.briefing.text import sanitize_item_title
 from bcn.services.critic.prompt import BRIEFING_CRITIC_PROMPT
 from bcn.common.llm import LLMClient
 
@@ -27,7 +29,11 @@ class CriticLLM:
     ) -> dict[str, Any]:
         """Critique a draft briefing and return structured pass/fail guidance."""
         item_lines = [
-            f"- [{item.get('source_type', '')}] {item.get('title', '')} :: {item.get('url', '')}"
+            (
+                f"- [{item.get('source_type', '')}] "
+                f"{sanitize_item_title(str(item.get('title', '')))} :: "
+                f"{preferred_item_url(item) or str(item.get('url', ''))}"
+            )
             for item in items
         ]
         hard_text = (

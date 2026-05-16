@@ -10,6 +10,7 @@ import pytest
 import respx
 
 from bcn.services.analyst.llm import AnalystLLM
+from bcn.services.critic.llm import CriticLLM
 from bcn.services.writer.llm import WriterLLM
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
@@ -237,6 +238,62 @@ class TestAnalyzeItem:
         )
         result = await AnalystLLM(llm).analyze_item("title", "content", "url")
         assert result.relevance_score == 10
+
+
+class TestCriticLLM:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_critic_prompt_uses_sanitized_titles_and_preferred_urls(self, llm):
+        route = respx.post("http://fake-llm:8000/v1/chat/completions").mock(
+            return_value=_chat_response(
+                json.dumps(
+                    {
+                        "passed": True,
+                        "score": 90,
+                        "dimension_scores": {
+                            "actionability": 90,
+                            "source_diversity": 90,
+                            "link_hygiene": 90,
+                            "clarity": 90,
+                            "style": 90,
+                            "novelty": 90,
+                        },
+                        "issues": [],
+                        "recommendations": [],
+                    }
+                )
+            )
+        )
+
+        critic = CriticLLM(llm)
+        await critic.critique_briefing(
+            "draft",
+            [
+                {
+                    "source_type": "twitter",
+                    "title": "CVE write-up https://t.co/abc123",
+                    "url": "https://t.co/abc123",
+                    "raw_data": {
+                        "references": [{"url": "https://github.com/example/cve"}],
+                        "entities": {
+                            "urls": [
+                                {
+                                    "url": "https://t.co/abc123",
+                                    "expanded_url": "https://github.com/example/cve",
+                                    "unwound_url": "https://github.com/example/cve",
+                                }
+                            ]
+                        },
+                    },
+                }
+            ],
+        )
+
+        body = json.loads(route.calls[0].request.content)
+        user_text = body["messages"][1]["content"]
+        assert "https://t.co/abc123" not in user_text
+        assert "CVE write-up ::" in user_text
+        assert "https://github.com/example/cve" in user_text
 
 
 class TestCoverImageGeneration:

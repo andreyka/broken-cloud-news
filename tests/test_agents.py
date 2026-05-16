@@ -1054,6 +1054,49 @@ class TestWriterService:
         assert len(missing) == 1
         assert missing[0]["url"] == "https://example.com/other"
 
+    def test_missing_urls_accept_equivalent_reference_url_for_social_wrapper(self):
+        from bcn.services.writer.service import WriterService
+
+        settings = _make_settings()
+        service = WriterService(settings)
+        items = [
+            {
+                "url": "https://t.co/abc123",
+                "title": "Next.js SSRF write-up https://t.co/abc123",
+                "raw_data": {
+                    "references": [{"url": "https://github.com/example/nextjs-ssrf"}],
+                    "entities": {
+                        "urls": [
+                            {
+                                "url": "https://t.co/abc123",
+                                "expanded_url": "https://github.com/example/nextjs-ssrf",
+                                "unwound_url": "https://github.com/example/nextjs-ssrf",
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+        markdown = "[repo](https://github.com/example/nextjs-ssrf)"
+
+        missing = service.missing_items_for_markdown(markdown, items)
+        assert missing == []
+
+    def test_normalize_section_headings_coerces_bullet_only_digest_into_sections(self):
+        from bcn.services.writer.service import WriterService
+
+        settings = _make_settings()
+        service = WriterService(settings)
+        markdown = (
+            "- **Next.js SSRF** — Upgrade now and block absolute-form websocket upgrades.\n\n"
+            "- **Exchange Zero-Day** — Patch OWA immediately and hunt for exploited tenants."
+        )
+
+        normalized = service.normalize_section_headings(markdown)
+
+        assert "**Next.js SSRF**\nUpgrade now and block absolute-form websocket upgrades." in normalized
+        assert "**Exchange Zero-Day**\nPatch OWA immediately and hunt for exploited tenants." in normalized
+
     def test_novelty_penalty_adds_issue_key_recurrence_penalty(self):
         from bcn.services.writer.service import WriterService
 

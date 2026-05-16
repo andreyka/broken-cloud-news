@@ -9,6 +9,7 @@ from typing import Any
 from bcn.services.verifier.llm import VerifierLLM
 from bcn.briefing.text import canonical_url_key
 from bcn.briefing.text import extract_urls_in_order as extract_urls_in_order_from_text
+from bcn.briefing.text import item_url_keys
 from bcn.briefing.text import normalize_url
 from bcn.common.config import Settings
 from bcn.common.llm import LLMClient
@@ -150,11 +151,7 @@ class BriefingFactVerifier:
         markdown: str,
         items: list[dict[str, Any]],
     ) -> list[str]:
-        selected_urls = {
-            canonical_url_key(str(item.get("url", "")))
-            for item in items
-            if str(item.get("url", "")).strip()
-        }
+        selected_urls = {key for item in items for key in item_url_keys(item)}
         selected_ghsas = self._collect_selected_ghsa_ids(items)
         mentions: list[str] = []
         seen: set[str] = set()
@@ -183,11 +180,7 @@ class BriefingFactVerifier:
         markdown: str,
         items: list[dict[str, Any]],
     ) -> list[str]:
-        selected_urls = {
-            canonical_url_key(str(item.get("url", "")))
-            for item in items
-            if str(item.get("url", "")).strip()
-        }
+        selected_urls = {key for item in items for key in item_url_keys(item)}
         mentions: list[str] = []
         seen: set[str] = set()
 

@@ -32,6 +32,11 @@ _TRACKING_PARAM_NAMES = frozenset(
     }
 )
 _URL_PATTERN = re.compile(r"https?://[^\s)\]>]+")
+_BULLET_SECTION_BLOCK = re.compile(
+    r"^\s*[-*]\s+\*\*(.+?)\*\*\s*[—:-]\s*(.+\S)\s*$",
+    flags=re.DOTALL,
+)
+_SOCIAL_WRAPPER_HOSTS = frozenset({"t.co", "x.com", "twitter.com", "mobile.twitter.com"})
 
 
 def normalize_url(url: str) -> str:
@@ -72,6 +77,16 @@ def extract_url_keys(markdown: str) -> set[str]:
     return {
         key for key in (canonical_url_key(u) for u in raw_urls if u) if key
     }
+
+
+def sanitize_item_title(title: str) -> str:
+    """Strip embedded URLs and low-signal wrapper noise from item titles."""
+    original = str(title or "").strip()
+    if not original:
+        return ""
+    cleaned = _URL_PATTERN.sub("", original)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -–—:;,|")
+    return cleaned or original
 
 
 def dedupe_markdown_links(markdown: str) -> str:
@@ -124,13 +139,82 @@ def canonical_url_key(url: str) -> str:
     return f"{scheme}://{netloc}{path}"
 
 
+def is_social_wrapper_url(url: str) -> bool:
+    """Return whether a URL is one social wrapper that should not be preferred."""
+    normalized = normalize_url(url)
+    if not normalized:
+        return False
+    try:
+        host = urlparse(normalized).netloc.lower()
+    except Exception:
+        return False
+    if host.startswith("www."):
+        host = host[4:]
+    return host in _SOCIAL_WRAPPER_HOSTS
+
+
+def item_url_candidates(item: dict) -> list[str]:
+    """Return canonical candidate URLs that can satisfy one selected item."""
+    raw = to_dict(item.get("raw_data"))
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def _add(candidate: object) -> None:
+        url = str(candidate or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return
+        key = canonical_url_key(url)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        candidates.append(url)
+
+    for field in ("url", "expanded_url", "unwound_url", "canonical_url"):
+        _add(item.get(field))
+
+    for ref in raw.get("references", []) if isinstance(raw.get("references"), list) else []:
+        if isinstance(ref, dict):
+            _add(ref.get("url"))
+        else:
+            _add(ref)
+
+    entities = raw.get("entities", {}) if isinstance(raw, dict) else {}
+    urls = entities.get("urls", []) if isinstance(entities, dict) else []
+    for entry in urls if isinstance(urls, list) else []:
+        if isinstance(entry, dict):
+            for field in ("unwound_url", "expanded_url", "url"):
+                _add(entry.get(field))
+        else:
+            _add(entry)
+
+    return candidates
+
+
+def item_url_keys(item: dict) -> set[str]:
+    """Return canonical URL keys that should count as coverage for one item."""
+    return {
+        key
+        for key in (canonical_url_key(url) for url in item_url_candidates(item))
+        if key
+    }
+
+
+def preferred_item_url(item: dict) -> str:
+    """Return the best public URL to show for one selected item."""
+    candidates = item_url_candidates(item)
+    for candidate in candidates:
+        if not is_social_wrapper_url(candidate):
+            return candidate
+    return candidates[0] if candidates else ""
+
+
 def missing_items_for_markdown(markdown: str, items: list[dict]) -> list[dict]:
     """Return selected items whose main URLs are missing from markdown."""
     present_keys = extract_url_keys(markdown)
     missing: list[dict] = []
     for item in items:
-        url_key = canonical_url_key(str(item.get("url", "")))
-        if url_key and url_key not in present_keys:
+        expected_keys = item_url_keys(item)
+        if expected_keys and present_keys.isdisjoint(expected_keys):
             missing.append(item)
     return missing
 
@@ -142,8 +226,8 @@ def append_missing_items_section(markdown: str, missing_items: list[dict]) -> st
 
     entries: list[str] = ["🔗 **References:**"]
     for item in missing_items:
-        title = str(item.get("title") or "Untitled item").strip()
-        url = str(item.get("url") or "").strip()
+        title = sanitize_item_title(str(item.get("title") or "Untitled item"))
+        url = preferred_item_url(item)
         if not url:
             continue
         entries.append(f"• [{title}]({url})")
@@ -169,7 +253,24 @@ def clip_markdown(markdown: str, limit: int) -> str:
 
 def normalize_section_headings(markdown: str) -> str:
     """Convert markdown headings to Telegram-friendly bold section lines."""
-    lines = markdown.splitlines()
+    body = (markdown or "").strip()
+    if body and not re.search(r"(?m)^\*\*.+\*\*\s*$", body):
+        blocks = [block.strip() for block in re.split(r"\n\s*\n", body) if block.strip()]
+        converted: list[str] = []
+        converted_count = 0
+        for block in blocks:
+            match = _BULLET_SECTION_BLOCK.match(block)
+            if not match:
+                converted.append(block)
+                continue
+            converted_count += 1
+            title = match.group(1).strip()
+            content = match.group(2).strip()
+            converted.append(f"**{title}**\n{content}")
+        if converted_count >= 2:
+            body = "\n\n".join(converted)
+
+    lines = body.splitlines()
     normalized: list[str] = []
     for line in lines:
         match = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
