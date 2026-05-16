@@ -625,11 +625,12 @@ class TestSubstackDistributor:
         )
 
     @pytest.mark.asyncio
-    async def test_send_skips_unsupported_data_url_cover(self):
+    async def test_send_uploads_data_url_cover_via_substack_image_api(self):
         dist = self._make_dist()
         page = self._patch_page(
             dist,
             [
+                {"url": "https://substack-post-media.s3.amazonaws.com/public/images/cover.png"},
                 {"id": 9},
                 {"slug": "daily-post"},
             ],
@@ -643,13 +644,48 @@ class TestSubstackDistributor:
         )
 
         assert ok is True
-        args, _kwargs = page.evaluate.await_args_list[0]
+        args, _kwargs = page.evaluate.await_args_list[1]
         payload = args[1]
-        assert "data:image/png" not in payload["body"]
+        assert "https://substack-post-media.s3.amazonaws.com/public/images/cover.png" in payload["body"]
         assert "Hello world" in payload["body"]
+        assert dist.last_result["feature_image_url"] == (
+            "https://substack-post-media.s3.amazonaws.com/public/images/cover.png"
+        )
 
+    @respx.mock
     @pytest.mark.asyncio
-    async def test_send_hosts_non_public_cover_via_ghost(self):
+    async def test_send_uploads_non_public_cover_via_substack_image_api(self):
+        dist = self._make_dist()
+        page = self._patch_page(
+            dist,
+            [
+                {"url": "https://substack-post-media.s3.amazonaws.com/public/images/substack-cover.png"},
+                {"id": 9},
+                {"slug": "daily-post"},
+            ],
+        )
+        respx.get("http://comfy:8188/view?filename=cover.png").mock(
+            return_value=httpx.Response(200, content=b"\x89PNG\r\n", headers={"content-type": "image/png"})
+        )
+
+        ok = await dist.send(
+            {
+                "content_markdown": "Hello world",
+                "cover_image_url": "http://comfy:8188/view?filename=cover.png",
+            }
+        )
+
+        assert ok is True
+        args, _kwargs = page.evaluate.await_args_list[1]
+        payload = args[1]
+        assert "https://substack-post-media.s3.amazonaws.com/public/images/substack-cover.png" in payload["body"]
+        assert dist.last_result["feature_image_url"] == (
+            "https://substack-post-media.s3.amazonaws.com/public/images/substack-cover.png"
+        )
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_send_falls_back_to_ghost_when_substack_image_upload_fails(self):
         dist = self._make_dist(
             ghost_admin_api_url="https://ghost.example",
             ghost_admin_api_key="ghost-id:" + ("ab" * 32),
@@ -657,13 +693,14 @@ class TestSubstackDistributor:
         page = self._patch_page(
             dist,
             [
+                {"error": True, "status": 500, "body": "upload failed"},
                 {"id": 9},
                 {"slug": "daily-post"},
             ],
         )
         assert dist._ghost_image_host is not None
-        dist._ghost_image_host._load_cover_image_bytes = AsyncMock(
-            return_value=("cover.png", "image/png", b"\x89PNG\r\n")
+        respx.get("http://comfy:8188/view?filename=cover.png").mock(
+            return_value=httpx.Response(200, content=b"\x89PNG\r\n", headers={"content-type": "image/png"})
         )
         dist._ghost_image_host._upload_image = AsyncMock(
             return_value="https://cdn.ghost.io/content/images/substack-cover.png"
@@ -677,7 +714,7 @@ class TestSubstackDistributor:
         )
 
         assert ok is True
-        args, _kwargs = page.evaluate.await_args_list[0]
+        args, _kwargs = page.evaluate.await_args_list[1]
         payload = args[1]
         assert "https://cdn.ghost.io/content/images/substack-cover.png" in payload["body"]
         assert dist.last_result["feature_image_url"] == (

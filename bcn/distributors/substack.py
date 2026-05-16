@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Iterable
 from datetime import datetime
 from datetime import timezone
@@ -14,6 +15,7 @@ from typing import Any
 from typing import Optional
 from urllib.parse import urlsplit
 
+import httpx
 from playwright.async_api import async_playwright
 from playwright.async_api import Browser
 from playwright.async_api import BrowserContext
@@ -22,6 +24,7 @@ from playwright.async_api import Playwright
 
 from bcn.common.secrets import redact_error_text
 from bcn.common.url_policy import assert_public_http_url
+from bcn.common.url_policy import normalize_trusted_hosts
 from bcn.common.url_policy import URLValidationError
 from bcn.distributors.ghost import GhostDistributor
 
@@ -80,6 +83,24 @@ async (draftId) => {
     return await resp.json();
 }
 """
+
+_UPLOAD_IMAGE_JS = """
+async ({image}) => {
+    const resp = await fetch('/api/v1/image', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({image}),
+    });
+    if (!resp.ok) {
+        const text = await resp.text();
+        return {error: true, status: resp.status, body: text};
+    }
+    return await resp.json();
+}
+"""
+
+_SUBSTACK_IMAGE_FETCH_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 
 def _build_substack_body(briefing: Any, *, cover_url: str = "") -> str:
@@ -234,6 +255,8 @@ class SubstackDistributor:
     ) -> None:
         self.publication_url: str = publication_url.rstrip("/")
         self._sid: str = sid
+        self._trusted_image_hosts = normalize_trusted_hosts(trusted_image_hosts)
+        self._http = httpx.AsyncClient(timeout=_SUBSTACK_IMAGE_FETCH_TIMEOUT)
         self._ghost_image_host: GhostDistributor | None = None
         if str(ghost_admin_api_url or "").strip() and str(ghost_admin_api_key or "").strip():
             self._ghost_image_host = GhostDistributor(
@@ -318,6 +341,7 @@ class SubstackDistributor:
                 await browser.close()
             if pw:
                 await pw.stop()
+            await self._http.aclose()
             if self._ghost_image_host is not None:
                 await self._ghost_image_host.close()
 
@@ -385,9 +409,18 @@ class SubstackDistributor:
         if self._is_public_http_url(cover_image_url):
             return cover_image_url
 
+        native_error = ""
+        try:
+            image_data_url = await self._load_cover_image_data_url(cover_image_url)
+            return await self._upload_image_to_substack(image_data_url)
+        except Exception as exc:
+            native_error = redact_error_text(exc, secrets=self._redaction_secrets)
+            logger.warning("Substack native cover image upload skipped: %s", native_error)
+
         if self._ghost_image_host is None:
             self.last_result["feature_image_error"] = (
-                "Substack cover image requires a public URL or Ghost image hosting"
+                native_error
+                or "Substack cover image requires a public URL or upload path"
             )
             logger.info("Skipping Substack cover image without public hosting path")
             return ""
@@ -404,8 +437,56 @@ class SubstackDistributor:
         except Exception as exc:
             safe_error = redact_error_text(exc, secrets=self._redaction_secrets)
             logger.warning("Substack cover image upload skipped: %s", safe_error)
+            if native_error:
+                safe_error = f"{native_error}; ghost_fallback={safe_error}"
             self.last_result["feature_image_error"] = safe_error
             return ""
+
+    async def _load_cover_image_data_url(self, cover_image_url: str) -> str:
+        """Return cover bytes normalized as a base64 data URL for Substack upload."""
+        if cover_image_url.startswith("data:image/"):
+            filename, mime_type, image_bytes = self._decode_data_image_uri(
+                cover_image_url
+            )
+        else:
+            try:
+                assert_public_http_url(
+                    cover_image_url,
+                    trusted_hosts=self._trusted_image_hosts,
+                )
+            except URLValidationError as exc:
+                raise ValueError(f"Blocked cover image URL: {exc}") from exc
+
+            image_response = await self._http.get(cover_image_url)
+            image_response.raise_for_status()
+            mime_type = (
+                image_response.headers.get("content-type", "image/png")
+                .split(";", 1)[0]
+                .strip()
+                or "image/png"
+            )
+            image_bytes = image_response.content
+            filename = "cover"
+        if not image_bytes:
+            raise ValueError("empty cover image payload")
+        _ = filename  # keep structure aligned with Ghost cover loading semantics
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+
+    async def _upload_image_to_substack(self, image_data_url: str) -> str:
+        """Upload one data-URL cover image via Substack's authenticated image API."""
+        page = await self._ensure_page()
+        upload_data = await page.evaluate(_UPLOAD_IMAGE_JS, {"image": image_data_url})
+        if isinstance(upload_data, dict) and upload_data.get("error"):
+            raise RuntimeError(
+                f"Substack image upload failed (HTTP {upload_data.get('status')}): "
+                f"{upload_data.get('body', '')}"
+            )
+        uploaded_url = str((upload_data or {}).get("url") or "").strip()
+        if not uploaded_url:
+            raise ValueError("Substack image upload returned no URL")
+        assert_public_http_url(uploaded_url)
+        return uploaded_url
 
     @staticmethod
     def _is_public_http_url(url: str) -> bool:
@@ -458,3 +539,15 @@ class SubstackDistributor:
     def _format_created_time(created_at: datetime) -> str:
         """Render the time-only suffix used when a subject already exists."""
         return created_at.astimezone(timezone.utc).strftime("%H:%M UTC")
+
+    @staticmethod
+    def _decode_data_image_uri(value: str) -> tuple[str, str, bytes]:
+        header, sep, payload = value.partition(",")
+        if not sep or ";base64" not in header:
+            raise ValueError("Unsupported data URI format for cover image")
+        mime_type = (
+            header[5 : header.index(";")] if header.startswith("data:") else "image/png"
+        )
+        raw = base64.b64decode(payload)
+        extension = mime_type.rsplit("/", 1)[-1] if "/" in mime_type else "png"
+        return f"cover.{extension}", mime_type, raw
