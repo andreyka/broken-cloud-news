@@ -279,18 +279,17 @@ def passes_critic_thresholds(service: Any, critique: dict[str, object]) -> bool:
 
 
 def has_critical_critic_issue(critique: dict[str, object]) -> bool:
-    """Return whether the critic payload contains a blocking issue."""
+    """Return whether the critic payload contains a blocking issue.
+
+    Only `issues` are scanned: recommendations are advice, and benign advice
+    like "double-check nothing is ungrounded" must not hard-block a draft.
+    """
     issues = critique.get("issues", [])
-    recommendations = critique.get("recommendations", [])
     payload: list[str] = []
     if isinstance(issues, list):
         payload.extend(str(item) for item in issues)
     elif issues:
         payload.append(str(issues))
-    if isinstance(recommendations, list):
-        payload.extend(str(item) for item in recommendations)
-    elif recommendations:
-        payload.append(str(recommendations))
     joined = " | ".join(text.lower() for text in payload if text)
     return any(term in joined for term in _CRITIC_BLOCKING_TERMS)
 

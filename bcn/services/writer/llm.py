@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import hashlib
+from datetime import date
 from typing import Any
 
 from bcn.briefing.text import preferred_item_url
@@ -43,12 +44,26 @@ _IMAGE_MODEL_HINTS = frozenset(
 )
 
 _COVER_PROMPT_SUFFIX = (
-    "editorial cover image, organic social-media art direction, clean composition, "
-    "natural or soft cinematic lighting, realistic textures, grounded environment, "
-    "high-quality photography-inspired rendering, subtle color grade, modern magazine aesthetic, "
+    "editorial cover image, clean composition, coherent perspective, "
+    "high-quality rendering, "
     "no text, no watermark, no logo, no horror, no creepy faces, no hooded hacker, "
     "no glowing eyes, no distorted anatomy, no extra fingers, no extra limbs, "
     "no floating UI clutter, no generic cyberpunk neon"
+)
+
+# Rotating art directions so covers do not converge on one look. Picked
+# deterministically from the topics + date so same-day retries stay stable.
+_COVER_ART_DIRECTIONS = (
+    "gritty documentary photojournalism, handheld framing, muted colors, real-world wear and dust",
+    "film-noir chiaroscuro, deep shadows, one hard light source, near-monochrome with a single accent color",
+    "brutalist architecture wide shot, monumental concrete forms, one tiny human figure for scale, overcast sky",
+    "extreme macro photography of physical hardware, shallow depth of field, visible dust and fingerprints",
+    "aerial landscape at dusk, infrastructure as terrain, long shadows, cinematic scale",
+    "analog collage and cut-paper illustration, tactile textures, bold flat colors",
+    "technical blueprint aesthetic, fine white linework on deep blue, isometric schematic beauty",
+    "stormy weather over physical infrastructure, wind and rain, dramatic sky, nature as the threat",
+    "vintage 1970s science-magazine illustration, film grain, warm palette, retro-futurism gone slightly wrong",
+    "minimalist still life, one symbolic object on a seamless backdrop, studio lighting, generous negative space",
 )
 
 
@@ -253,7 +268,12 @@ class WriterLLM:
 
     async def generate_cover_prompt(self, topics: str) -> str:
         """Generate a Flux image prompt from today's security topics."""
-        user_msg = f"Topics:\n{topics}"
+        direction = self._pick_cover_art_direction(topics)
+        user_msg = (
+            f"Topics:\n{topics}\n\n"
+            f"Today's art direction (follow it, do not default to a clean "
+            f"modern office): {direction}"
+        )
         raw = await self.client.chat_for_role(
             role="writer",
             system_prompt=self.prompts["cover_art_system"],
@@ -293,6 +313,13 @@ class WriterLLM:
             digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
             out[name] = {"sha256": digest, "chars": len(prompt)}
         return out
+
+    @staticmethod
+    def _pick_cover_art_direction(topics: str) -> str:
+        digest = hashlib.sha256(
+            f"{date.today().toordinal()}:{topics}".encode("utf-8")
+        ).hexdigest()
+        return _COVER_ART_DIRECTIONS[int(digest, 16) % len(_COVER_ART_DIRECTIONS)]
 
     @staticmethod
     def _finalize_cover_prompt(raw: str) -> str:
@@ -342,8 +369,9 @@ class WriterLLM:
             urls = re.findall(r"\[.*?\]\((https?://[^\)]+)\)", body)
             all_urls.extend(urls)
 
-            # Extract bold topic headings (e.g. **Title Here**)
-            topics = re.findall(r"\*\*(.+?)\*\*", body)
+            # Heading lines only: the house style also bolds inline key terms,
+            # which are vocabulary, not covered topics.
+            topics = re.findall(r"^\*\*([^*\n]+?)\*\*\s*$", body, flags=re.MULTILINE)
             all_topics.extend(topics)
 
             # Extract CVE IDs

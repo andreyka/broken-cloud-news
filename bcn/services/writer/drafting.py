@@ -174,7 +174,10 @@ async def generate_release_candidate(
                 }
             )
             evaluation["rounds"] = trace_rounds
-            evaluation["preference_pairs"] = preference_pairs
+            # Blocked run: every "chosen" here also failed release, so these
+            # pairs would teach failure-shaped outputs. Keep pairs only from
+            # runs that eventually passed.
+            evaluation["preference_pairs"] = []
             return evaluation
 
         gate = evaluation["gate"]

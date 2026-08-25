@@ -28,14 +28,17 @@ class CriticLLM:
         recent_briefings: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Critique a draft briefing and return structured pass/fail guidance."""
-        item_lines = [
-            (
+        item_lines = []
+        for item in items:
+            line = (
                 f"- [{item.get('source_type', '')}] "
                 f"{sanitize_item_title(str(item.get('title', '')))} :: "
                 f"{preferred_item_url(item) or str(item.get('url', ''))}"
             )
-            for item in items
-        ]
+            summary = str(item.get("summary") or "").strip()
+            if summary:
+                line += f"\n  Summary: {summary[:240]}"
+            item_lines.append(line)
         hard_text = (
             "\n".join(f"- {issue}" for issue in (gate_hard_issues or [])) or "- none"
         )
@@ -51,7 +54,9 @@ class CriticLLM:
             for idx, briefing in enumerate(recent_briefings[:10], start=1):
                 body = briefing.get("content_markdown", "") or ""
                 urls = re.findall(r"\[.*?\]\((https?://[^\)]+)\)", body)
-                topics = re.findall(r"\*\*(.+?)\*\*", body)
+                # Heading lines only - inline bold terms are vocabulary,
+                # not covered topics, and pollute the novelty check.
+                topics = re.findall(r"^\*\*([^*\n]+?)\*\*\s*$", body, flags=re.MULTILINE)
                 cves = re.findall(r"CVE-\d{4}-\d+", body, flags=re.IGNORECASE)
                 parts = []
                 if topics:

@@ -169,7 +169,27 @@ class WriterPostprocessor:
         cleaned = normalize_section_headings(dedupe_markdown_links((cleaned or "").strip()))
         cleaned = de_template_fields(cleaned)
 
+        # Enforce length before coverage: any URL a clip removes is restored
+        # below as a reference, and the references budget is re-derived until
+        # body plus references fit hard_max_chars together. Clips only shorten
+        # the body, so the missing set only grows and the loop converges
+        # within the selected-item count.
+        if len(cleaned) > hard_max_chars:
+            cleaned = clip_markdown(cleaned, hard_max_chars)
         missing_items = missing_items_for_markdown(cleaned, selected_items)
+        for _ in range(len(selected_items) + 2):
+            if not missing_items:
+                break
+            suffix_chars = len(append_missing_items_section("", missing_items))
+            # The 400 floor avoids clip_markdown's mid-line fallback slicing a
+            # URL in half; it can only engage far above the production item
+            # cap, where a slight overflow beats a broken body.
+            body_budget = max(400, hard_max_chars - suffix_chars)
+            if len(cleaned) <= body_budget:
+                break
+            cleaned = clip_markdown(cleaned, body_budget)
+            missing_items = missing_items_for_markdown(cleaned, selected_items)
+
         if missing_items:
             logger.warning(
                 "Final deterministic coverage pass appending %d missing selected item references.",
@@ -178,9 +198,6 @@ class WriterPostprocessor:
             cleaned = append_missing_items_section(cleaned, missing_items)
             cleaned = normalize_section_headings(dedupe_markdown_links(cleaned.strip()))
             cleaned = de_template_fields(cleaned)
-
-        if len(cleaned) > hard_max_chars:
-            cleaned = clip_markdown(cleaned, hard_max_chars)
 
         return cleaned.strip()
 
