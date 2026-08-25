@@ -34,6 +34,7 @@ class _EndpointConfig:
     model: str
     provider: str = "openai_compat"
     api_key: str = ""
+    reasoning_effort: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class LLMClient:
         *,
         provider: str = "openai_compat",
         api_key: str = "",
+        reasoning_effort: str = "",
         role_overrides: dict[str, dict[str, str] | _EndpointConfig] | None = None,
         request_policy_overrides: dict[str, dict[str, Any] | _RequestPolicy] | None = None,
         chat_retries: int = 12,
@@ -67,6 +69,7 @@ class LLMClient:
         self.model = model or ""
         self.provider = self._normalize_provider(provider)
         self.api_key = api_key or ""
+        self.reasoning_effort = (reasoning_effort or "").strip()
         self.timeout = timeout
         self.chat_retries = max(1, int(chat_retries))
         self.retry_max_wait_seconds = max(1.0, float(retry_max_wait_seconds))
@@ -86,6 +89,7 @@ class LLMClient:
             model=self.model,
             provider=self.provider,
             api_key=self.api_key,
+            reasoning_effort=self.reasoning_effort,
         )
         self._role_endpoints: dict[str, _EndpointConfig] = {}
         self._role_request_policies: dict[str, _RequestPolicy] = {}
@@ -98,6 +102,7 @@ class LLMClient:
                     "model": override.model,
                     "provider": override.provider,
                     "api_key": override.api_key,
+                    "reasoning_effort": override.reasoning_effort,
                 }
                 if isinstance(override, _EndpointConfig)
                 else override
@@ -138,6 +143,9 @@ class LLMClient:
                 "base_url": cls._resolve_role_value(settings, "llm_base_url", role),
                 "model": cls._resolve_role_value(settings, "llm_model", role),
                 "api_key": cls._resolve_role_value(settings, "llm_api_key", role),
+                "reasoning_effort": cls._resolve_role_value(
+                    settings, "llm_reasoning_effort", role
+                ),
             }
             if role == "analyst":
                 request_policy_overrides[role] = {
@@ -159,6 +167,7 @@ class LLMClient:
             timeout=int(settings.llm_timeout),
             provider=str(settings.llm_provider or "openai_compat"),
             api_key=str(settings.llm_api_key or ""),
+            reasoning_effort=str(getattr(settings, "llm_reasoning_effort", "") or ""),
             role_overrides=role_overrides,
             request_policy_overrides=request_policy_overrides,
             chat_retries=int(settings.llm_chat_retries),
@@ -193,6 +202,10 @@ class LLMClient:
             str(payload.get("provider", "") or self.provider)
         )
         api_key = str(payload.get("api_key", "") or "").strip() or self.api_key
+        reasoning_effort = (
+            str(payload.get("reasoning_effort", "") or "").strip()
+            or self.reasoning_effort
+        )
         if not base_url or not model:
             return None
         return _EndpointConfig(
@@ -200,6 +213,7 @@ class LLMClient:
             model=model,
             provider=provider,
             api_key=api_key,
+            reasoning_effort=reasoning_effort,
         )
 
     def _resolve_request_policy_override(
@@ -510,6 +524,13 @@ class LLMClient:
                 chat_template_kwargs = {}
                 request["chat_template_kwargs"] = chat_template_kwargs
             chat_template_kwargs.setdefault("enable_thinking", False)
+
+        # Only OpenAI reasoning models accept reasoning_effort; other
+        # OpenAI-compatible backends (vLLM, bridges) reject unknown params.
+        if endpoint.reasoning_effort and model_name.startswith(
+            ("gpt-", "o1", "o3", "o4")
+        ):
+            request.setdefault("reasoning_effort", endpoint.reasoning_effort)
 
     @staticmethod
     def _build_openai_tool_schema(tool: Callable[..., Any]) -> dict[str, Any]:
