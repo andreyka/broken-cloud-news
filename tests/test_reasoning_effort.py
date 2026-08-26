@@ -41,12 +41,36 @@ async def test_reasoning_effort_sent_without_tools():
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_reasoning_effort_stripped_with_tools():
-    """gpt-5.x rejects reasoning_effort + function tools on chat/completions."""
+async def test_tools_force_reasoning_effort_none_on_gpt():
+    """gpt-5.6+ requires an explicit reasoning_effort='none' with tools."""
     route = respx.post("https://api.openai.com/v1/chat/completions").mock(
         return_value=_ok_response()
     )
     await _client().chat_for_role(
+        role="writer",
+        system_prompt="s",
+        user_content="u",
+        retries=1,
+        tools=[_dummy_tool],
+    )
+    payload = json.loads(route.calls.last.request.content)
+    assert "tools" in payload
+    assert payload["reasoning_effort"] == "none"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_tools_strip_reasoning_effort_on_other_backends():
+    route = respx.post("https://bridge.local/v1/chat/completions").mock(
+        return_value=_ok_response()
+    )
+    client = LLMClient(
+        base_url="https://bridge.local/v1",
+        model="unsloth/Qwen3.8-27B-NVFP4",
+        timeout=5,
+        reasoning_effort="xhigh",
+    )
+    await client.chat_for_role(
         role="writer",
         system_prompt="s",
         user_content="u",
