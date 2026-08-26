@@ -2,6 +2,8 @@ x-bcn-base: &bcn-base
   build: .
   restart: always
   env_file: .env
+  volumes:
+    - ./bcn/config:/app/bcn/config:ro
   environment:
     - HTTP_PROXY=${HTTP_PROXY:-http://egress_proxy:3128}
     - HTTPS_PROXY=${HTTPS_PROXY:-http://egress_proxy:3128}
