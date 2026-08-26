@@ -456,6 +456,9 @@ class LLMClient:
             tool_schemas = [self._build_openai_tool_schema(tool) for tool in tools]
             request["tools"] = tool_schemas
             request["tool_choice"] = "auto"
+            # gpt-5.x rejects reasoning_effort combined with function tools on
+            # /v1/chat/completions; effort applies to tool-free calls only.
+            request.pop("reasoning_effort", None)
 
             tool_map: dict[str, Callable[..., Any]] = {
                 str(tool.__name__): tool for tool in tools if callable(tool)
