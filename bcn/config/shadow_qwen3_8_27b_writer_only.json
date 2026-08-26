@@ -1,0 +1,5 @@
+{
+  "llm_provider_writer": "openai_compat",
+  "llm_base_url_writer": "http://model_bridge:8000/v1",
+  "llm_model_writer": "unsloth/Qwen3.8-27B-NVFP4"
+}
