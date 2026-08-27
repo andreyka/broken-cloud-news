@@ -112,13 +112,22 @@ async def _probe_openai_compat_endpoint(base_url: str) -> str | None:
 
 async def _shadow_candidate_endpoint_error(
     candidate_settings: Settings,
+    champion_settings: Settings,
 ) -> str | None:
+    # Only probe endpoints the overrides introduce: champion endpoints are
+    # already exercised by production, and external ones sit behind the
+    # egress proxy that this deliberately proxy-less probe cannot traverse.
+    champion_urls = {
+        _llm_base_url_for_role(champion_settings, role)
+        for role in ("writer", "critic", "verifier")
+    }
+    champion_urls.add(str(champion_settings.llm_base_url or "").strip())
     checked_urls: set[str] = set()
     for role in ("writer", "critic", "verifier"):
         if _llm_provider_for_role(candidate_settings, role) != "openai_compat":
             continue
         base_url = _llm_base_url_for_role(candidate_settings, role)
-        if not base_url or base_url in checked_urls:
+        if not base_url or base_url in checked_urls or base_url in champion_urls:
             continue
         checked_urls.add(base_url)
         error = await _probe_openai_compat_endpoint(base_url)
@@ -294,7 +303,9 @@ async def execute_shadow_regular_briefing(runtime: WorkflowRuntime) -> None:
         settings,
         overrides_path,
     )
-    endpoint_error = await _shadow_candidate_endpoint_error(candidate_settings)
+    endpoint_error = await _shadow_candidate_endpoint_error(
+        candidate_settings, settings
+    )
     if endpoint_error:
         reason = f"candidate_endpoint_unavailable: {endpoint_error}"
         logger.warning("Shadow evaluation skipped: %s", reason)
