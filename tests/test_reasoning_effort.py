@@ -60,6 +60,30 @@ async def test_tools_force_reasoning_effort_none_on_gpt():
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_tools_omit_reasoning_effort_on_pre_56_gpt():
+    """gpt-5-mini rejects reasoning_effort='none'; the param must be absent."""
+    route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+        return_value=_ok_response()
+    )
+    client = LLMClient(
+        base_url="https://api.openai.com/v1",
+        model="gpt-5-mini",
+        timeout=5,
+    )
+    await client.chat_for_role(
+        role="analyst",
+        system_prompt="s",
+        user_content="u",
+        retries=1,
+        tools=[_dummy_tool],
+    )
+    payload = json.loads(route.calls.last.request.content)
+    assert "tools" in payload
+    assert "reasoning_effort" not in payload
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_tools_strip_reasoning_effort_on_other_backends():
     route = respx.post("https://bridge.local/v1/chat/completions").mock(
         return_value=_ok_response()

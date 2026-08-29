@@ -456,15 +456,15 @@ class LLMClient:
             tool_schemas = [self._build_openai_tool_schema(tool) for tool in tools]
             request["tools"] = tool_schemas
             request["tool_choice"] = "auto"
-            # gpt-5.6+ rejects function tools on /v1/chat/completions unless
-            # reasoning_effort is explicitly "none" (a server-side default
-            # effort applies when the param is omitted). Non-OpenAI backends
-            # reject the param entirely, so strip it for them.
+            # No backend accepts an elevated reasoning_effort alongside
+            # function tools on /v1/chat/completions. gpt-5.6 additionally
+            # requires an explicit "none" (a server-side default effort
+            # applies when the param is omitted), while earlier gpt-5 models
+            # such as gpt-5-mini reject the "none" value outright.
+            request.pop("reasoning_effort", None)
             model_name = str(endpoint.model or "").strip().lower()
-            if model_name.startswith(("gpt-5", "o1", "o3", "o4")):
+            if model_name.startswith("gpt-5.6"):
                 request["reasoning_effort"] = "none"
-            else:
-                request.pop("reasoning_effort", None)
 
             tool_map: dict[str, Callable[..., Any]] = {
                 str(tool.__name__): tool for tool in tools if callable(tool)
