@@ -15,6 +15,7 @@ from bcn.cli_commands.newsletter import register_newsletter_commands
 from bcn.cli_commands.optimization import register_optimization_commands
 from bcn.cli_commands.recovery import register_recovery_commands
 from bcn.cli_commands.review import register_review_commands
+from bcn.cli_commands.smoke import register_smoke_commands
 from bcn.cli_commands.training import register_training_commands
 from bcn.transports.http.server import serve_component_http
 from bcn.workflows.automation import build_regular_briefing_trigger
@@ -55,6 +56,7 @@ register_distribution_commands(cli)
 register_history_commands(cli)
 register_training_commands(cli)
 register_recovery_commands(cli)
+register_smoke_commands(cli)
 
 
 __all__ = [

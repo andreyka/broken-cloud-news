@@ -708,6 +708,9 @@ class DeliveryChannelSettingsMixin:
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    alerts_enabled: bool = False
+    alert_telegram_chat_id: str = ""
+    alert_quiet_streak_threshold: int = 4
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""
