@@ -471,19 +471,28 @@ async def run_prepublish_ai_review_gate(
             reason="AI editorial gate accepted the draft.",
             review=review,
         )
-    if review.decision == "edit":
+    if review.decision in ("edit", "needs_work"):
+        # Both decisions usually ship a full rewrite; applying it and
+        # re-running the release checks beats vetoing a passing draft over
+        # fixes the editor already made. Only reject stays a hard veto.
         rewritten = _as_string(review.edited_markdown)
-        if not rewritten:
+        if rewritten:
             return AIPublishGateResult(
-                action="block",
-                markdown=content_markdown,
-                reason="AI editorial gate returned edit without a full rewritten draft.",
+                action="rewrite",
+                markdown=rewritten,
+                reason=(
+                    "AI editorial gate supplied a rewritten draft "
+                    f"({review.decision})."
+                ),
                 review=review,
             )
         return AIPublishGateResult(
-            action="rewrite",
-            markdown=rewritten,
-            reason="AI editorial gate supplied a rewritten draft.",
+            action="block",
+            markdown=content_markdown,
+            reason=(
+                f"AI editorial gate returned {review.decision} without a "
+                "rewritten draft."
+            ),
             review=review,
         )
     return AIPublishGateResult(

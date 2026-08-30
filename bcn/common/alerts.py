@@ -49,23 +49,23 @@ def quiet_streak_alert_due(streak: int, threshold: int) -> bool:
     return (streak - threshold) % 3 == 0
 
 
-async def consecutive_quiet_skips() -> int:
-    """Count the most recent unbroken run of quiet-day skips."""
+async def consecutive_unpublished_scheduler_runs() -> int:
+    """Count the most recent unbroken run of scheduled slots without a publish."""
     from bcn.persistence.runtime import get_pool
 
     pool = await get_pool()
     rows = await pool.fetch(
         """
-        SELECT decision, coalesce(decision_reason, '') AS reason
-        FROM generation_runs ORDER BY created_at DESC LIMIT 15
+        SELECT decision FROM generation_runs
+        WHERE trigger_source = 'scheduler'
+        ORDER BY created_at DESC LIMIT 15
         """
     )
     streak = 0
     for row in rows:
-        if str(row["decision"]) == "BLOCKED" and str(row["reason"]).startswith(
-            "Quiet day"
-        ):
-            streak += 1
-        else:
+        if str(row["decision"]) == "PUBLISHED":
             break
+        streak += 1
     return streak
+
+

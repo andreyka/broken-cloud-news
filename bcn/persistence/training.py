@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from datetime import timezone
 import json
+import logging
 from typing import Any
 from typing import Optional
 from uuid import UUID
@@ -14,6 +15,8 @@ import asyncpg
 from bcn.persistence.helpers import briefing_item_ids_sql
 from bcn.persistence.runtime import ensure_schema_ready
 from bcn.persistence.runtime import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 async def ensure_training_tables() -> None:
@@ -216,6 +219,28 @@ async def finalize_generation_run(
         briefing_id,
         run_id,
     )
+    if (decision or "").strip().upper() == "BLOCKED":
+        # Single choke point for every blocked slot regardless of cause
+        # (quiet day, critic, verifier, editorial gate, exception).
+        try:
+            from bcn.common.alerts import consecutive_unpublished_scheduler_runs
+            from bcn.common.alerts import quiet_streak_alert_due
+            from bcn.common.alerts import send_operator_alert
+            from bcn.common.config import Settings
+
+            settings = Settings()
+            streak = await consecutive_unpublished_scheduler_runs()
+            threshold = int(
+                getattr(settings, "alert_quiet_streak_threshold", 4) or 4
+            )
+            if quiet_streak_alert_due(streak, threshold):
+                await send_operator_alert(
+                    settings,
+                    f"{streak} consecutive scheduled slots without a publish. "
+                    f"Latest block: {(decision_reason or 'unknown')[:180]}",
+                )
+        except Exception:
+            logger.exception("Unpublished-streak alert check failed")
 
 
 async def finalize_stale_pending_generation_runs(

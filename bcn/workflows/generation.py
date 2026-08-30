@@ -460,24 +460,6 @@ async def execute_generation_result(
                 final_verifier={},
                 briefing_id=None,
             )
-            try:
-                from bcn.common.alerts import consecutive_quiet_skips
-                from bcn.common.alerts import quiet_streak_alert_due
-                from bcn.common.alerts import send_operator_alert
-
-                streak = await consecutive_quiet_skips()
-                threshold = int(
-                    getattr(settings, "alert_quiet_streak_threshold", 4) or 4
-                )
-                if quiet_streak_alert_due(streak, threshold):
-                    await send_operator_alert(
-                        settings,
-                        f"{streak} consecutive quiet-day skips - a streak this "
-                        "long usually means the analyst or ingestion is down, "
-                        "not a quiet news cycle.",
-                    )
-            except Exception:
-                logger.exception("Quiet-streak alert check failed")
             return _handoff_result(
                 workflow_mode=workflow_mode,
                 decision="skip",

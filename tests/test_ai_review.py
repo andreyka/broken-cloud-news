@@ -150,7 +150,7 @@ async def test_run_prepublish_ai_review_gate_rewrites_on_edit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_prepublish_ai_review_gate_blocks_on_needs_work(monkeypatch):
+async def test_run_prepublish_ai_review_gate_applies_needs_work_rewrite(monkeypatch):
     monkeypatch.setattr(
         "bcn.workflows.ai_review.run_openai_editorial_review",
         AsyncMock(
@@ -161,7 +161,41 @@ async def test_run_prepublish_ai_review_gate_blocks_on_needs_work(monkeypatch):
                 decision="needs_work",
                 issue_tags=["weak_cloud_focus"],
                 notes="This draft is too loose for publish.",
-                edited_markdown="**Unused rewrite**",
+                edited_markdown="**Editor rewrite**",
+                raw_response={"extracted_review": {"decision": "needs_work"}},
+            )
+        ),
+    )
+
+    result = await run_prepublish_ai_review_gate(
+        _make_settings(),
+        content_markdown="**Draft**",
+        selected_items=[],
+        latest_run_model="nemotron",
+        rewrite_count=1,
+    )
+
+    # A rewrite-bearing needs_work applies the edit (then re-runs release
+    # checks upstream) instead of vetoing a draft the editor already fixed.
+    assert result.action == "rewrite"
+    assert result.markdown == "**Editor rewrite**"
+
+
+@pytest.mark.asyncio
+async def test_run_prepublish_ai_review_gate_blocks_needs_work_without_rewrite(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "bcn.workflows.ai_review.run_openai_editorial_review",
+        AsyncMock(
+            return_value=AIReviewResult(
+                reviewer_provider="openai",
+                reviewer_model="gpt-5.4-2026-03-05",
+                reasoning_effort="high",
+                decision="needs_work",
+                issue_tags=["weak_cloud_focus"],
+                notes="This draft is too loose for publish.",
+                edited_markdown=None,
                 raw_response={"extracted_review": {"decision": "needs_work"}},
             )
         ),
