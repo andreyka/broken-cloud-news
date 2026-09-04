@@ -94,6 +94,19 @@ _ACTIONABLE_TERMS = {
     "zero-day",
     "protocol",
     "ddos",
+    # Imperative practitioner vocabulary; without these a draft saying
+    # "ship v3.7.4" or "bump to 0.24" scored as less actionable than one
+    # saying "upgrade to".
+    "bump",
+    "ship",
+    "isolate",
+    "disable",
+    "revoke",
+    "hunt",
+    "restrict",
+    "install",
+    "rollback",
+    "quarantine",
 }
 
 

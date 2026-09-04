@@ -262,12 +262,18 @@ def build_shadow_summary(result: dict[str, Any]) -> dict[str, Any]:
     candidate_decision = str(candidate.get("decision") or "")
     champion_release = bool(champion.get("release_passed"))
     candidate_release = bool(candidate.get("release_passed"))
-    champion_score = int(champion.get("rubric", {}).get("score", 0) or 0)
-    candidate_score = int(candidate.get("rubric", {}).get("score", 0) or 0)
+    champion_rubric = int(champion.get("rubric", {}).get("score", 0) or 0)
+    candidate_rubric = int(candidate.get("rubric", {}).get("score", 0) or 0)
+    champion_critic = int(champion.get("critique", {}).get("score", 0) or 0)
+    candidate_critic = int(candidate.get("critique", {}).get("score", 0) or 0)
     champion_hard = len(champion.get("gate", {}).get("hard_issues", []))
     candidate_hard = len(candidate.get("gate", {}).get("hard_issues", []))
     champion_verifier = int(champion.get("verifier", {}).get("score", 0) or 0)
     candidate_verifier = int(candidate.get("verifier", {}).get("score", 0) or 0)
+    # Blend the keyword rubric with the two LLM judges: the rubric alone
+    # decided verdicts on vocabulary ("ship" vs "upgrade") rather than quality.
+    champion_score = _blended_score(champion_rubric, champion_critic, champion_verifier)
+    candidate_score = _blended_score(candidate_rubric, candidate_critic, candidate_verifier)
     overlap_ratio = float(result.get("selection_overlap_ratio", 0.0) or 0.0)
 
     recommendation = "hold"
@@ -280,21 +286,23 @@ def build_shadow_summary(result: dict[str, Any]) -> dict[str, Any]:
     elif champion_release and not candidate_release:
         recommendation = "keep_champion"
     elif candidate_release and champion_release:
+        # Blended scores are finer than the old rubric-only scale, so a
+        # recommendation needs a 3-point gap and high confidence needs 6.
         if (
-            candidate_score >= champion_score + 2
+            candidate_score >= champion_score + 3
             and candidate_hard <= champion_hard
             and candidate_verifier >= champion_verifier
         ):
             recommendation = "promote_candidate"
         elif (
-            champion_score >= candidate_score + 2
+            champion_score >= candidate_score + 3
             and champion_hard <= candidate_hard
             and champion_verifier >= candidate_verifier
         ):
             recommendation = "keep_champion"
 
     confidence = "medium" if champion_decision == candidate_decision else "low"
-    if recommendation != "hold" and abs(candidate_score - champion_score) >= 4:
+    if recommendation != "hold" and abs(candidate_score - champion_score) >= 6:
         confidence = "high"
 
     return {
@@ -306,7 +314,27 @@ def build_shadow_summary(result: dict[str, Any]) -> dict[str, Any]:
         "score_delta": candidate_score - champion_score,
         "champion_release_passed": champion_release,
         "candidate_release_passed": candidate_release,
+        "components": {
+            "champion": {
+                "rubric": champion_rubric,
+                "critic": champion_critic,
+                "verifier": champion_verifier,
+            },
+            "candidate": {
+                "rubric": candidate_rubric,
+                "critic": candidate_critic,
+                "verifier": candidate_verifier,
+            },
+        },
     }
+
+
+def _blended_score(rubric: int, critic: int, verifier: int) -> int:
+    """Average the available 0-100 signals; missing judges do not drag to zero."""
+    parts = [score for score in (rubric, critic, verifier) if score > 0]
+    if not parts:
+        return 0
+    return int(round(sum(parts) / len(parts)))
 
 
 def build_shadow_preference_pair(
