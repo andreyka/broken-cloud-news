@@ -723,6 +723,38 @@ async def fail_evaluation_run(
     )
 
 
+async def finalize_stale_evaluation_runs(*, stale_minutes: int) -> int:
+    """Fail 'running' evaluation rows whose worker died without finalizing them.
+
+    A job canceled by deadline or a worker restarted mid-run leaves the row
+    'running' forever; anything without a progress update for the given
+    window is closed out as failed.
+    """
+    minutes = max(1, int(stale_minutes))
+    await ensure_evaluation_tables()
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        UPDATE evaluation_runs
+        SET
+            status = 'failed',
+            error_message = COALESCE(error_message, 'stale_running_run'),
+            summary = CASE
+                WHEN summary IS NULL OR summary = '{}'::jsonb
+                THEN '{"recommendation": "failed", "confidence": "low"}'::jsonb
+                ELSE summary
+            END,
+            finished_at = NOW(),
+            updated_at = NOW()
+        WHERE status = 'running'
+          AND updated_at < NOW() - make_interval(mins => $1)
+        RETURNING id
+        """,
+        minutes,
+    )
+    return len(rows)
+
+
 async def insert_evaluation_report(
     report: dict[str, Any],
     *,

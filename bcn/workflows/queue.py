@@ -786,6 +786,17 @@ async def run_worker(
         while True:
             await reclaim_expired_workflow_job_leases()
             await cancel_expired_workflow_jobs()
+            if lane == "evaluation":
+                from bcn.persistence.evaluation import finalize_stale_evaluation_runs
+
+                try:
+                    stale_runs = await finalize_stale_evaluation_runs(
+                        stale_minutes=int(settings.evaluation_run_stale_minutes),
+                    )
+                    if stale_runs:
+                        _emit(f"Finalized {stale_runs} stale evaluation run(s)")
+                except Exception:
+                    logger.exception("Stale evaluation run sweep failed")
             job = await claim_next_workflow_job(lanes=[lane], worker_id=lane_worker_id)
             if not job:
                 if once:

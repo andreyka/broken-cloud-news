@@ -713,3 +713,24 @@ async def test_release_briefing_for_retry_records_retry_metadata():
     assert args[3] == 4
     assert args[4] == 45
     assert args[5] == 900
+
+
+@pytest.mark.asyncio
+async def test_finalize_stale_evaluation_runs_fails_only_quiet_running_rows():
+    from bcn.persistence.evaluation import finalize_stale_evaluation_runs
+
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"id": uuid4()}, {"id": uuid4()}]
+    with (
+        patch("bcn.persistence.evaluation.ensure_evaluation_tables", new_callable=AsyncMock),
+        patch(
+            "bcn.persistence.evaluation.get_pool", new_callable=AsyncMock, return_value=pool
+        ),
+    ):
+        count = await finalize_stale_evaluation_runs(stale_minutes=120)
+
+    assert count == 2
+    sql, minutes = pool.fetch.await_args.args
+    assert "status = 'running'" in sql and "status = 'failed'" in sql
+    assert "make_interval(mins => $1)" in sql
+    assert minutes == 120
