@@ -20,7 +20,7 @@ import sys
 
 import anthropic
 
-JUDGE_MODEL = "claude-fable-5"
+JUDGE_MODEL = "claude-fable-5-1"
 
 RUBRIC = """You are judging two drafts of a cloud-security briefing for senior
 cloud engineers (casual, cynical, practitioner voice; Telegram-style markdown).
@@ -38,13 +38,19 @@ Return STRICT JSON only:
  "margin": 0-10, "reasons": ["short concrete reason", ...]}"""
 
 
-def judge_pair(client: anthropic.Anthropic, pair_id: str, champion: str, candidate: str) -> dict:
+def judge_pair(
+    client: anthropic.Anthropic,
+    pair_id: str,
+    champion: str,
+    candidate: str,
+    model: str = JUDGE_MODEL,
+) -> dict:
     # Deterministic blind ordering: half the pairs show candidate first.
     flipped = int(hashlib.sha256(pair_id.encode()).hexdigest(), 16) % 2 == 1
     draft_a, draft_b = (candidate, champion) if flipped else (champion, candidate)
 
     response = client.beta.messages.create(
-        model=JUDGE_MODEL,
+        model=model,
         max_tokens=16000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
@@ -86,6 +92,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("reports", nargs="+", help="shadow report JSON files")
     parser.add_argument("--out", default="panel_verdicts.json")
+    parser.add_argument("--model", default=JUDGE_MODEL, help="Claude judge model id")
     args = parser.parse_args()
 
     client = anthropic.Anthropic()
@@ -98,7 +105,7 @@ def main() -> None:
         if not champion or not candidate:
             print(f"skip {path}: missing draft text", file=sys.stderr)
             continue
-        verdict = judge_pair(client, path, champion, candidate)
+        verdict = judge_pair(client, path, champion, candidate, model=args.model)
         verdicts.append({"report": path, **verdict})
         print(json.dumps(verdicts[-1], ensure_ascii=False))
 
@@ -106,7 +113,7 @@ def main() -> None:
     for v in verdicts:
         if v.get("winner") in wins:
             wins[v["winner"]] += 1
-    summary = {"judge": JUDGE_MODEL, "pairs": len(verdicts), **wins}
+    summary = {"judge": args.model, "pairs": len(verdicts), **wins}
     with open(args.out, "w", encoding="utf-8") as handle:
         json.dump({"summary": summary, "verdicts": verdicts}, handle, indent=2)
     print(json.dumps(summary))
