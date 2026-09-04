@@ -150,6 +150,42 @@ async def test_run_prepublish_ai_review_gate_rewrites_on_edit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_prepublish_ai_review_gate_passes_length_budget_to_editor(monkeypatch):
+    from bcn.workflows.ai_review import AIReviewInput
+    from bcn.workflows.ai_review import _build_user_prompt
+
+    review_mock = AsyncMock(
+        return_value=AIReviewResult(
+            reviewer_provider="openai",
+            reviewer_model="gpt-5.6",
+            reasoning_effort="xhigh",
+            decision="accept",
+            issue_tags=[],
+            notes=None,
+            edited_markdown=None,
+            raw_response={},
+        )
+    )
+    monkeypatch.setattr("bcn.workflows.ai_review.run_openai_editorial_review", review_mock)
+
+    result = await run_prepublish_ai_review_gate(
+        _make_settings(),
+        content_markdown="**Draft**",
+        selected_items=[],
+        length_budget=(1200, 2400, 3100),
+    )
+
+    assert result.action == "approve"
+    sent: AIReviewInput = review_mock.await_args.args[1]
+    assert sent.length_budget == (1200, 2400, 3100)
+    prompt = _build_user_prompt(sent)
+    assert "Length budget for any rewrite: 1200-3100 characters (target ~2400)" in prompt
+    assert "Length budget" not in _build_user_prompt(
+        AIReviewInput(briefing_id=None, content_markdown="**Draft**")
+    )
+
+
+@pytest.mark.asyncio
 async def test_run_prepublish_ai_review_gate_applies_needs_work_rewrite(monkeypatch):
     monkeypatch.setattr(
         "bcn.workflows.ai_review.run_openai_editorial_review",

@@ -669,6 +669,9 @@ class BriefingLengthSettingsMixin:
     briefing_min_chars: int = 1200
     briefing_target_chars: int = 1700
     briefing_hard_max_chars: int = 2300
+    briefing_scaling_base_items: int = 3
+    briefing_extra_item_target_chars: int = 350
+    briefing_extra_item_hard_max_chars: int = 400
     briefing_quiet_day_min_chars: int = 900
     briefing_quiet_day_target_chars: int = 1300
     briefing_quiet_day_hard_max_chars: int = 1800

@@ -351,6 +351,23 @@ def char_limits(
         )
         target_chars = max(min_chars, target_chars)
         hard_max_chars = max(target_chars, hard_max_chars)
+    elif (
+        selected_count is not None
+        and mode not in ("quiet_day", "monthly_newsletter", "weekly_flagship")
+    ):
+        # A fixed daily ceiling cannot hold five substantive sections; grow
+        # the target and ceiling per item beyond the base count so the writer
+        # is never forced to stub or drop coverage to fit.
+        extra_items = max(
+            0, selected_count - int(service.settings.briefing_scaling_base_items)
+        )
+        target_chars += extra_items * int(
+            service.settings.briefing_extra_item_target_chars
+        )
+        hard_max_chars += extra_items * int(
+            service.settings.briefing_extra_item_hard_max_chars
+        )
+        hard_max_chars = max(target_chars, hard_max_chars)
     return min_chars, target_chars, hard_max_chars
 
 

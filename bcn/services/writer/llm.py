@@ -86,6 +86,9 @@ class WriterLLM:
         items: list[dict],
         recent_briefings: list[dict] | None = None,
         mode: str = "standard",
+        min_chars: int | None = None,
+        target_chars: int | None = None,
+        hard_max_chars: int | None = None,
     ) -> str:
         """Generate an editorial briefing from story cards derived from items."""
         entries: list[str] = []
@@ -122,6 +125,13 @@ class WriterLLM:
             )
         else:
             mode_block = "Mode: standard daily briefing."
+        if mode != "weekly_flagship" and min_chars and hard_max_chars:
+            mode_block += (
+                f"\n- Length: {int(min_chars)}-{int(hard_max_chars)} characters "
+                f"(target ~{int(target_chars or hard_max_chars)}). Every story card "
+                "gets its own section with at least two substantive sentences; "
+                "never stub or drop a card to fit.\n"
+            )
         user_msg = (
             f"{mode_block}\n\nStory cards ({len(story_cards)} total). "
             "Use every `URL` exactly once in the final briefing.\n\n" + cards_text

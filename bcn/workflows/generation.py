@@ -194,6 +194,52 @@ def _ai_publish_gate_feedback(review_payload: dict[str, Any] | None) -> list[str
     return feedback
 
 
+_EDITORIAL_REWRITE_MAX_CRITIC_DROP = 3
+
+
+def _critic_score(critique: object) -> int | None:
+    if not isinstance(critique, dict):
+        return None
+    try:
+        return int(critique.get("score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_length_budget(candidate: dict[str, Any]) -> tuple[int, int, int] | None:
+    try:
+        return (
+            int(candidate["min_chars"]),
+            int(candidate["target_chars"]),
+            int(candidate["hard_max_chars"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _editorial_rewrite_verdict(
+    candidate: dict[str, Any],
+    rewritten: dict[str, Any],
+) -> tuple[bool, str]:
+    """Adopt an editorial rewrite only if it keeps the release bar the draft already cleared."""
+    if not bool(rewritten.get("release_passed", False)):
+        return False, "rewrite failed release checks"
+    kept_items = rewritten.get("selected_items")
+    if isinstance(kept_items, list) and len(kept_items) < len(
+        candidate.get("selected_items") or []
+    ):
+        return False, "rewrite lost selected items"
+    before = _critic_score(candidate.get("critique"))
+    after = _critic_score(rewritten.get("critique"))
+    if (
+        before is not None
+        and after is not None
+        and after < before - _EDITORIAL_REWRITE_MAX_CRITIC_DROP
+    ):
+        return False, f"critic score dropped {before} -> {after}"
+    return True, "rewrite kept the release bar"
+
+
 def _append_ai_publish_gate_round(
     candidate: dict[str, Any],
     *,
@@ -591,6 +637,7 @@ async def execute_generation_result(
                         latest_run_model=trace_metadata.llm_model,
                         latest_run_decision="PUBLISHED",
                         rewrite_count=int(candidate.get("rewrites", 0)),
+                        length_budget=_candidate_length_budget(candidate),
                     )
                 except Exception as exc:
                     logger.exception("Pre-publish AI editorial gate failed")
@@ -664,7 +711,6 @@ async def execute_generation_result(
                             if isinstance(rewritten_evaluation.get("gate"), dict)
                             else {}
                         )
-                        gate["ai_review_gate"] = ai_gate_payload
                         critique = (
                             dict(rewritten_evaluation.get("critique"))
                             if isinstance(rewritten_evaluation.get("critique"), dict)
@@ -675,32 +721,60 @@ async def execute_generation_result(
                             if isinstance(rewritten_evaluation.get("verifier"), dict)
                             else {}
                         )
-                        candidate["markdown"] = str(
-                            rewritten_evaluation.get("markdown") or rewritten_markdown
+                        adopt, verdict = _editorial_rewrite_verdict(
+                            candidate, rewritten_evaluation
                         )
-                        candidate["gate"] = gate
-                        candidate["critique"] = critique
-                        candidate["verifier"] = verifier
-                        candidate["release_passed"] = bool(
-                            rewritten_evaluation.get("release_passed", False)
-                        )
-                        candidate["critic_threshold_passed"] = bool(
-                            rewritten_evaluation.get("critic_threshold_passed", False)
-                        )
-                        candidate["selected_items"] = list(
-                            rewritten_evaluation.get("selected_items")
-                            or final_selected_items
-                        )
-                        final_selected_items = list(candidate["selected_items"])
+                        if not adopt:
+                            logger.warning(
+                                "Keeping the release-passing draft; AI editorial rewrite rejected: %s",
+                                verdict,
+                            )
+                            ai_gate_payload = dict(ai_gate_payload)
+                            ai_gate_payload["action"] = "rewrite_rejected"
+                            ai_gate_payload["passed"] = True
+                            ai_gate_payload["reason"] = (
+                                f"{str(ai_gate_payload.get('reason') or '').strip()} "
+                                f"Rewrite rejected: {verdict}."
+                            ).strip()
+                        gate["ai_review_gate"] = ai_gate_payload
+                        if adopt:
+                            candidate["markdown"] = str(
+                                rewritten_evaluation.get("markdown") or rewritten_markdown
+                            )
+                            candidate["gate"] = gate
+                            candidate["critique"] = critique
+                            candidate["verifier"] = verifier
+                            candidate["release_passed"] = bool(
+                                rewritten_evaluation.get("release_passed", False)
+                            )
+                            candidate["critic_threshold_passed"] = bool(
+                                rewritten_evaluation.get("critic_threshold_passed", False)
+                            )
+                            candidate["selected_items"] = list(
+                                rewritten_evaluation.get("selected_items")
+                                or final_selected_items
+                            )
+                            final_selected_items = list(candidate["selected_items"])
+                        else:
+                            kept_gate = (
+                                dict(candidate.get("gate"))
+                                if isinstance(candidate.get("gate"), dict)
+                                else {}
+                            )
+                            kept_gate["ai_review_gate"] = ai_gate_payload
+                            candidate["gate"] = kept_gate
                         _append_ai_publish_gate_round(
                             candidate,
                             draft_input=original_markdown,
                             gate_result=gate,
                             critique_result=critique,
                             verifier_result=verifier,
-                            feedback=_ai_publish_gate_feedback(ai_gate_payload),
-                            rewrite_output=candidate["markdown"],
-                            passed=bool(candidate.get("release_passed", False)),
+                            feedback=_ai_publish_gate_feedback(ai_gate_payload)
+                            + ([] if adopt else [f"Rewrite rejected: {verdict}"]),
+                            rewrite_output=(
+                                candidate["markdown"] if adopt else rewritten_markdown
+                            ),
+                            passed=adopt and bool(candidate.get("release_passed", False)),
                         )
                     else:
                         gate = (

@@ -436,6 +436,175 @@ async def test_execute_generation_applies_prepublish_ai_rewrite_before_publish()
 
 
 @pytest.mark.asyncio
+async def test_execute_generation_keeps_passing_draft_when_ai_rewrite_regresses():
+    settings = _make_settings(ai_review_publish_gate_enabled=True)
+    item_id = uuid4()
+    briefing_id = uuid4()
+    run_id = uuid4()
+    selected_items = [
+        {
+            "id": item_id,
+            "title": "Axios compromise",
+            "summary": "Malicious npm package briefly shipped.",
+            "url": "https://example.com/axios",
+        }
+    ]
+    candidate = {
+        "markdown": "Writer draft",
+        "gate": {"passed": True},
+        "critique": {"passed": True, "score": 88, "issues": [], "recommendations": []},
+        "verifier": {"passed": True, "issues": [], "recommendations": []},
+        "release_passed": True,
+        "critic_threshold_passed": True,
+        "rewrites": 2,
+        "min_chars": 1200,
+        "target_chars": 2400,
+        "hard_max_chars": 3100,
+        "selected_items": selected_items,
+        "rounds": [],
+        "preference_pairs": [],
+    }
+    service = _make_writer_service(
+        selected_items=selected_items,
+        candidate=candidate,
+        artifact={
+            "cover_prompt": "cover prompt",
+            "cover_url": "https://example.com/cover.png",
+            "markdown": "# Final",
+            "html": "<h1>Final</h1>",
+        },
+    )
+    service.evaluate_existing_markdown = AsyncMock(
+        return_value={
+            "markdown": "AI rewritten draft with a stub section",
+            "gate": {"passed": True},
+            "critique": {
+                "passed": False,
+                "score": 68,
+                "issues": ["The NetStaX section is an empty heading."],
+                "recommendations": [],
+            },
+            "verifier": {"passed": False, "issues": ["Section incomplete."], "recommendations": []},
+            "release_passed": False,
+            "critic_threshold_passed": False,
+            "selected_items": selected_items,
+        }
+    )
+    ai_gate_result = AIPublishGateResult(
+        action="rewrite",
+        markdown="AI rewritten draft with a stub section",
+        reason="AI editorial gate supplied a rewritten draft (edit).",
+        review=AIReviewResult(
+            reviewer_provider="openai",
+            reviewer_model="gpt-5.6",
+            reasoning_effort="xhigh",
+            decision="edit",
+            issue_tags=["tone"],
+            notes="Tightened the opener.",
+            edited_markdown="AI rewritten draft with a stub section",
+            raw_response={"extracted_review": {"decision": "edit"}},
+        ),
+    )
+
+    with (
+        patch("bcn.workflows.generation.get_pool", new_callable=AsyncMock),
+        patch(
+            "bcn.workflows.generation.finalize_stale_pending_generation_runs",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "bcn.workflows.generation.get_analyzed_items",
+            new_callable=AsyncMock,
+            return_value=[
+                {
+                    "id": item_id,
+                    "status": "WRITING",
+                    "title": "Axios compromise",
+                    "summary": "Malicious npm package briefly shipped.",
+                    "url": "https://example.com/axios",
+                    "published_at": datetime.now(timezone.utc),
+                }
+            ],
+        ),
+        patch(
+            "bcn.workflows.generation.preview_generation_candidate_pool",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.get_recent_briefings",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.get_recent_published_items",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch(
+            "bcn.workflows.generation.create_generation_run",
+            new_callable=AsyncMock,
+            return_value=run_id,
+        ),
+        patch(
+            "bcn.workflows.generation.run_prepublish_ai_review_gate",
+            new_callable=AsyncMock,
+            return_value=ai_gate_result,
+        ) as mock_ai_gate,
+        patch(
+            "bcn.workflows.generation.append_generation_round",
+            new_callable=AsyncMock,
+        ) as mock_append_round,
+        patch(
+            "bcn.workflows.generation.insert_generation_preference_pair",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "bcn.workflows.generation.insert_briefing",
+            new_callable=AsyncMock,
+            return_value=briefing_id,
+        ),
+        patch(
+            "bcn.workflows.generation.finalize_generation_run",
+            new_callable=AsyncMock,
+        ) as mock_finalize,
+        patch(
+            "bcn.workflows.generation.insert_ai_review",
+            new_callable=AsyncMock,
+            return_value=uuid4(),
+        ),
+        patch(
+            "bcn.workflows.generation.release_items_from_writing",
+            new_callable=AsyncMock,
+        ),
+    ):
+        result = await execute_generation(
+            settings,
+            mode="regular_daily_briefing",
+            writer_service=service,
+            manage_pool=False,
+        )
+
+    handoff = parse_writer_handoff_payload(result)
+    assert handoff is not None
+    assert handoff.decision == "publish"
+    assert mock_ai_gate.await_args.kwargs["length_budget"] == (1200, 2400, 3100)
+    service.build_release_artifact.assert_awaited_once_with(
+        briefing_body="Writer draft",
+        selected_items=selected_items,
+        mode="standard",
+    )
+    assert mock_finalize.await_args.kwargs["decision"] == "PUBLISHED"
+    assert mock_append_round.await_count == 1
+    gate_round = mock_append_round.await_args.kwargs
+    assert candidate["gate"]["ai_review_gate"]["action"] == "rewrite_rejected"
+    assert candidate["gate"]["ai_review_gate"]["passed"] is True
+    assert candidate["critique"]["score"] == 88
+    assert gate_round["passed"] is False
+
+
+@pytest.mark.asyncio
 async def test_execute_generation_blocks_when_prepublish_ai_gate_rejects():
     settings = _make_settings(ai_review_publish_gate_enabled=True)
     item_id = uuid4()

@@ -50,6 +50,7 @@ class AIReviewInput:
     latest_run_decision: str | None = None
     rewrite_count: int | None = None
     selected_items_context: list[dict[str, Any]] | None = None
+    length_budget: tuple[int, int, int] | None = None
 
 
 @dataclass(slots=True)
@@ -134,6 +135,8 @@ def _build_system_prompt() -> str:
             "- Strong cloud framing usually connects to control plane risk, identity or auth plane, secrets or metadata exposure, multi-tenancy, internet-facing edge risk, CI/CD supply chain, orchestration state, IAM boundaries, managed service exposure, or hybrid trust boundaries.",
             "- Keep the style punchy, technical, compact, and opinionated without fearmongering or generic filler.",
             "- Preserve existing links in any rewrite unless the surrounding sentence must be removed.",
+            "- Never drop a selected item's section or link in a rewrite, and never leave a heading without body text; if a section is thin, expand it instead of cutting it.",
+            "- Respect the stated length budget when one is supplied; prefer trimming filler over removing coverage.",
             "- Prefer the smallest set of issue tags that explains the main problems.",
             "- The verdict summary and notes should be concise and concrete.",
             "- If you provide edited_markdown, it must be the full corrected markdown, not partial fragments.",
@@ -177,6 +180,15 @@ def _build_user_prompt(input_data: AIReviewInput) -> str:
         f"Latest model: {input_data.latest_run_model or 'unknown'}",
         f"Latest generation decision: {input_data.latest_run_decision or 'unknown'}",
         f"Rewrite count: {int(input_data.rewrite_count or 0)}",
+    ]
+    if input_data.length_budget:
+        min_chars, target_chars, hard_max_chars = input_data.length_budget
+        prompt_lines.append(
+            f"Length budget for any rewrite: {int(min_chars)}-{int(hard_max_chars)} "
+            f"characters (target ~{int(target_chars)}). Every selected item keeps its "
+            "own section and link."
+        )
+    prompt_lines += [
         "",
         "Evaluate the markdown below against BCN editorial standards:",
         "- factual grounding and scope accuracy",
@@ -453,6 +465,7 @@ async def run_prepublish_ai_review_gate(
     latest_run_model: str | None = None,
     latest_run_decision: str | None = "PUBLISHED",
     rewrite_count: int | None = None,
+    length_budget: tuple[int, int, int] | None = None,
 ) -> AIPublishGateResult:
     """Run the AI editor before publish and convert it into a strict gate decision."""
     review = await run_openai_editorial_review(
@@ -464,6 +477,7 @@ async def run_prepublish_ai_review_gate(
             latest_run_decision=latest_run_decision,
             rewrite_count=rewrite_count,
             selected_items_context=selected_items,
+            length_budget=length_budget,
         ),
     )
     if review.decision == "accept":

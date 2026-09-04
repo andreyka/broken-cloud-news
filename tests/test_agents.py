@@ -1964,6 +1964,27 @@ class TestWriterService:
         assert target_chars == 760
         assert hard_max_chars == 1200
 
+    def test_standard_char_limits_scale_with_item_count(self):
+        from bcn.services.writer.service import WriterService
+
+        settings = _make_settings(
+            briefing_min_chars=1200,
+            briefing_target_chars=1700,
+            briefing_hard_max_chars=2300,
+            briefing_scaling_base_items=3,
+            briefing_extra_item_target_chars=350,
+            briefing_extra_item_hard_max_chars=400,
+            briefing_quiet_day_min_chars=900,
+            briefing_quiet_day_target_chars=1300,
+            briefing_quiet_day_hard_max_chars=1800,
+        )
+        service = WriterService(settings)
+
+        assert service.char_limits("standard", selected_count=3) == (1200, 1700, 2300)
+        assert service.char_limits("standard", selected_count=5) == (1200, 2400, 3100)
+        assert service.char_limits("standard") == (1200, 1700, 2300)
+        assert service.char_limits("quiet_day", selected_count=5) == (900, 1300, 1800)
+
     @pytest.mark.asyncio
     async def test_postprocess_drop_recomputes_missing_urls_before_enrich(self):
         from bcn.services.writer.service import WriterService
