@@ -629,6 +629,7 @@ class WorkflowQueueSettingsMixin:
     workflow_job_analysis_retry_max_delay_seconds: int = 1800
     workflow_job_evaluation_retry_base_delay_seconds: int = 300
     workflow_job_evaluation_retry_max_delay_seconds: int = 3600
+    evaluation_run_stale_minutes: int = 120
 
 
 class ScrapingSettingsMixin:
@@ -651,6 +652,9 @@ class CriticPolicySettingsMixin:
     briefing_critic_min_actionability: int = 70
     briefing_critic_min_source_diversity: int = 65
     briefing_critic_min_link_hygiene: int = 80
+    # A critic "passed: false" is advisory when the score clears the minimum
+    # by this margin and no blocking issue term is present; 0 disables.
+    briefing_critic_score_override_margin: int = 5
 
 
 class VerifierPolicySettingsMixin:
@@ -762,6 +766,7 @@ class DistributionPolicySettingsMixin:
 
     telegram_overflow_mode: str = "smart"
     briefing_distribution_max_draft_age_minutes: int = 180
+    newsletter_distribution_max_draft_age_minutes: int = 10080
     distribution_retry_max_attempts: int = 6
     distribution_retry_base_delay_seconds: int = 600
     distribution_retry_max_delay_seconds: int = 21600

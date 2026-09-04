@@ -218,3 +218,13 @@ async def test_writer_critique_markdown_forwards_length_limits():
     )
     sent = evaluator.evaluate.await_args.args[0]
     assert (sent.min_chars, sent.hard_max_chars) == (1200, 3100)
+
+
+def test_critic_service_threshold_failures_respect_score_margin():
+    settings = _make_settings(
+        briefing_critic_min_score=80, briefing_critic_score_override_margin=5
+    )
+    service = CriticService(settings, llm_client=AsyncMock())
+    base = {"dimension_scores": {"actionability": 90, "link_hygiene": 90}, "passed": False}
+    assert "critic_passed" not in service._threshold_failures({**base, "score": 87})
+    assert "critic_passed" in service._threshold_failures({**base, "score": 83})

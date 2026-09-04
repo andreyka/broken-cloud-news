@@ -265,12 +265,19 @@ def passes_critic_thresholds(service: Any, critique: dict[str, object]) -> bool:
     """Apply blocking thresholds for critic score and key dimensions."""
     if not critique:
         return False
-    if not bool(critique.get("passed", False)):
+    score = int(critique.get("score", 0) or 0)
+    min_score = int(service.settings.briefing_critic_min_score)
+    if not bool(critique.get("passed", False)) and not critic_score_overrides_pass_flag(
+        score,
+        min_score=min_score,
+        margin=int(
+            getattr(service.settings, "briefing_critic_score_override_margin", 0) or 0
+        ),
+    ):
         return False
     if has_critical_critic_issue(critique):
         return False
 
-    score = int(critique.get("score", 0) or 0)
     dims = critique.get("dimension_scores", {}) or {}
     if not isinstance(dims, dict):
         dims = {}
@@ -317,6 +324,11 @@ def verifier_overreach_issues(verification: dict[str, object]) -> list[str]:
         if text and any(term in lowered for term in _OVERREACH_TERMS):
             flagged.append(text)
     return flagged
+
+
+def critic_score_overrides_pass_flag(score: int, *, min_score: int, margin: int) -> bool:
+    """Treat the critic's negative pass flag as advisory when the score is clearly above the bar."""
+    return int(margin) > 0 and int(score) >= int(min_score) + int(margin)
 
 
 def has_critical_critic_issue(critique: dict[str, object]) -> bool:

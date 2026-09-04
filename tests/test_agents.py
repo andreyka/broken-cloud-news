@@ -2615,3 +2615,50 @@ class TestDistributorService:
         assert result.results == {"telegram": "ok", "slack": "ok"}
         assert result.all_ok is True
         assert [attempt.channel for attempt in result.attempts] == ["slack"]
+
+
+def test_build_channels_monthly_mode_uses_newsletter_channels():
+    """Monthly editions must not depend on SMTP: Substack/Ghost carry them too."""
+    from bcn.services.distributor.service import DistributorService
+
+    settings = _make_settings(
+        telegram_bot_token="123:abc",
+        telegram_chat_id="@broken-cloud",
+        discord_bot_token="discord-token",
+        discord_channel_id="12345",
+        ghost_enabled=True,
+        ghost_admin_api_key="ghost-id:" + ("1f" * 32),
+        ghost_admin_api_url="https://brokencloudnews.ghost.io",
+    )
+    service = DistributorService(settings)
+    names = [
+        name
+        for name, _channel in service._build_channels(
+            mode="regular_monthly_newsletter", newsletter_recipients=[]
+        )
+    ]
+    assert "ghost" in names
+    assert "telegram" not in names and "discord" not in names and "email" not in names
+
+
+def test_passes_critic_thresholds_score_margin_overrides_pass_flag():
+    from bcn.services.writer.service import WriterService
+
+    def critique(score: int) -> dict:
+        return {
+            "passed": False,
+            "score": score,
+            "dimension_scores": {"actionability": 85, "link_hygiene": 90},
+            "issues": ["'Attackers noticed' is dramatic shorthand."],
+        }
+
+    lenient = WriterService(
+        _make_settings(briefing_critic_min_score=80, briefing_critic_score_override_margin=5)
+    )
+    assert lenient.passes_critic_thresholds(critique(87)) is True
+    assert lenient.passes_critic_thresholds(critique(84)) is False
+
+    strict = WriterService(
+        _make_settings(briefing_critic_min_score=80, briefing_critic_score_override_margin=0)
+    )
+    assert strict.passes_critic_thresholds(critique(95)) is False

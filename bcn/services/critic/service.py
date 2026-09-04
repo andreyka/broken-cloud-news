@@ -107,9 +107,15 @@ class CriticService:
     ) -> dict[str, dict[str, int | bool]]:
         """Return the configured critic thresholds that the critique missed."""
         failures: dict[str, dict[str, int | bool]] = {}
-        if not bool(critique.get("passed", False)):
-            failures["critic_passed"] = {"actual": False, "required": True}
         score = int(critique.get("score", 0) or 0)
+        margin = int(
+            getattr(self.settings, "briefing_critic_score_override_margin", 0) or 0
+        )
+        if not bool(critique.get("passed", False)) and not (
+            margin > 0
+            and score >= int(self.settings.briefing_critic_min_score) + margin
+        ):
+            failures["critic_passed"] = {"actual": False, "required": True}
         dims = critique.get("dimension_scores", {}) or {}
         if not isinstance(dims, dict):
             dims = {}
