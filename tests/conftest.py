@@ -26,3 +26,15 @@ def settings():
         slack_webhook_url="https://hooks.slack.com/fake",
         generation_run_stale_pending_minutes=0,
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_tests_from_local_env_file(monkeypatch):
+    """Keep a developer's repo-root .env from leaking delivery credentials into tests.
+
+    Settings load ``.env`` from the working directory; a local file with a
+    placeholder Telegram token turns the "no channels configured" distributor
+    test into a live HTTP call. Explicit constructor kwargs still win.
+    """
+    monkeypatch.setenv("BCN_TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("BCN_TELEGRAM_CHAT_ID", "")
