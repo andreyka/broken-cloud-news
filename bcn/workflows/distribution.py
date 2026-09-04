@@ -8,6 +8,7 @@ from datetime import timezone
 import logging
 from uuid import UUID
 
+from bcn.common.alerts import send_operator_alert
 from bcn.common.config import Settings
 from bcn.contracts.distributor import DeliveryRequest
 from bcn.contracts.distributor import REGULAR_MONTHLY_NEWSLETTER_MODE
@@ -17,14 +18,39 @@ from bcn.contracts.services import DistributorWorkflow
 from bcn.persistence.briefings import claim_draft_briefing_by_id
 from bcn.persistence.briefings import claim_latest_draft_briefing
 from bcn.persistence.briefings import mark_briefing_distributed
+from bcn.persistence.briefings import mark_briefing_stale
 from bcn.persistence.briefings import release_briefing_for_retry
 from bcn.persistence.news_items import mark_items_published
 from bcn.persistence.newsletter import get_newsletter_subscribers
 from bcn.persistence.runtime import close_pool
 from bcn.persistence.runtime import get_pool
 from bcn.persistence.training import get_distribution_outcomes
+from bcn.persistence.training import get_latest_generation_run_for_briefing
 from bcn.persistence.training import upsert_distribution_outcome
+
 logger = logging.getLogger(__name__)
+
+_GENERATION_MODE_TO_DISTRIBUTION = {
+    "monthly_newsletter": REGULAR_MONTHLY_NEWSLETTER_MODE,
+    "weekly_flagship": WEEKLY_FLAGSHIP_MODE,
+}
+_NEWSLETTER_MODES = (REGULAR_MONTHLY_NEWSLETTER_MODE, WEEKLY_FLAGSHIP_MODE)
+
+
+async def _resolve_delivery_mode(briefing_id: UUID, *, fallback: str) -> str:
+    """Deliver a briefing in the mode it was generated for, not the caller's.
+
+    A daily cycle or an operator command can claim a newsletter draft; the
+    edition's channel policy has to follow the draft, not the trigger.
+    Resolution is best effort: a lookup failure keeps the caller's mode.
+    """
+    try:
+        row = await get_latest_generation_run_for_briefing(briefing_id)
+    except Exception:
+        logger.warning("Could not resolve generation mode for briefing %s", briefing_id)
+        return fallback
+    generated_mode = str(dict(row).get("mode") or "").strip().lower() if row else ""
+    return _GENERATION_MODE_TO_DISTRIBUTION.get(generated_mode, fallback)
 
 
 async def _claim_briefing(
@@ -125,18 +151,38 @@ async def execute_distribution(
         should_release_for_retry = True
         retry_error: str | None = None
         try:
-            normalized_mode = normalize_distribution_mode(mode)
-            # A reviewed flagship is fresh by definition when approved; the
-            # stale guard exists for unattended daily drafts only.
-            if normalized_mode != WEEKLY_FLAGSHIP_MODE:
+            normalized_mode = await _resolve_delivery_mode(
+                claimed_briefing["id"],
+                fallback=normalize_distribution_mode(mode),
+            )
+            # An operator-targeted draft (explicit id) and a reviewed flagship
+            # are fresh by definition; the stale guard exists for unattended
+            # drafts. Newsletter editions age more slowly than
+            # daily news, and a stale draft is retired rather than left as
+            # a DRAFT that can be re-claimed forever.
+            if briefing_id is None and normalized_mode != WEEKLY_FLAGSHIP_MODE:
+                if normalized_mode in _NEWSLETTER_MODES:
+                    max_age = int(settings.newsletter_distribution_max_draft_age_minutes)
+                else:
+                    max_age = int(settings.briefing_distribution_max_draft_age_minutes)
                 stale_message = _stale_draft_message(
                     dict(claimed_briefing),
-                    max_age_minutes=max(
-                        0,
-                        int(settings.briefing_distribution_max_draft_age_minutes),
-                    ),
+                    max_age_minutes=max(0, max_age),
                 )
                 if stale_message:
+                    await mark_briefing_stale(claimed_briefing["id"], error=stale_message)
+                    should_release_for_retry = False
+                    logger.warning(
+                        "%s; briefing %s retired as stale (%s)",
+                        stale_message,
+                        claimed_briefing["id"],
+                        normalized_mode,
+                    )
+                    await send_operator_alert(
+                        settings,
+                        f"Retired stale {normalized_mode} draft {claimed_briefing['id']}: "
+                        f"{stale_message}",
+                    )
                     return stale_message
 
             newsletter_recipients = await _newsletter_recipients_for_mode(

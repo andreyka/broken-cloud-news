@@ -18,6 +18,7 @@ from bcn.persistence.runtime import ensure_schema_ready
 from bcn.persistence.runtime import get_pool
 
 _DISTRIBUTION_TERMINAL_STATUS = "DISTRIBUTION_FAILED"
+_DISTRIBUTION_STALE_STATUS = "DISTRIBUTION_STALE"
 
 
 async def ensure_briefing_items_table() -> None:
@@ -434,6 +435,26 @@ async def release_briefing_for_retry(
         base_delay,
         max_delay,
         _DISTRIBUTION_TERMINAL_STATUS,
+    )
+
+
+async def mark_briefing_stale(briefing_id: UUID, *, error: str | None = None) -> None:
+    """Retire a claimed draft that is too old to deliver so it is never re-claimed."""
+    message = normalize_retry_error(error, fallback="distribution_stale")
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE briefings
+        SET status = 'FAILED',
+            terminal_status = $2,
+            last_error = $3,
+            next_retry_at = NULL,
+            updated_at = NOW()
+        WHERE id = $1 AND status = 'DISTRIBUTING'
+        """,
+        briefing_id,
+        _DISTRIBUTION_STALE_STATUS,
+        message,
     )
 
 

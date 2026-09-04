@@ -74,11 +74,11 @@ class DistributorService:
         trusted_image_hosts = _trusted_image_hosts(self.settings)
         channels: list[tuple[str, Distributor]] = []
         normalized_mode = normalize_distribution_mode(mode)
-        if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
-            channel_names = {"email"}
-        elif normalized_mode == WEEKLY_FLAGSHIP_MODE:
-            # The flagship is inbox/web-native; the realtime wire channels
-            # (telegram/discord) are deliberately excluded.
+        if normalized_mode in (REGULAR_MONTHLY_NEWSLETTER_MODE, WEEKLY_FLAGSHIP_MODE):
+            # Newsletter editions are inbox/web-native; the realtime wire
+            # channels (telegram/discord) are deliberately excluded. Email
+            # only fires when SMTP and recipients exist, so Substack/Ghost
+            # carry the edition otherwise instead of it failing silently.
             channel_names = {"substack", "ghost", "email"}
         else:
             channel_names = {"telegram", "discord", "ghost", "substack"}
