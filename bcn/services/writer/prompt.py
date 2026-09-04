@@ -104,6 +104,18 @@ BRIEFING_STORY_CARD_PROMPT = (
     "- Output ONLY the text blocks separated by `---`.\n"
 )
 
+BRIEFING_TITLE_PROMPT = (
+    "You write headlines for 'Broken Cloud', a cynical cloud-security briefing.\n"
+    "Given the briefing text, write EXACTLY ONE title.\n"
+    "Rules: max 70 characters; capture the day's theme like a sharp magazine "
+    "cover line, not a list; no quotes, no emoji, no colon-led label, no "
+    "trailing period; never use dates or the word 'briefing'.\n"
+    "Good examples: 'Trusted plumbing, attacker-shaped nonsense' / "
+    "'Your ingress is the intruder' / 'Four patches and a foothold'.\n"
+    "Return only the title text."
+)
+
+
 BRIEFING_TIGHTENER_PROMPT = (
     "You are editing a cloud-security digest for Telegram.\n"
     "Rewrite the text to be shorter and punchier. \n"

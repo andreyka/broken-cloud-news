@@ -58,6 +58,7 @@ async def consecutive_unpublished_scheduler_runs() -> int:
         """
         SELECT decision FROM generation_runs
         WHERE trigger_source = 'scheduler'
+          AND mode = 'regular_daily_briefing'
         ORDER BY created_at DESC LIMIT 15
         """
     )

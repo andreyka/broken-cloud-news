@@ -51,6 +51,12 @@ class BriefingQualityGate:
                 int(self.settings.briefing_monthly_target_chars),
                 int(self.settings.briefing_monthly_hard_max_chars),
             )
+        if mode == "weekly_flagship":
+            return (
+                int(self.settings.briefing_weekly_min_chars),
+                int(self.settings.briefing_weekly_target_chars),
+                int(self.settings.briefing_weekly_hard_max_chars),
+            )
         return (
             int(self.settings.briefing_min_chars),
             int(self.settings.briefing_target_chars),

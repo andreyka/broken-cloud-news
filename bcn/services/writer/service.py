@@ -222,6 +222,10 @@ class WriterService:
             mode=mode,
         )
 
+    async def generate_briefing_title(self, markdown: str) -> str:
+        """Generate a headline for a finished briefing."""
+        return await self.writer_llm.generate_briefing_title(markdown)
+
     async def build_release_artifact(
         self,
         *,

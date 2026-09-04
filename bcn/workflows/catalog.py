@@ -10,10 +10,12 @@ from typing import Any
 from bcn.common.config import Settings
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import WEEKLY_FLAGSHIP_MODE
 from bcn.workflows.ai_review import get_ai_review_config
 from bcn.workflows.automation import build_ai_review_backfill_trigger
 from bcn.workflows.automation import build_regular_briefing_trigger
 from bcn.workflows.automation import build_regular_monthly_newsletter_trigger
+from bcn.workflows.automation import build_weekly_flagship_trigger
 from bcn.workflows.automation import build_shadow_regular_briefing_trigger
 from bcn.workflows.runtime import WorkflowRuntime
 
@@ -266,6 +268,31 @@ _CATALOG: tuple[ScheduledWorkflowDefinition, ...] = (
         enabled_when=lambda settings: bool(settings.monthly_newsletter_enabled),
         lane="publish",
         priority=90,
+        build_deadline_seconds=lambda settings: int(
+            max(300, int(settings.workflow_job_publish_deadline_seconds))
+        ),
+    ),
+    ScheduledWorkflowDefinition(
+        workflow_id=WEEKLY_FLAGSHIP_MODE,
+        description="Generate the weekly flagship edition and hold it for review.",
+        steps=(
+            WorkflowStepDefinition(
+                "generate_flagship",
+                "writer",
+                "generate_release_candidate",
+                args={"mode": WEEKLY_FLAGSHIP_MODE},
+            ),
+            WorkflowStepDefinition(
+                "hold_flagship",
+                "workflow",
+                "hold_flagship_for_review",
+                args={},
+            ),
+        ),
+        build_trigger=build_weekly_flagship_trigger,
+        enabled_when=lambda settings: bool(settings.weekly_flagship_enabled),
+        lane="publish",
+        priority=85,
         build_deadline_seconds=lambda settings: int(
             max(300, int(settings.workflow_job_publish_deadline_seconds))
         ),

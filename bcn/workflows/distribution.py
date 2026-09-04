@@ -11,6 +11,7 @@ from uuid import UUID
 from bcn.common.config import Settings
 from bcn.contracts.distributor import DeliveryRequest
 from bcn.contracts.distributor import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import WEEKLY_FLAGSHIP_MODE
 from bcn.contracts.distributor import normalize_distribution_mode
 from bcn.contracts.services import DistributorWorkflow
 from bcn.persistence.briefings import claim_draft_briefing_by_id
@@ -81,8 +82,8 @@ def _stale_draft_message(
 
 
 async def _newsletter_recipients_for_mode(mode: str) -> list[str]:
-    """Load newsletter recipients for monthly newsletter distribution."""
-    if mode != REGULAR_MONTHLY_NEWSLETTER_MODE:
+    """Load newsletter subscribers for the monthly and weekly editions."""
+    if mode not in (REGULAR_MONTHLY_NEWSLETTER_MODE, WEEKLY_FLAGSHIP_MODE):
         return []
     rows = await get_newsletter_subscribers(active_only=True)
     recipients: list[str] = []
@@ -124,16 +125,20 @@ async def execute_distribution(
         should_release_for_retry = True
         retry_error: str | None = None
         try:
-            stale_message = _stale_draft_message(
-                dict(claimed_briefing),
-                max_age_minutes=max(
-                    0, int(settings.briefing_distribution_max_draft_age_minutes)
-                ),
-            )
-            if stale_message:
-                return stale_message
-
             normalized_mode = normalize_distribution_mode(mode)
+            # A reviewed flagship is fresh by definition when approved; the
+            # stale guard exists for unattended daily drafts only.
+            if normalized_mode != WEEKLY_FLAGSHIP_MODE:
+                stale_message = _stale_draft_message(
+                    dict(claimed_briefing),
+                    max_age_minutes=max(
+                        0,
+                        int(settings.briefing_distribution_max_draft_age_minutes),
+                    ),
+                )
+                if stale_message:
+                    return stale_message
+
             newsletter_recipients = await _newsletter_recipients_for_mode(
                 normalized_mode
             )

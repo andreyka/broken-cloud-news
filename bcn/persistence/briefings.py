@@ -25,12 +25,39 @@ async def ensure_briefing_items_table() -> None:
     await ensure_schema_ready()
 
 
+async def set_briefing_status(briefing_id: UUID, status: str) -> None:
+    """Set a briefing's lifecycle status (e.g. AWAITING_REVIEW -> DRAFT)."""
+    await ensure_briefing_items_table()
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE briefings SET status = $1, updated_at = NOW() WHERE id = $2",
+        status,
+        briefing_id,
+    )
+
+
+async def get_briefings_by_status(status: str, limit: int = 10) -> list:
+    """Return the newest briefings in one lifecycle status."""
+    await ensure_briefing_items_table()
+    pool = await get_pool()
+    return await pool.fetch(
+        """
+        SELECT id, created_at, status, title, left(content_markdown, 200) AS preview
+        FROM briefings WHERE status = $1
+        ORDER BY created_at DESC LIMIT $2
+        """,
+        status,
+        max(1, int(limit)),
+    )
+
+
 async def insert_briefing(
     content_markdown: str,
     content_html: Optional[str],
     cover_image_url: Optional[str],
     cover_image_prompt: Optional[str],
     item_ids: list[UUID],
+    title: Optional[str] = None,
 ) -> UUID:
     """Insert a new briefing in ``DRAFT`` status."""
     await ensure_briefing_items_table()
@@ -44,15 +71,17 @@ async def insert_briefing(
                     content_markdown,
                     content_html,
                     cover_image_url,
-                    cover_image_prompt
+                    cover_image_prompt,
+                    title
                 )
-                VALUES ($1, $2, $3, $4)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
                 """,
                 content_markdown,
                 content_html,
                 cover_image_url,
                 cover_image_prompt,
+                title,
             )
             briefing_id = row["id"]
 
@@ -152,7 +181,8 @@ async def get_latest_any_briefing() -> Optional[asyncpg.Record]:
             b.status,
             b.distributed_at,
             b.distribution_channels,
-            b.updated_at
+            b.updated_at,
+            b.title
         FROM briefings b
         ORDER BY b.created_at DESC
         LIMIT 1
@@ -178,7 +208,8 @@ async def get_latest_briefing() -> Optional[asyncpg.Record]:
             b.status,
             b.distributed_at,
             b.distribution_channels,
-            b.updated_at
+            b.updated_at,
+            b.title
         FROM briefings b
         WHERE b.status = 'DRAFT'
         ORDER BY b.created_at DESC
@@ -260,7 +291,8 @@ async def claim_latest_draft_briefing(
             b.status,
             b.distributed_at,
             b.distribution_channels,
-            b.updated_at
+            b.updated_at,
+            b.title
         FROM briefings b
         JOIN claimed c ON c.id = b.id
         LIMIT 1
@@ -338,7 +370,8 @@ async def claim_draft_briefing_by_id(
             b.status,
             b.distributed_at,
             b.distribution_channels,
-            b.updated_at
+            b.updated_at,
+            b.title
         FROM briefings b
         JOIN claimed c ON c.id = b.id
         LIMIT 1
@@ -422,7 +455,8 @@ async def get_briefing_by_id(briefing_id: UUID) -> Optional[asyncpg.Record]:
             b.status,
             b.distributed_at,
             b.distribution_channels,
-            b.updated_at
+            b.updated_at,
+            b.title
         FROM briefings b
         WHERE b.id = $1
         LIMIT 1

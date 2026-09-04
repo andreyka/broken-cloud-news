@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import subprocess
 from typing import Any
@@ -11,6 +12,7 @@ from bcn.common.config import Settings
 from bcn.contracts.modes import ALL_WORKFLOW_MODES
 from bcn.contracts.modes import REGULAR_DAILY_BRIEFING_MODE
 from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import WEEKLY_FLAGSHIP_MODE
 from bcn.contracts.services import WriterWorkflow
 from bcn.contracts.workflow import WriterHandoff
 from bcn.contracts.workflow import WriterHandoffResult
@@ -353,6 +355,15 @@ async def execute_generation_result(
                     int(settings.monthly_newsletter_min_items),
                 ),
             )
+        elif workflow_mode == WEEKLY_FLAGSHIP_MODE:
+            items = await get_top_items_for_period(
+                days=max(1, int(settings.weekly_flagship_lookback_days)),
+                min_score=max(1, int(settings.weekly_flagship_min_score)),
+                limit=max(
+                    int(settings.weekly_flagship_max_items) * 4,
+                    int(settings.weekly_flagship_min_items),
+                ),
+            )
         else:
             claim_limit = max(int(settings.briefing_max_items) * 8, 40)
             candidate_pool_rows = [
@@ -395,6 +406,11 @@ async def execute_generation_result(
                     "Monthly newsletter skipped: no high-signal items found "
                     f"in last {settings.monthly_newsletter_lookback_days} days."
                 )
+            elif workflow_mode == WEEKLY_FLAGSHIP_MODE:
+                message = (
+                    "Weekly flagship skipped: no high-signal items found "
+                    f"in last {settings.weekly_flagship_lookback_days} days."
+                )
             else:
                 message = (
                     f"Quiet day — no items scored >= {settings.relevance_threshold} "
@@ -413,16 +429,17 @@ async def execute_generation_result(
                     decision="skip",
                     reason="no_items_in_writer_input_pool",
                     message=message,
-                    selection_mode=(
-                        "monthly_newsletter"
-                        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE
-                        else "standard"
-                    ),
+                    selection_mode="standard",
                 )
-                if workflow_mode != REGULAR_MONTHLY_NEWSLETTER_MODE
+                if workflow_mode
+                not in (REGULAR_MONTHLY_NEWSLETTER_MODE, WEEKLY_FLAGSHIP_MODE)
                 else {
                     "workflow_mode": workflow_mode,
-                    "selection_mode": "monthly_newsletter",
+                    "selection_mode": (
+                        "monthly_newsletter"
+                        if workflow_mode == REGULAR_MONTHLY_NEWSLETTER_MODE
+                        else "weekly_flagship"
+                    ),
                     "decision": "skip",
                     "reason": "no_items_in_writer_input_pool",
                     "message": message,
@@ -784,12 +801,30 @@ async def execute_generation_result(
                 )
                 if item_id is not None
             ]
+            briefing_title = ""
+            # Title is a nicety on the critical publish path: bound it tightly
+            # and tolerate remote writer clients that predate the method.
+            title_fn = getattr(active_service, "generate_briefing_title", None)
+            if title_fn is not None:
+                try:
+                    briefing_title = await asyncio.wait_for(
+                        title_fn(artifact["markdown"]), timeout=60
+                    )
+                except Exception:
+                    logger.exception(
+                        "Briefing title generation failed; using fallback"
+                    )
+            if not briefing_title:
+                from bcn.briefing.text import derive_briefing_title
+
+                briefing_title = derive_briefing_title(artifact["markdown"])
             briefing_id = await insert_briefing(
                 content_markdown=artifact["markdown"],
                 content_html=artifact["html"],
                 cover_image_url=artifact["cover_url"],
                 cover_image_prompt=artifact["cover_prompt"],
                 item_ids=item_ids,
+                title=briefing_title or None,
             )
             await finalize_generation_run(
                 run_id=trace_run_id,

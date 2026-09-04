@@ -110,6 +110,16 @@ class WriterLLM:
                 "- Prioritize trend synthesis across incidents and advisories.\n"
                 "- Provide practical operator takeaways for each major section.\n"
             )
+        elif mode == "weekly_flagship":
+            mode_block = (
+                "Mode: weekly_flagship (inbox-native edition for newsletter readers, "
+                "NOT a Telegram post).\n"
+                "- Open with a short intro paragraph stating the week's thesis.\n"
+                "- One substantive section per story: 3-6 sentences with the "
+                "exploit path, blast radius, and what to do this week.\n"
+                "- Close with a takeaway paragraph that connects the week's stories.\n"
+                "- Target 3000-5000 characters; longer is fine, thin is not.\n"
+            )
         else:
             mode_block = "Mode: standard daily briefing."
         user_msg = (
@@ -177,6 +187,11 @@ class WriterLLM:
             mode_hint = (
                 "monthly_newsletter: synthesize broader trends with richer depth and stronger sectioned narrative."
             )
+        elif mode == "weekly_flagship":
+            mode_hint = (
+                "weekly_flagship: inbox-native weekly edition; deepen each section "
+                "to 3-6 sentences and keep the intro/closing thesis paragraphs."
+            )
         else:
             mode_hint = "standard: balanced actionable digest."
         user_msg = (
@@ -236,6 +251,11 @@ class WriterLLM:
             mode_text = "quiet_day: deeper practical guidance with fewer items accepted"
         elif mode == "monthly_newsletter":
             mode_text = "monthly_newsletter: broader trend synthesis with deeper multi-story analysis"
+        elif mode == "weekly_flagship":
+            mode_text = (
+                "weekly_flagship: inbox-native weekly edition with intro thesis, "
+                "substantive per-story sections, and a closing takeaway"
+            )
         else:
             mode_text = "standard daily briefing"
         user_msg = (
@@ -265,6 +285,27 @@ class WriterLLM:
                 tools=tools,
             )
         return revised.strip()
+
+    async def generate_briefing_title(self, markdown: str) -> str:
+        """Generate a short headline for a finished briefing."""
+        from bcn.briefing.text import derive_briefing_title
+        from bcn.services.writer.prompt import BRIEFING_TITLE_PROMPT
+
+        try:
+            raw = await self.client.chat_for_role(
+                role="writer",
+                system_prompt=BRIEFING_TITLE_PROMPT,
+                user_content=markdown[:6000],
+                retries=1,
+            )
+        except Exception:
+            logger.exception("Title generation failed; deriving from opener")
+            return derive_briefing_title(markdown)
+        title = (raw or "").strip().strip('"').strip("'").splitlines()[0].strip()
+        title = title.rstrip(" .")
+        if not title or len(title) > 90:
+            return derive_briefing_title(markdown)
+        return title
 
     async def generate_cover_prompt(self, topics: str) -> str:
         """Generate a Flux image prompt from today's security topics."""

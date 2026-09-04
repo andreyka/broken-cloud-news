@@ -1,0 +1,1 @@
+ALTER TABLE briefings ADD COLUMN IF NOT EXISTS title TEXT;

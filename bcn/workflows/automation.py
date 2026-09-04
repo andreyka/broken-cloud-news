@@ -42,6 +42,10 @@ from bcn.workflows.modes.regular_monthly_newsletter import (
 from bcn.workflows.modes.regular_monthly_newsletter import (
     run as job_publish_regular_monthly_newsletter,
 )
+from bcn.workflows.modes.weekly_flagship import (
+    build_trigger as build_weekly_flagship_trigger,
+)
+from bcn.workflows.modes.weekly_flagship import run as job_publish_weekly_flagship
 from bcn.workflows.runtime import build_workflow_runtime
 from bcn.workflows.runtime import WorkflowRuntime
 
@@ -66,6 +70,8 @@ __all__ = [
     "build_regular_briefing_trigger",
     "build_shadow_regular_briefing_trigger",
     "build_regular_monthly_newsletter_trigger",
+    "build_weekly_flagship_trigger",
+    "job_publish_weekly_flagship",
     "extract_briefing_id",
 ]
 

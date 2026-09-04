@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from bcn.contracts.modes import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import WEEKLY_FLAGSHIP_MODE
 
 
 def _selection_item_summary(
@@ -163,6 +164,27 @@ def select_items_for_workflow(
             "selected_items": selected,
         }
 
+    if workflow_mode == WEEKLY_FLAGSHIP_MODE:
+        selected = select_items_for_weekly_flagship(service, item_dicts)
+        if not selected:
+            return {
+                "decision": "skip",
+                "reason": "not_enough_diverse_items_after_weekly_selection",
+                "message": (
+                    "Weekly flagship skipped: not enough diverse high-signal "
+                    "items from the last week."
+                ),
+                "mode": "weekly_flagship",
+                "selected_items": [],
+            }
+        return {
+            "decision": "generate",
+            "reason": "weekly_selection_ready",
+            "message": "",
+            "mode": "weekly_flagship",
+            "selected_items": selected,
+        }
+
     if bool(service.settings.briefing_skip_if_no_high_signal):
         high_signal = service.selector.high_signal_count(item_dicts)
         min_high_signal = max(
@@ -244,11 +266,42 @@ def select_items_for_monthly_newsletter(
     items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Select a broader, story-deduped set of items for monthly mode."""
-    min_items = max(1, int(service.settings.monthly_newsletter_min_items))
-    max_items = max(min_items, int(service.settings.monthly_newsletter_max_items))
-    per_domain_cap = max(
-        1, int(service.settings.monthly_newsletter_max_items_per_domain)
+    return _select_ranked_deduped(
+        service,
+        items,
+        min_items=max(1, int(service.settings.monthly_newsletter_min_items)),
+        max_items=int(service.settings.monthly_newsletter_max_items),
+        per_domain_cap=max(
+            1, int(service.settings.monthly_newsletter_max_items_per_domain)
+        ),
     )
+
+
+def select_items_for_weekly_flagship(
+    service: Any,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Select the week's strongest story-deduped items for the flagship."""
+    return _select_ranked_deduped(
+        service,
+        items,
+        min_items=max(1, int(service.settings.weekly_flagship_min_items)),
+        max_items=int(service.settings.weekly_flagship_max_items),
+        per_domain_cap=max(
+            1, int(service.settings.monthly_newsletter_max_items_per_domain)
+        ),
+    )
+
+
+def _select_ranked_deduped(
+    service: Any,
+    items: list[dict[str, Any]],
+    *,
+    min_items: int,
+    max_items: int,
+    per_domain_cap: int,
+) -> list[dict[str, Any]]:
+    max_items = max(min_items, int(max_items))
 
     ranked = sorted(
         items,

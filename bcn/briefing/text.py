@@ -239,6 +239,25 @@ def append_missing_items_section(markdown: str, missing_items: list[dict]) -> st
     return markdown.rstrip() + "\n\n" + suffix
 
 
+def derive_briefing_title(markdown: str, max_chars: int = 72) -> str:
+    """Derive a headline from the briefing opener as a deterministic fallback."""
+    for raw_line in (markdown or "").splitlines():
+        line = raw_line.strip()
+        # Skip empties, the References block, and the cover image line that
+        # leads every stored briefing (`![Daily Cover](url)`).
+        if not line or line.startswith("🔗") or line.startswith("!["):
+            continue
+        line = re.sub(r"\[([^\]]+)\]\([^\)]*\)", r"\1", line)
+        line = line.replace("**", "").replace("`", "").strip()
+        if not line:
+            continue
+        if len(line) > max_chars:
+            cut = line.rfind(" ", 0, max_chars)
+            line = line[: cut if cut > 30 else max_chars]
+        return line.rstrip(" .,:;-—")
+    return "Broken Cloud briefing"
+
+
 def clip_markdown(markdown: str, limit: int) -> str:
     """Hard-cap markdown length, preferring paragraph boundaries."""
     if len(markdown) <= limit:

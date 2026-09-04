@@ -13,6 +13,7 @@ from bcn.contracts.distributor import DeliveryRequest
 from bcn.contracts.distributor import DeliveryResult
 from bcn.contracts.distributor import REGULAR_DAILY_BRIEFING_MODE
 from bcn.contracts.distributor import REGULAR_MONTHLY_NEWSLETTER_MODE
+from bcn.contracts.modes import WEEKLY_FLAGSHIP_MODE
 from bcn.contracts.distributor import normalize_distribution_mode
 from bcn.contracts.distributor import parse_delivery_request_payload
 from bcn.contracts.distributor import parse_delivery_result_payload
@@ -75,6 +76,10 @@ class DistributorService:
         normalized_mode = normalize_distribution_mode(mode)
         if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
             channel_names = {"email"}
+        elif normalized_mode == WEEKLY_FLAGSHIP_MODE:
+            # The flagship is inbox/web-native; the realtime wire channels
+            # (telegram/discord) are deliberately excluded.
+            channel_names = {"substack", "ghost", "email"}
         else:
             channel_names = {"telegram", "discord", "ghost", "substack"}
 
@@ -97,7 +102,8 @@ class DistributorService:
 
         recipients = (
             list(newsletter_recipients or [])
-            if normalized_mode == REGULAR_MONTHLY_NEWSLETTER_MODE
+            if normalized_mode
+            in (REGULAR_MONTHLY_NEWSLETTER_MODE, WEEKLY_FLAGSHIP_MODE)
             else list(self.settings.email_recipients)
         )
         if "email" in channel_names and self.settings.smtp_host and recipients:
@@ -211,6 +217,9 @@ class DistributorService:
                 external_message_id: str | None = None
                 try:
                     channel_briefing = dict(request.briefing)
+                    briefing_title = str(
+                        request.briefing.get("title") or ""
+                    ).strip()
                     if mode == REGULAR_MONTHLY_NEWSLETTER_MODE:
                         created_at = request.briefing.get("created_at")
                         month_label = (
@@ -221,6 +230,10 @@ class DistributorService:
                         channel_briefing["email_subject"] = (
                             f"Broken Cloud News Monthly Newsletter - {month_label}"
                         )
+                    elif briefing_title:
+                        # Substack/Ghost/email use this as the post title
+                        # instead of the created-at timestamp fallback.
+                        channel_briefing["email_subject"] = briefing_title
 
                     ok = await channel.send(channel_briefing)
                     if isinstance(channel.last_result, dict):

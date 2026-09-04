@@ -149,11 +149,26 @@ async def _execute_distribution_step(
     return state
 
 
+async def _execute_flagship_hold_step(
+    runtime: WorkflowRuntime,
+    args: dict[str, Any],
+    state: StepState,
+) -> StepState:
+    del args
+    writer_handoff = state.get("writer_handoff")
+    if isinstance(writer_handoff, WriterHandoffResult):
+        from bcn.workflows.modes.weekly_flagship import hold_for_review
+
+        await hold_for_review(runtime.settings, writer_handoff)
+    return state
+
+
 _STEP_EXECUTORS: dict[tuple[str, str], StepExecutor] = {
     ("collector", "collect"): _execute_collect_step,
     ("analyst", "analyze_pending"): _execute_analyze_pending_step,
     ("workflow", "shadow_regular_briefing"): _execute_shadow_regular_briefing_step,
     ("workflow", "backfill_ai_reviews"): _execute_backfill_ai_reviews_step,
+    ("workflow", "hold_flagship_for_review"): _execute_flagship_hold_step,
     ("writer", "generate_release_candidate"): _execute_generation_step,
     ("distributor", "deliver"): _execute_distribution_step,
 }
