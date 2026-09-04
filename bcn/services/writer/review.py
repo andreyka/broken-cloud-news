@@ -278,6 +278,41 @@ def passes_critic_thresholds(service: Any, critique: dict[str, object]) -> bool:
     )
 
 
+_OVERREACH_TERMS = (
+    "overstat",
+    "overreach",
+    "more specific than",
+    "does not establish",
+    "not established",
+    "goes beyond",
+    "beyond what the source",
+    "not supported by the source",
+    "implies successful",
+    "implies confirmed",
+    "implies exploitation",
+    "implies code execution",
+)
+
+
+def verifier_overreach_issues(verification: dict[str, object]) -> list[str]:
+    """Return verifier issues that flag claims scoped beyond the source.
+
+    These are soft findings (the verifier still passes the draft), but they
+    are the one defect class worth a dedicated rewrite round: a security
+    briefing that overstates exploitability costs reader trust.
+    """
+    issues = verification.get("issues", [])
+    if not isinstance(issues, list):
+        return []
+    flagged: list[str] = []
+    for issue in issues:
+        text = str(issue or "").strip()
+        lowered = text.lower()
+        if text and any(term in lowered for term in _OVERREACH_TERMS):
+            flagged.append(text)
+    return flagged
+
+
 def has_critical_critic_issue(critique: dict[str, object]) -> bool:
     """Return whether the critic payload contains a blocking issue.
 
@@ -369,6 +404,10 @@ def extract_sticky_rewrite_constraints(
         if "factual overreach" in lowered:
             add_constraint(
                 "Do not claim active exploitation, attacker usage, or in-the-wild abuse unless the selected source explicitly says so. If the source only proves capability, write 'can', 'lets an attacker', or 'could'."
+            )
+        if any(term in lowered for term in _OVERREACH_TERMS):
+            add_constraint(
+                "Scope every exploitability claim to exactly what the selected source supports: name the prerequisite (exposed endpoint, auth level, crafted payload), say 'can' or 'could' for demonstrated capability, and never upgrade memory corruption or a PoC into code execution, a foothold, or confirmed exploitation."
             )
         if "assumption:" in lowered or (
             "source" in lowered

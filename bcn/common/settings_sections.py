@@ -660,6 +660,7 @@ class VerifierPolicySettingsMixin:
     briefing_verifier_max_links: int = 12
     briefing_verifier_url_liveness_timeout_ms: int = 20000
     briefing_verifier_block_on_llm_hard: bool = True
+    briefing_verifier_overreach_rewrites: int = 1
 
 
 class BriefingLengthSettingsMixin:

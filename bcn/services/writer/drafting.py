@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _merge_sticky_constraints(
@@ -16,6 +19,132 @@ def _merge_sticky_constraints(
         if text and text not in merged:
             merged.append(text)
     return merged
+
+
+async def _scoping_rewrite(
+    service: Any,
+    *,
+    evaluation: dict[str, Any],
+    selected_items: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    mode: str,
+    sticky_constraints: list[str],
+    max_rewrites: int,
+    budget: int,
+    trace_rounds: list[dict[str, Any]],
+    preference_pairs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Guarded scoping passes for a release-passing draft with overstated claims.
+
+    Runs outside the generic rewrite path (no item trimming, no regeneration)
+    and adopts a pass only when it still passes release with the same item
+    set, strictly fewer overreach findings, and no meaningful critic drop.
+    Any exception or regression keeps the draft that already passed.
+    """
+    from bcn.services.writer.review import verifier_overreach_issues
+
+    current = evaluation
+    for _ in range(max(0, int(budget))):
+        before = verifier_overreach_issues(current["verifier"])
+        if not before:
+            return current
+        draft = str(current["markdown"] or "")
+        rewrites = int(current.get("rewrites", 0) or 0)
+        limits = {
+            "min_chars": int(current["min_chars"]),
+            "target_chars": int(current["target_chars"]),
+            "hard_max_chars": int(current["hard_max_chars"]),
+        }
+        try:
+            feedback_context = service.build_rewrite_feedback_context(
+                gate=current["gate"],
+                critique=current["critique"],
+                verification=current["verifier"],
+                mode=mode,
+                rewrite_attempt=rewrites + 1,
+                max_rewrites=max_rewrites,
+                selected_items=selected_items,
+                missing_selected_urls=[],
+                sticky_constraints=sticky_constraints,
+                **limits,
+            )
+            rewritten = await service.writer_llm.revise_briefing(
+                draft_markdown=draft,
+                items=selected_items,
+                feedback=list(before),
+                feedback_context=feedback_context,
+                recent_briefings=history,
+                mode=mode,
+                **limits,
+            )
+            postprocessed = await service.postprocess_briefing(
+                briefing_body=rewritten,
+                selected_items=selected_items,
+                mode=mode,
+                **limits,
+            )
+            if len(postprocessed.selected_items) != len(selected_items):
+                raise ValueError("scoping rewrite dropped selected items")
+            candidate = await service.evaluate_existing_markdown(
+                markdown=postprocessed.markdown,
+                selected_items=selected_items,
+                history=history,
+                mode=mode,
+            )
+        except Exception as exc:
+            logger.warning("Scoping rewrite skipped: %s: %s", type(exc).__name__, exc)
+            trace_rounds.append(
+                {
+                    "round_index": len(trace_rounds),
+                    "phase": "scoping_rewrite_failed",
+                    "draft_input": draft,
+                    "gate_result": dict(current["gate"]),
+                    "critique_result": dict(current["critique"]),
+                    "verifier_result": dict(current["verifier"]),
+                    "feedback": [f"{type(exc).__name__}: {str(exc)[:200]}"],
+                    "rewrite_output": None,
+                    "passed": True,
+                }
+            )
+            return current
+
+        after = verifier_overreach_issues(candidate["verifier"])
+        critic_before = int((current.get("critique") or {}).get("score", 0) or 0)
+        critic_after = int((candidate.get("critique") or {}).get("score", 0) or 0)
+        adopted = (
+            bool(candidate["release_passed"])
+            and len(after) < len(before)
+            and critic_after >= critic_before - 3
+        )
+        trace_rounds.append(
+            {
+                "round_index": len(trace_rounds),
+                "phase": "scoping_rewrite" if adopted else "scoping_rewrite_rejected",
+                "draft_input": draft,
+                "gate_result": dict(candidate["gate"]),
+                "critique_result": dict(candidate["critique"]),
+                "verifier_result": dict(candidate["verifier"]),
+                "feedback": list(before),
+                "rewrite_output": str(candidate["markdown"] or ""),
+                "passed": True,
+            }
+        )
+        if not adopted:
+            current["rewrites"] = rewrites + 1
+            return current
+        preference_pairs.append(
+            {
+                "round_index": len(trace_rounds),
+                "chosen_text": str(candidate["markdown"] or ""),
+                "rejected_text": draft,
+                "rationale": service.build_preference_rationale(list(before)),
+                "source": "scoping_rewrite",
+            }
+        )
+        candidate["rewrites"] = rewrites + 1
+        candidate["selected_items"] = list(selected_items)
+        current = candidate
+    return current
 
 
 async def generate_release_candidate(
@@ -70,11 +199,28 @@ async def generate_release_candidate(
         evaluation["rewrites"] = rewrites
         evaluation["selected_items"] = list(active_selected_items)
         if bool(evaluation["release_passed"]):
+            # Release-passing drafts with overstated claims get a guarded
+            # scoping pass that can only improve or leave the draft as-is.
+            evaluation = await _scoping_rewrite(
+                service,
+                evaluation=evaluation,
+                selected_items=active_selected_items,
+                history=history,
+                mode=mode,
+                sticky_constraints=sticky_constraints,
+                max_rewrites=max_rewrites,
+                budget=int(
+                    getattr(service.settings, "briefing_verifier_overreach_rewrites", 1)
+                    or 0
+                ),
+                trace_rounds=trace_rounds,
+                preference_pairs=preference_pairs,
+            )
             trace_rounds.append(
                 {
                     "round_index": len(trace_rounds),
                     "phase": "initial" if not trace_rounds else "rewrite",
-                    "draft_input": round_input,
+                    "draft_input": str(evaluation["markdown"] or ""),
                     "gate_result": dict(evaluation["gate"]),
                     "critique_result": dict(evaluation["critique"]),
                     "verifier_result": dict(evaluation["verifier"]),
