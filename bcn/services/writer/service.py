@@ -163,6 +163,8 @@ class WriterService:
         recent_briefings: list[dict[str, Any]] | None = None,
         gate_hard_issues: list[str] | None = None,
         gate_soft_issues: list[str] | None = None,
+        min_chars: int | None = None,
+        hard_max_chars: int | None = None,
     ) -> dict[str, Any]:
         """Run the critic or return a permissive default payload."""
         return await critique_markdown(
@@ -173,6 +175,8 @@ class WriterService:
             recent_briefings=recent_briefings,
             gate_hard_issues=gate_hard_issues,
             gate_soft_issues=gate_soft_issues,
+            min_chars=min_chars,
+            hard_max_chars=hard_max_chars,
         )
 
     async def verify_markdown(

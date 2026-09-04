@@ -151,3 +151,70 @@ async def test_critic_service_reports_threshold_failures_in_result_and_logs(capl
     }
     assert "threshold=False" in caplog.text
     assert "actionability" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_critic_service_honours_writer_length_limits():
+    """A draft longer than the mode ceiling must not be flagged when the writer's
+    computed (item-scaled) ceiling is supplied with the request."""
+    settings = _make_settings(briefing_min_chars=1200, briefing_hard_max_chars=2300)
+    service = CriticService(settings, llm_client=AsyncMock())
+    service.critic_llm = AsyncMock()
+    service.critic_llm.critique_briefing.return_value = {
+        "passed": True,
+        "score": 90,
+        "dimension_scores": {},
+        "issues": [],
+        "recommendations": [],
+    }
+    draft = "**Story**\n\n" + ("Sentence with a fact. " * 120) + "[ref](https://example.com/one)"
+    assert len(draft) > 2300
+    items = [{"url": "https://example.com/one", "title": "One"}]
+
+    scaled = await service.evaluate(
+        CritiqueRequest(draft_markdown=draft, items=items, mode="standard", hard_max_chars=3100)
+    )
+    assert scaled["gate_passed"] is True
+    sent = service.critic_llm.critique_briefing.await_args.kwargs
+    assert not any("too long" in issue for issue in sent["gate_hard_issues"])
+
+    unscaled = await service.evaluate(
+        CritiqueRequest(draft_markdown=draft, items=items, mode="standard")
+    )
+    assert unscaled["gate_passed"] is False
+    sent = service.critic_llm.critique_briefing.await_args.kwargs
+    assert any("too long" in issue for issue in sent["gate_hard_issues"])
+
+
+def test_critique_request_payload_round_trips_length_limits():
+    from bcn.contracts.review import critique_request_from_payload
+    from bcn.contracts.review import critique_request_to_payload
+
+    request = CritiqueRequest(
+        draft_markdown="**Draft**", mode="standard", min_chars=1200, hard_max_chars=3100
+    )
+    parsed = critique_request_from_payload(critique_request_to_payload(request))
+    assert parsed is not None
+    assert (parsed.min_chars, parsed.hard_max_chars) == (1200, 3100)
+    bare = critique_request_from_payload({"draft_markdown": "**Draft**"})
+    assert bare is not None
+    assert (bare.min_chars, bare.hard_max_chars) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_writer_critique_markdown_forwards_length_limits():
+    from types import SimpleNamespace
+
+    from bcn.services.writer.review import critique_markdown
+
+    evaluator = AsyncMock()
+    evaluator.evaluate.return_value = {"critic_passed": True, "critic_score": 90}
+    service = SimpleNamespace(
+        settings=SimpleNamespace(briefing_critique_enabled=True),
+        critic_evaluator=evaluator,
+    )
+    await critique_markdown(
+        service, "**Draft**", [], mode="standard", min_chars=1200, hard_max_chars=3100
+    )
+    sent = evaluator.evaluate.await_args.args[0]
+    assert (sent.min_chars, sent.hard_max_chars) == (1200, 3100)

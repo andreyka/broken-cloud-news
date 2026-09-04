@@ -40,6 +40,10 @@ class CriticService:
     async def evaluate(self, request: CritiqueRequest) -> dict[str, Any]:
         """Critique one explicit briefing payload."""
         min_chars, _, hard_max_chars = self.quality.char_limits(request.mode)
+        if request.min_chars is not None:
+            min_chars = int(request.min_chars)
+        if request.hard_max_chars is not None:
+            hard_max_chars = int(request.hard_max_chars)
         gate = self.quality.evaluate(
             markdown=request.draft_markdown,
             selected_items=list(request.items),

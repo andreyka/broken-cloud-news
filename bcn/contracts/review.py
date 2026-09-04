@@ -21,6 +21,10 @@ class CritiqueRequest:
     recent_briefings: tuple[dict[str, Any], ...] = ()
     gate_hard_issues: tuple[str, ...] = ()
     gate_soft_issues: tuple[str, ...] = ()
+    # Writer-computed length limits for this draft; when present the critic
+    # must not re-derive them from mode alone (item-count scaling differs).
+    min_chars: int | None = None
+    hard_max_chars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +47,8 @@ def critique_request_to_payload(request: CritiqueRequest) -> dict[str, Any]:
         "mode": str(request.mode or "standard"),
         "recent_briefings": list(request.recent_briefings),
         "source": str(request.source or "input"),
+        "min_chars": request.min_chars,
+        "hard_max_chars": request.hard_max_chars,
     }
 
 
@@ -73,7 +79,18 @@ def critique_request_from_payload(payload: dict[str, Any] | None) -> CritiqueReq
         gate_soft_issues=tuple(
             str(item).strip() for item in gate_soft_raw if str(item).strip()
         ),
+        min_chars=_optional_int(decoded.get("min_chars")),
+        hard_max_chars=_optional_int(decoded.get("hard_max_chars")),
     )
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def verification_request_to_payload(request: VerificationRequest) -> dict[str, Any]:

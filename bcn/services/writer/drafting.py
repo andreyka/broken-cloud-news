@@ -531,6 +531,8 @@ async def simulate_briefing_body(
                 gate_hard_issues=[str(issue) for issue in gate.get("hard_issues", [])],
                 gate_soft_issues=[str(issue) for issue in gate.get("soft_issues", [])],
                 recent_briefings=recent_briefings,
+                min_chars=min_chars,
+                hard_max_chars=hard_max_chars,
             )
             sticky_constraints = _merge_sticky_constraints(
                 sticky_constraints,

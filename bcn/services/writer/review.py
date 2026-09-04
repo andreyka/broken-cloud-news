@@ -123,6 +123,8 @@ async def critique_markdown(
     recent_briefings: list[dict[str, Any]] | None = None,
     gate_hard_issues: list[str] | None = None,
     gate_soft_issues: list[str] | None = None,
+    min_chars: int | None = None,
+    hard_max_chars: int | None = None,
 ) -> dict[str, Any]:
     """Run the critic or return a permissive default payload."""
     if not service.settings.briefing_critique_enabled:
@@ -140,6 +142,8 @@ async def critique_markdown(
             recent_briefings=tuple(recent_briefings or []),
             gate_hard_issues=tuple(gate_hard_issues or []),
             gate_soft_issues=tuple(gate_soft_issues or []),
+            min_chars=min_chars,
+            hard_max_chars=hard_max_chars,
         )
     )
     return normalize_critique_payload(raw)
@@ -209,6 +213,8 @@ async def evaluate_existing_markdown(
         gate_hard_issues=[str(issue) for issue in gate.get("hard_issues", [])],
         gate_soft_issues=[str(issue) for issue in gate.get("soft_issues", [])],
         recent_briefings=history,
+        min_chars=min_chars,
+        hard_max_chars=hard_max_chars,
     )
     verifier = await verify_markdown(
         service,
