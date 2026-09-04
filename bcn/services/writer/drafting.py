@@ -38,10 +38,26 @@ async def _scoping_rewrite(
 
     Runs outside the generic rewrite path (no item trimming, no regeneration)
     and adopts a pass only when it still passes release with the same item
-    set, strictly fewer overreach findings, and no meaningful critic drop.
-    Any exception or regression keeps the draft that already passed.
+    set and full coverage, strictly fewer overreach findings, no new verifier
+    findings, and no meaningful critic or verifier score drop. Any exception
+    or regression keeps the draft that already passed.
     """
+    from bcn.services.writer.postprocess import missing_items_for_markdown
     from bcn.services.writer.review import verifier_overreach_issues
+
+    references_marker = "🔗 **References:**"
+
+    def _issue_count(payload: object) -> int:
+        issues = payload.get("issues") if isinstance(payload, dict) else None
+        return len(issues) if isinstance(issues, list) else 0
+
+    def _score(payload: object) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        try:
+            return int(payload.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     current = evaluation
     for _ in range(max(0, int(budget))):
@@ -55,11 +71,27 @@ async def _scoping_rewrite(
             "target_chars": int(current["target_chars"]),
             "hard_max_chars": int(current["hard_max_chars"]),
         }
+        rewritten: str | None = None
         try:
+            # Hand the rewriter only the overreach findings. The structured
+            # context is narrowed too, so the model is not given the full
+            # critic and verifier wish-list and told to apply all of it.
+            scoped_critique = dict(current["critique"])
+            scoped_critique["issues"] = []
+            scoped_critique["recommendations"] = []
+            scoped_verifier = dict(current["verifier"])
+            scoped_verifier.update(
+                {
+                    "issues": list(before),
+                    "soft_issues": list(before),
+                    "hard_issues": [],
+                    "recommendations": [],
+                }
+            )
             feedback_context = service.build_rewrite_feedback_context(
                 gate=current["gate"],
-                critique=current["critique"],
-                verification=current["verifier"],
+                critique=scoped_critique,
+                verification=scoped_verifier,
                 mode=mode,
                 rewrite_attempt=rewrites + 1,
                 max_rewrites=max_rewrites,
@@ -68,6 +100,11 @@ async def _scoping_rewrite(
                 sticky_constraints=sticky_constraints,
                 **limits,
             )
+            if isinstance(feedback_context, dict):
+                feedback_context["priority_order"] = [
+                    "Scope each flagged claim to exactly what its source supports. "
+                    "Change nothing else: keep every section, every link, and the voice."
+                ]
             rewritten = await service.writer_llm.revise_briefing(
                 draft_markdown=draft,
                 items=selected_items,
@@ -77,6 +114,11 @@ async def _scoping_rewrite(
                 mode=mode,
                 **limits,
             )
+            dropped = missing_items_for_markdown(str(rewritten or ""), selected_items)
+            if dropped:
+                raise ValueError(
+                    f"scoping rewrite dropped coverage for {len(dropped)} selected item(s)"
+                )
             postprocessed = await service.postprocess_briefing(
                 briefing_body=rewritten,
                 selected_items=selected_items,
@@ -85,6 +127,8 @@ async def _scoping_rewrite(
             )
             if len(postprocessed.selected_items) != len(selected_items):
                 raise ValueError("scoping rewrite dropped selected items")
+            if references_marker in postprocessed.markdown and references_marker not in draft:
+                raise ValueError("scoping rewrite demoted a story to a bare reference")
             candidate = await service.evaluate_existing_markdown(
                 markdown=postprocessed.markdown,
                 selected_items=selected_items,
@@ -93,6 +137,9 @@ async def _scoping_rewrite(
             )
         except Exception as exc:
             logger.warning("Scoping rewrite skipped: %s: %s", type(exc).__name__, exc)
+            if rewritten is not None:
+                # The rewrite call was paid for even though it was discarded.
+                current["rewrites"] = rewrites + 1
             trace_rounds.append(
                 {
                     "round_index": len(trace_rounds),
@@ -102,18 +149,23 @@ async def _scoping_rewrite(
                     "critique_result": dict(current["critique"]),
                     "verifier_result": dict(current["verifier"]),
                     "feedback": [f"{type(exc).__name__}: {str(exc)[:200]}"],
-                    "rewrite_output": None,
+                    "rewrite_output": rewritten,
                     "passed": True,
                 }
             )
             return current
 
         after = verifier_overreach_issues(candidate["verifier"])
-        critic_before = int((current.get("critique") or {}).get("score", 0) or 0)
-        critic_after = int((candidate.get("critique") or {}).get("score", 0) or 0)
+        critic_before = _score(current.get("critique"))
+        critic_after = _score(candidate.get("critique"))
+        verifier_before = current.get("verifier") or {}
+        verifier_after = candidate.get("verifier") or {}
         adopted = (
             bool(candidate["release_passed"])
+            and bool(verifier_after.get("passed", True))
             and len(after) < len(before)
+            and _issue_count(verifier_after) <= _issue_count(verifier_before)
+            and _score(verifier_after) >= _score(verifier_before) - 3
             and critic_after >= critic_before - 3
         )
         trace_rounds.append(
@@ -126,7 +178,7 @@ async def _scoping_rewrite(
                 "verifier_result": dict(candidate["verifier"]),
                 "feedback": list(before),
                 "rewrite_output": str(candidate["markdown"] or ""),
-                "passed": True,
+                "passed": bool(candidate.get("release_passed", False)),
             }
         )
         if not adopted:
@@ -163,6 +215,9 @@ async def generate_release_candidate(
         selected_items,
         recent_briefings=history,
         mode=mode,
+        min_chars=min_chars,
+        target_chars=target_chars,
+        hard_max_chars=hard_max_chars,
     )
     active_selected_items = list(selected_items)
     postprocessed = await service.postprocess_briefing(
@@ -216,10 +271,14 @@ async def generate_release_candidate(
                 trace_rounds=trace_rounds,
                 preference_pairs=preference_pairs,
             )
+            generic_rounds = any(
+                str(round_.get("phase")) in ("initial", "rewrite")
+                for round_ in trace_rounds
+            )
             trace_rounds.append(
                 {
                     "round_index": len(trace_rounds),
-                    "phase": "initial" if not trace_rounds else "rewrite",
+                    "phase": "rewrite" if generic_rounds else "initial",
                     "draft_input": str(evaluation["markdown"] or ""),
                     "gate_result": dict(evaluation["gate"]),
                     "critique_result": dict(evaluation["critique"]),
@@ -262,14 +321,17 @@ async def generate_release_candidate(
                 ),
             ]
             rewrites += 1
+            min_chars, target_chars, hard_max_chars = service.char_limits(
+                mode,
+                selected_count=len(trimmed_items),
+            )
             rewritten_output = await service.writer_llm.generate_briefing(
                 trimmed_items,
                 recent_briefings=history,
                 mode=mode,
-            )
-            min_chars, target_chars, hard_max_chars = service.char_limits(
-                mode,
-                selected_count=len(trimmed_items),
+                min_chars=min_chars,
+                target_chars=target_chars,
+                hard_max_chars=hard_max_chars,
             )
             postprocessed = await service.postprocess_briefing(
                 briefing_body=rewritten_output,
@@ -427,6 +489,9 @@ async def simulate_briefing_body(
         active_items,
         recent_briefings=recent_briefings,
         mode=mode,
+        min_chars=min_chars,
+        target_chars=target_chars,
+        hard_max_chars=hard_max_chars,
     )
     postprocessed = await service.postprocess_briefing(
         briefing_body=briefing_body,
