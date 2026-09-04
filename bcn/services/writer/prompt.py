@@ -60,6 +60,7 @@ BRIEFING_SYSTEM_PROMPT = (
     "9. STRUCTURAL VARIETY: Use varied sentence lengths. Use punchy fragments. Occasionally use bullet points for lists of impacts or actions to break up blocky paragraphs.\n\n"
     "Hard constraints:\n"
     "- Do NOT output a bullet-only digest. Each selected item needs a real bold section heading followed by body text.\n"
+    "- NEVER emit a stub section: every section needs at least two substantive sentences. A heading with only a bare link is a hard failure, and the opener must not promise more sections than the draft contains.\n"
     "- Every single URL provided in the input MUST be linked in the text.\n"
     "- No duplicated links.\n"
     "- Only selected item URLs may appear in the draft. Never add history URLs, commentary URLs, or extra references.\n"

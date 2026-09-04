@@ -147,20 +147,21 @@ class LLMClient:
                     settings, "llm_reasoning_effort", role
                 ),
             }
-            if role == "analyst":
-                request_policy_overrides[role] = {
-                    "timeout": getattr(settings, "llm_timeout_analyst", None),
-                    "chat_retries": getattr(settings, "llm_chat_retries_analyst", None),
-                    "retry_max_wait_seconds": getattr(
-                        settings, "llm_retry_max_wait_seconds_analyst", None
-                    ),
-                    "retry_jitter_min_seconds": getattr(
-                        settings, "llm_retry_jitter_min_seconds_analyst", None
-                    ),
-                    "retry_jitter_max_seconds": getattr(
-                        settings, "llm_retry_jitter_max_seconds_analyst", None
-                    ),
-                }
+            request_policy_overrides[role] = {
+                "timeout": getattr(settings, f"llm_timeout_{role}", None),
+                "chat_retries": getattr(
+                    settings, f"llm_chat_retries_{role}", None
+                ),
+                "retry_max_wait_seconds": getattr(
+                    settings, f"llm_retry_max_wait_seconds_{role}", None
+                ),
+                "retry_jitter_min_seconds": getattr(
+                    settings, f"llm_retry_jitter_min_seconds_{role}", None
+                ),
+                "retry_jitter_max_seconds": getattr(
+                    settings, f"llm_retry_jitter_max_seconds_{role}", None
+                ),
+            }
         return cls(
             base_url=str(settings.llm_base_url or ""),
             model=str(settings.llm_model or ""),

@@ -379,7 +379,9 @@ async def _request_ai_review_response(
     )
     payload: dict[str, Any] = {
         "model": config.model,
-        "max_output_tokens": 8000,
+        # Reasoning tokens share this budget on /v1/responses; xhigh effort
+        # can exhaust a small cap before the JSON is emitted.
+        "max_output_tokens": 32000,
         "instructions": instructions,
         "input": _build_user_prompt(input_data),
     }

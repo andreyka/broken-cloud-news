@@ -302,6 +302,10 @@ class SharedLLMSettingsMixin:
     llm_retry_jitter_min_seconds: float = 0.5
     llm_retry_jitter_max_seconds: float = 5.0
     llm_timeout_analyst: int | None = None
+    llm_timeout_writer: int | None = None
+    llm_timeout_critic: int | None = None
+    llm_timeout_verifier: int | None = None
+    llm_timeout_cover: int | None = None
     llm_chat_retries_analyst: int | None = None
     llm_retry_max_wait_seconds_analyst: int | None = None
     llm_retry_jitter_min_seconds_analyst: float | None = None
@@ -336,7 +340,16 @@ class SharedLLMSettingsMixin:
     critic_prompt_path: str = ""
     verifier_prompt_path: str = ""
 
-    @field_validator("llm_timeout", "llm_timeout_analyst", mode="before", check_fields=False)
+    @field_validator(
+        "llm_timeout",
+        "llm_timeout_analyst",
+        "llm_timeout_writer",
+        "llm_timeout_critic",
+        "llm_timeout_verifier",
+        "llm_timeout_cover",
+        mode="before",
+        check_fields=False,
+    )
     @classmethod
     def _validate_llm_timeout(cls, value: int | None) -> int | None:
         if value is None:

@@ -577,8 +577,21 @@ async def execute_generation_result(
                     )
                 except Exception as exc:
                     logger.exception("Pre-publish AI editorial gate failed")
+                    try:
+                        from bcn.common.alerts import send_operator_alert
+
+                        await send_operator_alert(
+                            settings,
+                            "Editorial gate errored; publishing the validated "
+                            f"draft without polish: {type(exc).__name__}: "
+                            f"{str(exc)[:150]}",
+                        )
+                    except Exception:
+                        logger.exception("Gate-error alert delivery failed")
+                    # Fail open: the draft already passed the gate, critic,
+                    # and verifier - an errored editor must not zero the slot.
                     ai_gate_payload = {
-                        "passed": False,
+                        "passed": True,
                         "action": "error",
                         "reason": (
                             "AI editorial gate failed before publish: "
@@ -601,8 +614,6 @@ async def execute_generation_result(
                     )
                     gate["ai_review_gate"] = ai_gate_payload
                     candidate["gate"] = gate
-                    candidate["release_passed"] = False
-                    candidate["critic_threshold_passed"] = False
                     _append_ai_publish_gate_round(
                         candidate,
                         draft_input=original_markdown,
@@ -619,7 +630,7 @@ async def execute_generation_result(
                         ),
                         feedback=[ai_gate_payload["reason"], str(exc)[:400]],
                         rewrite_output=None,
-                        passed=False,
+                        passed=bool(candidate.get("release_passed", False)),
                     )
                 else:
                     ai_gate_payload = ai_publish_gate_result.as_gate_payload()
