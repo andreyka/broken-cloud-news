@@ -503,10 +503,10 @@ class SubstackDistributor:
         created_at = briefing.get("created_at")
         briefing_id = str(briefing.get("id") or "").strip()
         if subject:
-            suffix = self._title_uniqueness_suffix(created_at, briefing_id)
-            return f"{subject} ({suffix})" if suffix else subject
+            # The generated title is the post title; no time suffix.
+            return subject
         if isinstance(created_at, datetime):
-            return f"Broken Cloud News - {self._format_created_at(created_at)}"
+            return f"Broken Cloud News - {self._format_created_date(created_at)}"
         if briefing_id:
             return f"Broken Cloud News Daily Briefing #{briefing_id[:8]}"
         return "Broken Cloud News Daily Briefing"
@@ -522,23 +522,13 @@ class SubstackDistributor:
         return None
 
     @staticmethod
-    def _title_uniqueness_suffix(created_at: Any, briefing_id: str) -> str:
-        """Return a stable suffix that makes repeated daily titles unique."""
-        if isinstance(created_at, datetime):
-            return SubstackDistributor._format_created_time(created_at)
-        if briefing_id:
-            return briefing_id[:8]
-        return ""
-
-    @staticmethod
-    def _format_created_at(created_at: datetime) -> str:
-        """Render a human-readable date/time label for Substack titles."""
-        return created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-    @staticmethod
-    def _format_created_time(created_at: datetime) -> str:
-        """Render the time-only suffix used when a subject already exists."""
-        return created_at.astimezone(timezone.utc).strftime("%H:%M UTC")
+    def _format_created_date(created_at: datetime) -> str:
+        """Render a date-only label for untitled posts (no clock time in titles)."""
+        value = created_at
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        value = value.astimezone(timezone.utc)
+        return f"{value:%B} {value.day}, {value.year}"
 
     @staticmethod
     def _decode_data_image_uri(value: str) -> tuple[str, str, bytes]:

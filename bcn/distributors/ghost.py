@@ -247,22 +247,23 @@ class GhostDistributor:
         subject = str(briefing.get("email_subject") or "").strip()
         created_at = briefing.get("created_at")
         if subject:
-            if isinstance(created_at, datetime):
-                return f"{subject} ({self._format_created_time(created_at)})"
+            # The generated title is the post title; no time suffix.
             return subject
         if isinstance(created_at, datetime):
-            return f"Broken Cloud Update - {self._format_created_time(created_at)}"
+            return f"Broken Cloud Update - {self._format_created_date(created_at)}"
         briefing_id = str(briefing.get("id") or "").strip()
         if briefing_id:
             return f"Broken Cloud Update #{briefing_id[:8]}"
         return "Broken Cloud Update"
 
     @staticmethod
-    def _format_created_time(created_at: datetime) -> str:
+    def _format_created_date(created_at: datetime) -> str:
+        """Date-only label for untitled posts (no clock time in titles)."""
         value = created_at
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        value = value.astimezone(timezone.utc)
+        return f"{value:%B} {value.day}, {value.year}"
 
     @staticmethod
     def _decode_data_image_uri(value: str) -> tuple[str, str, bytes]:

@@ -524,7 +524,7 @@ class TestGhostDistributor:
                 "created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc),
             }
         )
-        assert title == "Custom Title (2026-03-11 23:06 UTC)"
+        assert title == "Custom Title"
 
     def test_extract_title_from_created_at(self):
         from datetime import datetime
@@ -534,7 +534,7 @@ class TestGhostDistributor:
         title = dist._extract_title(
             {"created_at": datetime(2026, 3, 11, 23, 6, tzinfo=timezone.utc)}
         )
-        assert title == "Broken Cloud Update - 2026-03-11 23:06 UTC"
+        assert title == "Broken Cloud Update - March 11, 2026"
 
     def test_extract_title_falls_back_to_briefing_id(self):
         dist = self._make_dist()
@@ -739,3 +739,20 @@ class TestSubstackDistributor:
 
         assert ok is False
         assert "super-secret-substack-sid" not in json.dumps(dist.last_result)
+
+
+def test_substack_titles_carry_no_timestamp():
+    from datetime import datetime
+    from datetime import timezone
+
+    from bcn.distributors.substack import SubstackDistributor
+
+    dist = SubstackDistributor(
+        publication_url="https://testpub.substack.com",
+        sid="sid-token",
+        trusted_image_hosts=("comfy",),
+    )
+    created = datetime(2026, 9, 4, 16, 5, tzinfo=timezone.utc)
+    assert dist._extract_title({"email_subject": "Attacker input, trusted all the way down", "created_at": created, "id": "abc"}) == "Attacker input, trusted all the way down"
+    assert dist._extract_title({"created_at": created}) == "Broken Cloud News - September 4, 2026"
+    assert dist._extract_title({"id": "4e59730e-1583-4dcb-82a8-98605478cfbb"}) == "Broken Cloud News Daily Briefing #4e59730e"
